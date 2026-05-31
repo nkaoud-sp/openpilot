@@ -168,6 +168,9 @@ procs = [
 
 # sunnypilot
 procs += [
+  # Secure-on-exit: lock doors / fold mirrors / close windows after the driver leaves
+  PythonProcess("doorlockd", "sunnypilot.system.doorlockd.doorlockd", always_run, enabled=not PC),
+
   # Models
   PythonProcess("models_manager", "sunnypilot.models.manager", only_offroad),
   NativeProcess("modeld_tinygrad", "sunnypilot/modeld_v2", ["./modeld"], and_(only_onroad, is_tinygrad_model)),

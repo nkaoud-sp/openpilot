@@ -150,6 +150,12 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"ChevronInfo", {PERSISTENT | BACKUP, INT, "4"}},
     {"CompletedSunnylinkConsentVersion", {PERSISTENT, STRING, "0"}},
     {"CustomAccIncrementsEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
+
+    // Secure-on-exit (doorlockd) params - Toyota/Lexus only
+    {"LockDoorsTimer", {PERSISTENT | BACKUP, INT, "0"}},  // seconds with no driver before securing; 0 disables
+    {"FoldMirrors", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"CloseWindows", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"DoorLockDBC", {PERSISTENT | BACKUP, STRING, "toyota_nodsu_pt_generated"}},
     {"CustomAccLongPressIncrement", {PERSISTENT | BACKUP, INT, "5"}},
     {"CustomAccShortPressIncrement", {PERSISTENT | BACKUP, INT, "1"}},
     {"DeviceBootMode", {PERSISTENT | BACKUP, INT, "0"}},
