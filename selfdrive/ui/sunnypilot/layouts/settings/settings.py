@@ -22,7 +22,7 @@ from openpilot.selfdrive.ui.sunnypilot.layouts.settings.software import Software
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.steering import SteeringLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.sunnylink import SunnylinkLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.trips import TripsLayout
-from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweeks import TweeksLayout
+from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks import TweaksLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.vehicle import VehicleLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.visuals import VisualsLayout
 from openpilot.system.ui.lib.application import gui_app, MousePos
@@ -51,7 +51,7 @@ OP.PanelType = IntEnum(
     "NAVIGATION",
     "TRIPS",
     "VEHICLE",
-    "TWEEKS",
+    "TWEAKS",
   ],
   start=0,
 )
@@ -125,7 +125,7 @@ class SettingsLayoutSP(OP.SettingsLayout):
       # OP.PanelType.NAVIGATION: PanelInfo(tr_noop("Navigation"), NavigationLayout(), icon="../../sunnypilot/selfdrive/assets/offroad/icon_map.png"),
       OP.PanelType.TRIPS: PanelInfo(tr_noop("Trips"), TripsLayout(), icon="../../sunnypilot/selfdrive/assets/offroad/icon_trips.png"),
       OP.PanelType.VEHICLE: PanelInfo(tr_noop("Vehicle"), VehicleLayout(), icon="../../sunnypilot/selfdrive/assets/offroad/icon_vehicle.png"),
-      OP.PanelType.TWEEKS: PanelInfo(tr_noop("Tweeks"), TweeksLayout(), icon="../../sunnypilot/selfdrive/assets/offroad/icon_toggle.png"),
+      OP.PanelType.TWEAKS: PanelInfo(tr_noop("Tweaks"), TweaksLayout(), icon="../../sunnypilot/selfdrive/assets/offroad/icon_toggle.png"),
       OP.PanelType.FIREHOSE: PanelInfo(tr_noop("Firehose"), FirehoseLayout(), icon="../../sunnypilot/selfdrive/assets/offroad/icon_firehose.png"),
       OP.PanelType.DEVELOPER: PanelInfo(tr_noop("Developer"), DeveloperLayoutSP(), icon="icons/shell.png"),
     }

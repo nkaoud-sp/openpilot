@@ -10,7 +10,7 @@ from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.scroller_tici import Scroller
 
 
-class TweeksLayout(Widget):
+class TweaksLayout(Widget):
   def __init__(self):
     super().__init__()
 
