@@ -27,7 +27,7 @@ class TweaksLayout(Widget):
                             "Set to Off to disable. Toyota/Lexus only."),
       min_value=0,
       max_value=180,
-      value_change_step=15,
+      value_change_step=2,
       label_callback=lambda value: tr("Off") if value == 0 else f"{value} s",
       inline=True,
     )
