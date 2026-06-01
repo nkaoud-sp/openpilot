@@ -42,10 +42,42 @@ class TweaksLayout(Widget):
       param="CloseWindows",
     )
 
+    # Dynamic follow distance (speed-based gap, overrides the personality setting).
+    self._dynamic_follow = toggle_item_sp(
+      title=lambda: tr("Dynamic Follow Distance"),
+      description=lambda: tr("Vary the follow distance with vehicle speed instead of using the fixed driving " +
+                            "personality gap. The follow time scales linearly from the low-speed value (at 0 km/h) " +
+                            "to the high-speed value (at 130 km/h). Requires openpilot longitudinal control."),
+      param="DynamicFollow",
+    )
+    self._dynamic_follow_min = option_item_sp(
+      title=lambda: tr("Follow Time At 0 km/h"),
+      param="DynamicFollowMinTime",
+      description=lambda: tr("Follow time used at a standstill / low speed. Shorter means a closer gap."),
+      min_value=20,
+      max_value=150,
+      value_change_step=5,
+      label_callback=lambda value: f"{value / 100:.2f} s",
+      inline=True,
+    )
+    self._dynamic_follow_max = option_item_sp(
+      title=lambda: tr("Follow Time At 130 km/h"),
+      param="DynamicFollowMaxTime",
+      description=lambda: tr("Follow time used at highway speed. Longer means a larger gap."),
+      min_value=50,
+      max_value=250,
+      value_change_step=5,
+      label_callback=lambda value: f"{value / 100:.2f} s",
+      inline=True,
+    )
+
     items = [
       self._lock_doors_timer,
       self._fold_mirrors,
       self._close_windows,
+      self._dynamic_follow,
+      self._dynamic_follow_min,
+      self._dynamic_follow_max,
     ]
     return items
 
@@ -56,6 +88,11 @@ class TweaksLayout(Widget):
     secure_enabled = self._lock_doors_timer.action_item.current_value > 0
     self._fold_mirrors.action_item.set_enabled(secure_enabled)
     self._close_windows.action_item.set_enabled(secure_enabled)
+
+    # the follow-time sliders only matter when dynamic follow is enabled
+    dynamic_follow_enabled = self._dynamic_follow.action_item.get_state()
+    self._dynamic_follow_min.action_item.set_enabled(dynamic_follow_enabled)
+    self._dynamic_follow_max.action_item.set_enabled(dynamic_follow_enabled)
 
   def _render(self, rect):
     self._scroller.render(rect)

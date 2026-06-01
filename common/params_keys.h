@@ -157,6 +157,11 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"FoldMirrors", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"CloseWindows", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"DoorLockDBC", {PERSISTENT | BACKUP, STRING, "toyota_nodsu_pt_generated"}},
+
+    // Dynamic follow - speed-based follow distance, overrides the personality gap. Times in centiseconds.
+    {"DynamicFollow", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"DynamicFollowMinTime", {PERSISTENT | BACKUP, INT, "40"}},   // follow time at 0 km/h (0.40 s)
+    {"DynamicFollowMaxTime", {PERSISTENT | BACKUP, INT, "120"}},  // follow time at 130 km/h (1.20 s)
     {"CustomAccLongPressIncrement", {PERSISTENT | BACKUP, INT, "5"}},
     {"CustomAccShortPressIncrement", {PERSISTENT | BACKUP, INT, "1"}},
     {"DeviceBootMode", {PERSISTENT | BACKUP, INT, "0"}},

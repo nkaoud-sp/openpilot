@@ -4,6 +4,7 @@ import time
 import numpy as np
 from cereal import log
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
+from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_MDL
 from openpilot.common.swaglog import cloudlog
 # WARNING: imports outside of constants will not trigger a rebuild
@@ -59,6 +60,13 @@ CRUISE_MIN_ACCEL = -1.2
 CRUISE_MAX_ACCEL = 1.6
 MIN_X_LEAD_FACTOR = 0.5
 
+# Dynamic follow: scale the follow time linearly with ego speed, overriding the
+# fixed personality-based gap. The speed range is fixed (0 km/h .. 130 km/h);
+# the follow-time endpoints are user-configurable (see Tweaks menu).
+DYNAMIC_T_FOLLOW_SPEED_BP = [0.0, 130.0 * CV.KPH_TO_MS]
+DYNAMIC_T_FOLLOW_MIN = 0.4   # default follow time (s) at 0 km/h
+DYNAMIC_T_FOLLOW_MAX = 1.2   # default follow time (s) at 130 km/h
+
 def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
   if personality==log.LongitudinalPersonality.relaxed:
     return 1.0
@@ -79,6 +87,12 @@ def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard):
     return 1.25
   else:
     raise NotImplementedError("Longitudinal personality not supported")
+
+
+def get_dynamic_T_FOLLOW(v_ego, t_follow_min=DYNAMIC_T_FOLLOW_MIN, t_follow_max=DYNAMIC_T_FOLLOW_MAX):
+  # Linearly interpolate the follow time between the configured endpoints across
+  # the 0..130 km/h speed range. np.interp clamps outside the breakpoints.
+  return float(np.interp(v_ego, DYNAMIC_T_FOLLOW_SPEED_BP, [t_follow_min, t_follow_max]))
 
 def get_stopped_equivalence_factor(v_lead):
   return (v_lead**2) / (2 * COMFORT_BRAKE)
@@ -313,9 +327,14 @@ class LongitudinalMpc:
     lead_xv = self.extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau)
     return lead_xv
 
-  def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard):
-    t_follow = get_T_FOLLOW(personality)
+  def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard,
+             dynamic_follow=False, t_follow_min=DYNAMIC_T_FOLLOW_MIN, t_follow_max=DYNAMIC_T_FOLLOW_MAX):
     v_ego = self.x0[1]
+    if dynamic_follow:
+      # Speed-based follow time, overrides the personality gap
+      t_follow = get_dynamic_T_FOLLOW(v_ego, t_follow_min, t_follow_max)
+    else:
+      t_follow = get_T_FOLLOW(personality)
     self.status = radarstate.leadOne.status or radarstate.leadTwo.status
 
     lead_xv_0 = self.process_lead(radarstate.leadOne)
