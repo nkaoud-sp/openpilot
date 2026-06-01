@@ -7,14 +7,13 @@ driver monitoring circle - stay in the same place for a long time. Cycling
 the affected pixels through full-range colors and sweeping motion helps even
 out their state and reduce the ghosting.
 
-Run it and leave the device on until it finishes. The screen is driven at
-full brightness for the duration, then the previous brightness is restored.
+This can be launched from the developer settings toggle, or run standalone:
 
-  ./screen_heal.py                 # default 30 minute session
+  ./screen_heal.py                 # default 120 minute session
   ./screen_heal.py --duration 60   # run for 60 minutes
-  ./screen_heal.py --interval 1.5  # 1.5s per solid color in the cycle
 
-Tap the screen / close the window to stop early.
+It runs at full brightness, then restores the previous brightness, and stops
+when the timer expires or the screen is tapped.
 """
 import argparse
 import time
@@ -24,6 +23,15 @@ import pyray as rl
 from openpilot.system.hardware import HARDWARE, PC
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.text_measure import measure_text_cached
+from openpilot.system.ui.widgets import Widget
+
+# Default session length in minutes.
+DEFAULT_DURATION_MIN = 120.0
+# Seconds each solid color is held during the color-cycle phase.
+DEFAULT_INTERVAL_S = 2.0
+# Ignore taps briefly after launch so the tap that opened it doesn't stop it.
+TAP_GRACE_S = 0.75
+STATUS_FONT_SIZE = 32
 
 # Primary colors plus white/black exercise every sub-pixel through its full range.
 HEAL_COLORS = [
@@ -41,7 +49,6 @@ HEAL_COLORS = [
 # which targets static-image retention better than solid fills alone.
 SWEEP_COLOR = rl.Color(255, 255, 255, 255)
 SWEEP_SPEED = 600.0  # pixels per second
-STATUS_FONT_SIZE = 32
 
 
 def _wobble(t: float, freq: float) -> float:
@@ -50,81 +57,105 @@ def _wobble(t: float, freq: float) -> float:
   return 4.0 * abs(phase - 0.5) - 1.0
 
 
-def _draw_status(remaining_s: float, phase: str) -> None:
-  # Draw the status text in a slowly drifting position so the text itself does
-  # not contribute to retention. Mid-grey so it reads on any background color.
-  mins, secs = divmod(int(remaining_s), 60)
-  label = f"healing screen - {phase} - {mins:02d}:{secs:02d} left"
-  font = gui_app.font(FontWeight.NORMAL)
-  text_w = measure_text_cached(font, label, STATUS_FONT_SIZE).x
+class ScreenHeal(Widget):
+  def __init__(self, duration_min: float = DEFAULT_DURATION_MIN, interval_s: float = DEFAULT_INTERVAL_S,
+               manage_brightness: bool = True, on_finish=None):
+    super().__init__()
+    self._duration_s = duration_min * 60.0
+    self._interval_s = interval_s
+    self._manage_brightness = manage_brightness and not PC
+    self._on_finish = on_finish
+    self._start = 0.0
+    self._prev_brightness: int | None = None
+    self._finished = False
 
-  t = time.monotonic()
-  x = (gui_app.width - text_w) / 2 * (1.0 + 0.8 * _wobble(t, 0.13))
-  y = (gui_app.height - STATUS_FONT_SIZE) / 2 * (1.0 + 0.8 * _wobble(t, 0.19))
-  rl.draw_text_ex(font, label, rl.Vector2(x, y), STATUS_FONT_SIZE, 0.0, rl.Color(128, 128, 128, 180))
+  def show_event(self):
+    super().show_event()
+    self._start = time.monotonic()
+    self._finished = False
+    if self._manage_brightness:
+      try:
+        current = HARDWARE.get_screen_brightness()
+        if current and current > 0:
+          self._prev_brightness = current
+        HARDWARE.set_screen_brightness(100)
+      except Exception:
+        self._prev_brightness = None
 
+  def hide_event(self):
+    super().hide_event()
+    if self._prev_brightness is not None:
+      try:
+        HARDWARE.set_screen_brightness(self._prev_brightness)
+      except Exception:
+        pass
+      self._prev_brightness = None
 
-def run(duration_s: float, interval_s: float) -> None:
-  start = time.monotonic()
-  end = start + duration_s
+  def _finish(self):
+    if self._finished:
+      return
+    self._finished = True
+    self.dismiss(self._on_finish)
 
-  for _ in gui_app.render():
-    now = time.monotonic()
-    if now >= end:
-      break
-    remaining = end - now
-    elapsed = now - start
+  def _handle_mouse_release(self, mouse_pos):
+    super()._handle_mouse_release(mouse_pos)
+    # Tap anywhere to stop, after a short grace period.
+    if time.monotonic() - self._start > TAP_GRACE_S:
+      self._finish()
+
+  def _draw_status(self, remaining_s: float, phase: str) -> None:
+    # Draw the status text in a slowly drifting position so the text itself does
+    # not contribute to retention. Mid-grey so it reads on any background color.
+    mins, secs = divmod(int(remaining_s), 60)
+    label = f"healing screen - {phase} - {mins:02d}:{secs:02d} left - tap to stop"
+    font = gui_app.font(FontWeight.NORMAL)
+    text_w = measure_text_cached(font, label, STATUS_FONT_SIZE).x
+
+    t = time.monotonic()
+    x = (gui_app.width - text_w) / 2 * (1.0 + 0.8 * _wobble(t, 0.13))
+    y = (gui_app.height - STATUS_FONT_SIZE) / 2 * (1.0 + 0.8 * _wobble(t, 0.19))
+    rl.draw_text_ex(font, label, rl.Vector2(x, y), STATUS_FONT_SIZE, 0.0, rl.Color(128, 128, 128, 180))
+
+  def _render(self, rect: rl.Rectangle):
+    elapsed = time.monotonic() - self._start
+    if elapsed >= self._duration_s:
+      self._finish()
+      return
 
     # Alternate between a solid-color cycle and a sweep pass every ~2 cycles so
     # pixels see both steady states and fast transitions.
-    cycle_len = interval_s * len(HEAL_COLORS)
+    cycle_len = self._interval_s * len(HEAL_COLORS)
     block = int(elapsed // cycle_len)
 
     if block % 2 == 0:
-      # Solid color cycle phase.
-      idx = int((elapsed % cycle_len) // interval_s) % len(HEAL_COLORS)
+      idx = int((elapsed % cycle_len) // self._interval_s) % len(HEAL_COLORS)
       rl.clear_background(HEAL_COLORS[idx])
       phase = "color cycle"
     else:
-      # Sweep phase: black background with a bright bar bouncing across.
       rl.clear_background(rl.BLACK)
-      bar_w = max(40, gui_app.width // 8)
-      span = gui_app.width + bar_w
+      bar_w = max(40, int(rect.width) // 8)
+      span = int(rect.width) + bar_w
       pos = (elapsed * SWEEP_SPEED) % (2 * span)
       x = pos if pos <= span else 2 * span - pos
-      rl.draw_rectangle(int(x - bar_w), 0, bar_w, gui_app.height, SWEEP_COLOR)
+      rl.draw_rectangle(int(x - bar_w), 0, bar_w, int(rect.height), SWEEP_COLOR)
       phase = "sweep"
 
-    _draw_status(remaining, phase)
+    self._draw_status(self._duration_s - elapsed, phase)
 
 
 def main() -> None:
   parser = argparse.ArgumentParser(description="Heal screen image retention by cycling pixels.")
-  parser.add_argument("--duration", type=float, default=30.0, help="session length in minutes (default: 30)")
-  parser.add_argument("--interval", type=float, default=2.0, help="seconds per solid color (default: 2.0)")
+  parser.add_argument("--duration", type=float, default=DEFAULT_DURATION_MIN, help="session length in minutes (default: 120)")
+  parser.add_argument("--interval", type=float, default=DEFAULT_INTERVAL_S, help="seconds per solid color (default: 2.0)")
   parser.add_argument("--no-brightness", action="store_true", help="do not force the screen to full brightness")
   args = parser.parse_args()
 
-  # Force full brightness for the most effective healing, restoring afterwards.
-  prev_brightness = None
-  if not args.no_brightness and not PC:
-    try:
-      current = HARDWARE.get_screen_brightness()
-      if current and current > 0:
-        prev_brightness = current
-      HARDWARE.set_screen_brightness(100)
-    except Exception:
-      prev_brightness = None
-
   gui_app.init_window("Screen Heal")
-  try:
-    run(args.duration * 60.0, args.interval)
-  finally:
-    if prev_brightness is not None:
-      try:
-        HARDWARE.set_screen_brightness(prev_brightness)
-      except Exception:
-        pass
+  heal = ScreenHeal(duration_min=args.duration, interval_s=args.interval,
+                    manage_brightness=not args.no_brightness, on_finish=gui_app.request_close)
+  gui_app.push_widget(heal)
+  for _ in gui_app.render():
+    pass
 
 
 if __name__ == "__main__":

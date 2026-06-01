@@ -7,6 +7,7 @@ from openpilot.system.ui.widgets.scroller_tici import Scroller
 from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr, tr_noop
+from openpilot.system.ui.screen_heal import ScreenHeal
 from openpilot.system.ui.widgets import DialogResult
 
 if gui_app.sunnypilot_ui():
@@ -21,6 +22,10 @@ DESCRIPTIONS = {
   'ssh_key': tr_noop(
     "Warning: This grants SSH access to all public keys in your GitHub settings. Never enter a GitHub username " +
     "other than your own. A comma employee will NEVER ask you to add their GitHub username."
+  ),
+  'screen_heal': tr_noop(
+    "Reduce screen image retention (\"pixel burn\") from static UI elements like the driver monitoring circle. " +
+    "Runs a full-brightness color cycle for up to 2 hours. Stops automatically when the timer expires or when you tap the screen."
   ),
   'alpha_longitudinal': tr_noop(
     "<b>WARNING: sunnypilot longitudinal control is in alpha for this car and will disable Automatic Emergency Braking (AEB).</b><br><br>" +
@@ -94,6 +99,13 @@ class DeveloperLayout(Widget):
     )
     self._on_enable_ui_debug(self._params.get_bool("ShowDebugInfo"))
 
+    self._screen_heal_toggle = toggle_item(
+      lambda: tr("Heal Screen Burn-in"),
+      description=lambda: tr(DESCRIPTIONS["screen_heal"]),
+      initial_state=False,
+      callback=self._on_screen_heal,
+    )
+
     self._scroller = Scroller([
       self._adb_toggle,
       self._ssh_toggle,
@@ -103,6 +115,7 @@ class DeveloperLayout(Widget):
       self._lat_maneuver_toggle,
       self._alpha_long_toggle,
       self._ui_debug_toggle,
+      self._screen_heal_toggle,
     ], line_separator=True, spacing=0)
 
     # Toggles should be not available to change in onroad state
@@ -167,6 +180,12 @@ class DeveloperLayout(Widget):
 
   def _on_enable_adb(self, state: bool):
     self._params.put_bool("AdbEnabled", state)
+
+  def _on_screen_heal(self, state: bool):
+    # Launch the full-screen healer; reset the toggle once it stops (timer or tap).
+    if state:
+      heal = ScreenHeal(on_finish=lambda: self._screen_heal_toggle.action_item.set_state(False))
+      gui_app.push_widget(heal)
 
   def _on_enable_ssh(self, state: bool):
     self._params.put_bool("SshEnabled", state)
