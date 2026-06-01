@@ -150,17 +150,19 @@ def secure_vehicle(sm: messaging.SubMaster, params: Params, dbc: str) -> None:
 
   The mirror fold (allOutput) worked but the lock under *toyota* safety did not
   and LOCK_STATUS stayed 1 -> toyota safety is blocking the 0x750 diagnostic TX.
-  So we now send everything (lock + mirrors) under allOutput, which we know
-  reaches 0x750. The panda is opened once and the safety mode set once, to keep
-  the relay from clicking on every command/attempt.
+  So everything (lock + mirrors) is sent under allOutput, which we know reaches
+  0x750.
+
+  pandad runs concurrently and keeps reverting the safety mode back to silent
+  between our sends, so allOutput must be re-asserted immediately before *every*
+  can_send (setting it once only let the first command through). This re-clicks
+  the relay per command, which is expected.
   """
   can_parser = CANParser(dbc, [("DOOR_LOCKS", 3)], bus=0)
   can_sock = messaging.sub_sock("can", timeout=100)
 
   status("securing - LOCK + MIRROR FOLD under allOutput (windows + DM disabled)")
   with Panda(disable_checks=True) as panda:
-    panda.set_safety_mode(SAFETY_ALLOUTPUT)
-
     attempt = 0
     while True:
       sm.update()
@@ -170,18 +172,16 @@ def secure_vehicle(sm: messaging.SubMaster, params: Params, dbc: str) -> None:
 
       attempt += 1
       status(f"sending LOCK_CMD + mirror fold (attempt {attempt})")
-      panda.send_heartbeat()
-      panda.can_send(TOYOTA_DIAG_ADDR, LOCK_CMD, 0)
-      time.sleep(0.150)
-      panda.send_heartbeat()
-
-      for command in (MIRR_FOLD_R, MIRR_FOLD_L):
+      # re-assert allOutput before each command (pandad reverts it between sends)
+      for command in (LOCK_CMD, MIRR_FOLD_R, MIRR_FOLD_L):
+        panda.set_safety_mode(SAFETY_ALLOUTPUT)
         panda.can_send(TOYOTA_DIAG_ADDR, command, 0)
         time.sleep(0.150)
         panda.send_heartbeat()
 
       # # --- close windows (disabled) ---
       # for command in (WINDOW_CLOSE_RR, WINDOW_CLOSE_RL, WINDOW_CLOSE_FL, WINDOW_CLOSE_FR):
+      #   panda.set_safety_mode(SAFETY_ALLOUTPUT)
       #   panda.can_send(TOYOTA_DIAG_ADDR, command, 0)
       #   time.sleep(0.150)
       #   panda.send_heartbeat()
