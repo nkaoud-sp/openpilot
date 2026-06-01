@@ -60,6 +60,10 @@ TOYOTA_DIAG_ADDR = 0x750
 # Cap lock retries so a mis-parsed LOCK_STATUS feedback can't loop forever.
 MAX_LOCK_ATTEMPTS = 3
 
+# Max seconds to wait for the driver-view dmonitoringd to stop/start before
+# giving up. If it never comes up we fall back to ignition+door+timer gating.
+DM_WAIT_TIMEOUT = 30.0
+
 # DBC used to read door-open and lock-status feedback. Overridable via the
 # "DoorLockDBC" param for platforms that use a different generated DBC.
 DEFAULT_DBC = "toyota_nodsu_pt_generated"
@@ -83,61 +87,73 @@ def wait_for_no_driver(sm: messaging.SubMaster, params: Params, dbc: str, time_t
   can_parser = CANParser(dbc, [("BODY_CONTROL_STATE", 3)], bus=0)
   can_sock = messaging.sub_sock("can", timeout=100)
 
-  # --- STEP-BY-STEP: driver-monitoring gating temporarily DISABLED ---------
-  # Re-enable this block (and the face/dm_alive reset below) once the simpler
-  # ignition+door+timer path is confirmed working on the device.
-  #
-  # # wait for the onroad driver-monitoring stack to shut down
-  # cloudlog.warning("doorlockd: phase 1 - waiting for onroad dmonitoringd to stop")
-  # while dmonitoringd_running(sm):
-  #   sm.update()
-  #   if ignition_on(sm):
-  #     cloudlog.warning("doorlockd: ignition back on while waiting for dmonitoringd to stop, aborting")
-  #     return False
-  #   time.sleep(DT_HW)
-  #
-  # # bring the driver-view camera back up so we can watch the cabin while offroad
-  # cloudlog.warning("doorlockd: phase 2 - set IsDriverViewEnabled, waiting for dmonitoringd to come up")
-  # params.put_bool("IsDriverViewEnabled", True)
-  # while not dmonitoringd_running(sm):
-  #   sm.update()
-  #   if ignition_on(sm):
-  #     cloudlog.warning("doorlockd: ignition back on while waiting for dmonitoringd to start, aborting")
-  #     return False
-  #   time.sleep(DT_HW)
-  # -------------------------------------------------------------------------
-
-  status(f"phase 3 - starting {time_threshold}s countdown (driver-monitoring DISABLED)")
-  start_time = time.monotonic()
-  last_log = 0.0
-  while time.monotonic() - start_time < time_threshold:
+  # phase 1: wait for the onroad driver-monitoring stack to shut down (bounded)
+  status("phase 1 - waiting for onroad dmonitoringd to stop")
+  t0 = time.monotonic()
+  while dmonitoringd_running(sm):
     sm.update()
-
     if ignition_on(sm):
-      status("ignition back on during countdown, aborting")
+      status("ignition back on while waiting for dmonitoringd to stop, aborting")
       return False
+    if time.monotonic() - t0 > DM_WAIT_TIMEOUT:
+      status("timeout waiting for onroad dmonitoringd to stop, continuing")
+      break
+    time.sleep(DT_HW)
 
-    # # reset the timer while a face is still detected (someone is in the car)
-    # face = sm["driverMonitoringState"].faceDetected
-    # dm_alive = sm.alive["driverMonitoringState"]
-    # if face or not dm_alive:
-    #   start_time = time.monotonic()
+  # phase 2: bring the driver-view camera up so we can watch the cabin offroad.
+  # bounded: if dmonitoringd never comes up, fall back to no face gating.
+  status("phase 2 - enabling driver view, waiting for dmonitoringd")
+  params.put_bool("IsDriverViewEnabled", True)
+  try:
+    dm_available = True
+    t0 = time.monotonic()
+    while not dmonitoringd_running(sm):
+      sm.update()
+      if ignition_on(sm):
+        status("ignition back on while waiting for dmonitoringd to start, aborting")
+        return False
+      if time.monotonic() - t0 > DM_WAIT_TIMEOUT:
+        status("timeout: dmonitoringd never came up; proceeding WITHOUT face gating")
+        dm_available = False
+        break
+      time.sleep(DT_HW)
 
-    can_parser.update(can_capnp_to_list(messaging.drain_sock_raw(can_sock, wait_for_one=True)))
-    door_open = any([can_parser.vl["BODY_CONTROL_STATE"]["DOOR_OPEN_FL"],
-                     can_parser.vl["BODY_CONTROL_STATE"]["DOOR_OPEN_FR"],
-                     can_parser.vl["BODY_CONTROL_STATE"]["DOOR_OPEN_RL"],
-                     can_parser.vl["BODY_CONTROL_STATE"]["DOOR_OPEN_RR"]])
-    if door_open:
-      start_time = time.monotonic()
+    status(f"phase 3 - dm_available={dm_available}, starting {time_threshold}s countdown")
+    start_time = time.monotonic()
+    last_log = 0.0
+    while time.monotonic() - start_time < time_threshold:
+      sm.update()
 
-    # throttled trace so we can see *why* the countdown is (or isn't) progressing
-    now = time.monotonic()
-    if now - last_log >= 2.0:
-      status(f"countdown remaining={time_threshold - (now - start_time):.1f}s door_open={door_open}")
-      last_log = now
+      if ignition_on(sm):
+        status("ignition back on during countdown, aborting")
+        return False
 
-    time.sleep(DT_DMON)
+      # reset the timer while a face is still detected (someone is in the car).
+      # if DM is supposed to be up but isn't publishing, also reset so we never
+      # lock blind. if DM never came up at all, skip face gating entirely.
+      face = sm["driverMonitoringState"].faceDetected
+      dm_alive = sm.alive["driverMonitoringState"]
+      if dm_available and (face or not dm_alive):
+        start_time = time.monotonic()
+
+      can_parser.update(can_capnp_to_list(messaging.drain_sock_raw(can_sock, wait_for_one=True)))
+      door_open = any([can_parser.vl["BODY_CONTROL_STATE"]["DOOR_OPEN_FL"],
+                       can_parser.vl["BODY_CONTROL_STATE"]["DOOR_OPEN_FR"],
+                       can_parser.vl["BODY_CONTROL_STATE"]["DOOR_OPEN_RL"],
+                       can_parser.vl["BODY_CONTROL_STATE"]["DOOR_OPEN_RR"]])
+      if door_open:
+        start_time = time.monotonic()
+
+      # throttled trace so we can see *why* the countdown is (or isn't) progressing
+      now = time.monotonic()
+      if now - last_log >= 2.0:
+        status(f"countdown remaining={time_threshold - (now - start_time):.1f}s "
+               f"face={face} dm_alive={dm_alive} door_open={door_open}")
+        last_log = now
+
+      time.sleep(DT_DMON)
+  finally:
+    params.remove("IsDriverViewEnabled")
 
   status("phase 4 - countdown complete")
   return True
