@@ -12,8 +12,8 @@ This can be launched from the developer settings toggle, or run standalone:
   ./screen_heal.py                 # default 120 minute session
   ./screen_heal.py --duration 60   # run for 60 minutes
 
-It runs at full brightness, then restores the previous brightness, and stops
-when the timer expires or the screen is tapped.
+It runs at full brightness with screen sleep disabled, then restores the
+previous state, and stops when the timer expires or the screen is tapped.
 """
 import argparse
 import time
@@ -31,6 +31,8 @@ DEFAULT_DURATION_MIN = 120.0
 DEFAULT_INTERVAL_S = 2.0
 # Ignore taps briefly after launch so the tap that opened it doesn't stop it.
 TAP_GRACE_S = 0.75
+# Extra headroom on the keep-awake timeout so the screen never sleeps mid-session.
+KEEP_AWAKE_MARGIN_S = 120.0
 STATUS_FONT_SIZE = 32
 
 # Primary colors plus white/black exercise every sub-pixel through its full range.
@@ -59,11 +61,15 @@ def _wobble(t: float, freq: float) -> float:
 
 class ScreenHeal(Widget):
   def __init__(self, duration_min: float = DEFAULT_DURATION_MIN, interval_s: float = DEFAULT_INTERVAL_S,
-               manage_brightness: bool = True, on_finish=None):
+               manage_brightness: bool = True, device=None, on_finish=None):
     super().__init__()
     self._duration_s = duration_min * 60.0
     self._interval_s = interval_s
     self._manage_brightness = manage_brightness and not PC
+    # When embedded in the running UI, the Device loop sleeps the screen on an
+    # interactive timeout and re-drives brightness every frame, so we must go
+    # through its API instead of poking the backlight directly.
+    self._device = device
     self._on_finish = on_finish
     self._start = 0.0
     self._prev_brightness: int | None = None
@@ -73,7 +79,13 @@ class ScreenHeal(Widget):
     super().show_event()
     self._start = time.monotonic()
     self._finished = False
-    if self._manage_brightness:
+    if self._device is not None:
+      # Keep the screen awake for the whole session and force full brightness
+      # through the device manager so it isn't overridden each frame.
+      self._device.set_override_interactive_timeout(int(self._duration_s + KEEP_AWAKE_MARGIN_S))
+      if self._manage_brightness:
+        self._device.set_offroad_brightness(100)
+    elif self._manage_brightness:
       try:
         current = HARDWARE.get_screen_brightness()
         if current and current > 0:
@@ -84,7 +96,10 @@ class ScreenHeal(Widget):
 
   def hide_event(self):
     super().hide_event()
-    if self._prev_brightness is not None:
+    if self._device is not None:
+      self._device.set_override_interactive_timeout(None)
+      self._device.set_offroad_brightness(None)
+    elif self._prev_brightness is not None:
       try:
         HARDWARE.set_screen_brightness(self._prev_brightness)
       except Exception:
@@ -121,6 +136,10 @@ class ScreenHeal(Widget):
     if elapsed >= self._duration_s:
       self._finish()
       return
+
+    # Re-assert keep-awake every frame in case another widget cleared the override.
+    if self._device is not None:
+      self._device.set_override_interactive_timeout(int(self._duration_s + KEEP_AWAKE_MARGIN_S))
 
     # Alternate between a solid-color cycle and a sweep pass every ~2 cycles so
     # pixels see both steady states and fast transitions.

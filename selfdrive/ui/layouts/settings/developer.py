@@ -1,6 +1,6 @@
 from openpilot.common.params import Params
 from openpilot.selfdrive.ui.widgets.ssh_key import ssh_key_item
-from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.selfdrive.ui.ui_state import ui_state, device
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.list_view import toggle_item
 from openpilot.system.ui.widgets.scroller_tici import Scroller
@@ -184,7 +184,7 @@ class DeveloperLayout(Widget):
   def _on_screen_heal(self, state: bool):
     # Launch the full-screen healer; reset the toggle once it stops (timer or tap).
     if state:
-      heal = ScreenHeal(on_finish=lambda: self._screen_heal_toggle.action_item.set_state(False))
+      heal = ScreenHeal(device=device, on_finish=lambda: self._screen_heal_toggle.action_item.set_state(False))
       gui_app.push_widget(heal)
 
   def _on_enable_ssh(self, state: bool):
