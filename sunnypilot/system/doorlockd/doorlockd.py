@@ -57,6 +57,11 @@ WINDOW_CLOSE_RL = b"\x93\x04\x30\x01\x05\x20\x00\x00"
 # Toyota UDS diagnostic request address all of the commands above are sent to.
 TOYOTA_DIAG_ADDR = 0x750
 
+# Delay after each diagnostic command. MIRROR_GAP is the (doubled) separation
+# between the right and left mirror fold so they don't step on each other.
+CMD_DELAY = 0.150
+MIRROR_GAP = CMD_DELAY * 2
+
 # Cap lock retries so a mis-parsed LOCK_STATUS feedback can't loop forever.
 MAX_LOCK_ATTEMPTS = 3
 
@@ -76,6 +81,15 @@ def ignition_on(sm: messaging.SubMaster) -> bool:
 
 def dmonitoringd_running(sm: messaging.SubMaster) -> bool:
   return any(proc.name == "dmonitoringd" and proc.running for proc in sm["managerState"].processes)
+
+
+def send_diag(panda: Panda, cmd: bytes, delay: float = CMD_DELAY) -> None:
+  """Send one diagnostic command to 0x750. allOutput is re-asserted every call
+  because pandad reverts the safety mode to silent between sends."""
+  panda.set_safety_mode(SAFETY_ALLOUTPUT)
+  panda.can_send(TOYOTA_DIAG_ADDR, cmd, 0)
+  time.sleep(delay)
+  panda.send_heartbeat()
 
 
 def wait_for_no_driver(sm: messaging.SubMaster, params: Params, dbc: str, time_threshold: int) -> bool:
@@ -160,13 +174,11 @@ def wait_for_no_driver(sm: messaging.SubMaster, params: Params, dbc: str, time_t
 
 
 def secure_vehicle(sm: messaging.SubMaster, params: Params, dbc: str) -> None:
-  """STEP-BY-STEP: lock the doors + fold the mirrors.
-
-  Window-close and the driver-monitoring gate are still disabled.
+  """Lock the doors, fold the mirrors, and close the windows.
 
   The mirror fold (allOutput) worked but the lock under *toyota* safety did not
   and LOCK_STATUS stayed 1 -> toyota safety is blocking the 0x750 diagnostic TX.
-  So everything (lock + mirrors) is sent under allOutput, which we know reaches
+  So everything is sent under allOutput (via send_diag), which we know reaches
   0x750.
 
   pandad runs concurrently and keeps reverting the safety mode back to silent
@@ -177,7 +189,7 @@ def secure_vehicle(sm: messaging.SubMaster, params: Params, dbc: str) -> None:
   can_parser = CANParser(dbc, [("DOOR_LOCKS", 3)], bus=0)
   can_sock = messaging.sub_sock("can", timeout=100)
 
-  status("securing - LOCK + MIRROR FOLD under allOutput (windows + DM disabled)")
+  status("securing - LOCK + MIRROR FOLD + WINDOW CLOSE under allOutput (DM gated)")
   with Panda(disable_checks=True) as panda:
     attempt = 0
     while True:
@@ -187,20 +199,13 @@ def secure_vehicle(sm: messaging.SubMaster, params: Params, dbc: str) -> None:
         break
 
       attempt += 1
-      status(f"sending LOCK_CMD + mirror fold (attempt {attempt})")
-      # re-assert allOutput before each command (pandad reverts it between sends)
-      for command in (LOCK_CMD, MIRR_FOLD_R, MIRR_FOLD_L):
-        panda.set_safety_mode(SAFETY_ALLOUTPUT)
-        panda.can_send(TOYOTA_DIAG_ADDR, command, 0)
-        time.sleep(0.150)
-        panda.send_heartbeat()
-
-      # # --- close windows (disabled) ---
-      # for command in (WINDOW_CLOSE_RR, WINDOW_CLOSE_RL, WINDOW_CLOSE_FL, WINDOW_CLOSE_FR):
-      #   panda.set_safety_mode(SAFETY_ALLOUTPUT)
-      #   panda.can_send(TOYOTA_DIAG_ADDR, command, 0)
-      #   time.sleep(0.150)
-      #   panda.send_heartbeat()
+      status(f"sending lock + mirror fold + window close (attempt {attempt})")
+      send_diag(panda, LOCK_CMD)
+      # extra (doubled) gap between right and left mirror fold
+      send_diag(panda, MIRR_FOLD_R, MIRROR_GAP)
+      send_diag(panda, MIRR_FOLD_L)
+      for command in (WINDOW_CLOSE_RR, WINDOW_CLOSE_RL, WINDOW_CLOSE_FL, WINDOW_CLOSE_FR):
+        send_diag(panda, command)
 
       time.sleep(1)
 
