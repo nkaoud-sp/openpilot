@@ -20,6 +20,7 @@ from opendbc.car.structs import CarParams
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_DMON, DT_HW
 from openpilot.common.swaglog import cloudlog
+from openpilot.selfdrive.pandad import can_capnp_to_list
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
 from panda import Panda
 
@@ -119,7 +120,7 @@ def wait_for_no_driver(sm: messaging.SubMaster, params: Params, dbc: str, time_t
     # if face or not dm_alive:
     #   start_time = time.monotonic()
 
-    can_parser.update_strings(messaging.drain_sock_raw(can_sock, wait_for_one=True))
+    can_parser.update(can_capnp_to_list(messaging.drain_sock_raw(can_sock, wait_for_one=True)))
     door_open = any([can_parser.vl["BODY_CONTROL_STATE"]["DOOR_OPEN_FL"],
                      can_parser.vl["BODY_CONTROL_STATE"]["DOOR_OPEN_FR"],
                      can_parser.vl["BODY_CONTROL_STATE"]["DOOR_OPEN_RL"],
