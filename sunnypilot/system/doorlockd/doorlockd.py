@@ -63,7 +63,7 @@ CMD_DELAY = 0.150
 MIRROR_GAP = CMD_DELAY * 2
 
 # Cap lock retries so a mis-parsed LOCK_STATUS feedback can't loop forever.
-MAX_LOCK_ATTEMPTS = 3
+MAX_LOCK_ATTEMPTS = 2
 
 # Max seconds to wait for the driver-view dmonitoringd to stop/start before
 # giving up. If it never comes up we fall back to ignition+door+timer gating.
@@ -203,11 +203,11 @@ def secure_vehicle(sm: messaging.SubMaster, params: Params, dbc: str) -> None:
 
       attempt += 1
       status(f"sending lock (mirrors={fold_mirrors} windows={close_windows}) attempt {attempt}")
-      send_diag(panda, LOCK_CMD)
+      send_diag(panda, LOCK_CMD, MIRROR_GAP)
       if fold_mirrors:
         # extra (doubled) gap between right and left mirror fold
         send_diag(panda, MIRR_FOLD_R, MIRROR_GAP)
-        send_diag(panda, MIRR_FOLD_L)
+        send_diag(panda, MIRR_FOLD_L, MIRROR_GAP)
       if close_windows:
         for command in (WINDOW_CLOSE_RR, WINDOW_CLOSE_RL, WINDOW_CLOSE_FL, WINDOW_CLOSE_FR):
           send_diag(panda, command)
