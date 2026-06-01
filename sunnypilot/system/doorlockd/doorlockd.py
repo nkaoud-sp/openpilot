@@ -64,112 +64,101 @@ def wait_for_no_driver(sm: messaging.SubMaster, params: Params, dbc: str, time_t
   can_parser = CANParser(dbc, [("BODY_CONTROL_STATE", 3)], bus=0)
   can_sock = messaging.sub_sock("can", timeout=100)
 
-  # wait for the onroad driver-monitoring stack to shut down
-  cloudlog.warning("doorlockd: phase 1 - waiting for onroad dmonitoringd to stop")
-  while dmonitoringd_running(sm):
+  # --- STEP-BY-STEP: driver-monitoring gating temporarily DISABLED ---------
+  # Re-enable this block (and the face/dm_alive reset below) once the simpler
+  # ignition+door+timer path is confirmed working on the device.
+  #
+  # # wait for the onroad driver-monitoring stack to shut down
+  # cloudlog.warning("doorlockd: phase 1 - waiting for onroad dmonitoringd to stop")
+  # while dmonitoringd_running(sm):
+  #   sm.update()
+  #   if ignition_on(sm):
+  #     cloudlog.warning("doorlockd: ignition back on while waiting for dmonitoringd to stop, aborting")
+  #     return False
+  #   time.sleep(DT_HW)
+  #
+  # # bring the driver-view camera back up so we can watch the cabin while offroad
+  # cloudlog.warning("doorlockd: phase 2 - set IsDriverViewEnabled, waiting for dmonitoringd to come up")
+  # params.put_bool("IsDriverViewEnabled", True)
+  # while not dmonitoringd_running(sm):
+  #   sm.update()
+  #   if ignition_on(sm):
+  #     cloudlog.warning("doorlockd: ignition back on while waiting for dmonitoringd to start, aborting")
+  #     return False
+  #   time.sleep(DT_HW)
+  # -------------------------------------------------------------------------
+
+  cloudlog.warning(f"doorlockd: phase 3 - starting {time_threshold}s countdown (driver-monitoring DISABLED)")
+  start_time = time.monotonic()
+  last_log = 0.0
+  while time.monotonic() - start_time < time_threshold:
     sm.update()
+
     if ignition_on(sm):
-      cloudlog.warning("doorlockd: ignition back on while waiting for dmonitoringd to stop, aborting")
+      cloudlog.warning("doorlockd: ignition back on during countdown, aborting")
       return False
-    time.sleep(DT_HW)
 
-  # bring the driver-view camera back up so we can watch the cabin while offroad
-  cloudlog.warning("doorlockd: phase 2 - set IsDriverViewEnabled, waiting for dmonitoringd to come up")
-  params.put_bool("IsDriverViewEnabled", True)
-  try:
-    while not dmonitoringd_running(sm):
-      sm.update()
-      if ignition_on(sm):
-        cloudlog.warning("doorlockd: ignition back on while waiting for dmonitoringd to start, aborting")
-        return False
-      time.sleep(DT_HW)
+    # # reset the timer while a face is still detected (someone is in the car)
+    # face = sm["driverMonitoringState"].faceDetected
+    # dm_alive = sm.alive["driverMonitoringState"]
+    # if face or not dm_alive:
+    #   start_time = time.monotonic()
 
-    cloudlog.warning(f"doorlockd: phase 3 - dmonitoringd up, starting {time_threshold}s countdown")
-    start_time = time.monotonic()
-    last_log = 0.0
-    while time.monotonic() - start_time < time_threshold:
-      sm.update()
+    can_parser.update_strings(messaging.drain_sock_raw(can_sock, wait_for_one=True))
+    door_open = any([can_parser.vl["BODY_CONTROL_STATE"]["DOOR_OPEN_FL"],
+                     can_parser.vl["BODY_CONTROL_STATE"]["DOOR_OPEN_FR"],
+                     can_parser.vl["BODY_CONTROL_STATE"]["DOOR_OPEN_RL"],
+                     can_parser.vl["BODY_CONTROL_STATE"]["DOOR_OPEN_RR"]])
+    if door_open:
+      start_time = time.monotonic()
 
-      if ignition_on(sm):
-        cloudlog.warning("doorlockd: ignition back on during countdown, aborting")
-        return False
+    # throttled trace so we can see *why* the countdown is (or isn't) progressing
+    now = time.monotonic()
+    if now - last_log >= 2.0:
+      cloudlog.warning(f"doorlockd: countdown remaining={time_threshold - (now - start_time):.1f}s "
+                       f"door_open={door_open}")
+      last_log = now
 
-      # reset the timer while a face is still detected (someone is in the car)
-      face = sm["driverMonitoringState"].faceDetected
-      dm_alive = sm.alive["driverMonitoringState"]
-      if face or not dm_alive:
-        start_time = time.monotonic()
+    time.sleep(DT_DMON)
 
-      can_parser.update_strings(messaging.drain_sock_raw(can_sock, wait_for_one=True))
-      door_open = any([can_parser.vl["BODY_CONTROL_STATE"]["DOOR_OPEN_FL"],
-                       can_parser.vl["BODY_CONTROL_STATE"]["DOOR_OPEN_FR"],
-                       can_parser.vl["BODY_CONTROL_STATE"]["DOOR_OPEN_RL"],
-                       can_parser.vl["BODY_CONTROL_STATE"]["DOOR_OPEN_RR"]])
-      if door_open:
-        start_time = time.monotonic()
-
-      # throttled trace so we can see *why* the countdown is (or isn't) progressing
-      now = time.monotonic()
-      if now - last_log >= 2.0:
-        cloudlog.warning(f"doorlockd: countdown remaining={time_threshold - (now - start_time):.1f}s "
-                         f"face={face} dm_alive={dm_alive} door_open={door_open}")
-        last_log = now
-
-      time.sleep(DT_DMON)
-  finally:
-    params.remove("IsDriverViewEnabled")
-
-  cloudlog.warning("doorlockd: phase 4 - countdown complete, cabin empty")
+  cloudlog.warning("doorlockd: phase 4 - countdown complete")
   return True
 
 
 def secure_vehicle(sm: messaging.SubMaster, params: Params, dbc: str) -> None:
-  """Lock the doors and optionally fold the mirrors / close the windows."""
-  can_parser = CANParser(dbc, [("DOOR_LOCKS", 3)], bus=0)
-  can_sock = messaging.sub_sock("can", timeout=100)
+  """STEP-BY-STEP: fold the mirrors only.
 
-  fold_mirrors = params.get_bool("FoldMirrors")
-  close_windows = params.get_bool("CloseWindows")
-  cloudlog.warning(f"doorlockd: securing (fold_mirrors={fold_mirrors} close_windows={close_windows})")
+  Door-lock and window-close are temporarily disabled so we can confirm the
+  trigger -> countdown -> panda-send path works against a single, visible
+  action (the mirrors folding). Re-enable the commented blocks below once that
+  is confirmed on the device.
+  """
+  if ignition_on(sm):
+    cloudlog.warning("doorlockd: ignition back on, skipping secure")
+    return
 
-  attempt = 0
-  while True:
-    sm.update()
-    if ignition_on(sm):
-      cloudlog.warning("doorlockd: ignition back on, stopping lock attempts")
-      break
+  cloudlog.warning("doorlockd: securing - MIRROR FOLD ONLY (door-lock + windows disabled)")
+  with Panda(disable_checks=True) as panda:
+    # # --- door lock (disabled) ---
+    # panda.set_safety_mode(SAFETY_TOYOTA)
+    # panda.can_send(TOYOTA_DIAG_ADDR, LOCK_CMD, 0)
+    # time.sleep(0.150)
+    # panda.send_heartbeat()
 
-    attempt += 1
-    cloudlog.warning(f"doorlockd: opening panda, sending LOCK_CMD (attempt {attempt})")
-    with Panda(disable_checks=True) as panda:
-      panda.set_safety_mode(SAFETY_TOYOTA)
-      panda.can_send(TOYOTA_DIAG_ADDR, LOCK_CMD, 0)
+    for command in (MIRR_FOLD_R, MIRR_FOLD_L):
+      panda.set_safety_mode(SAFETY_ALLOUTPUT)
+      panda.can_send(TOYOTA_DIAG_ADDR, command, 0)
       time.sleep(0.150)
       panda.send_heartbeat()
-      cloudlog.warning("doorlockd: LOCK_CMD sent")
 
-      if fold_mirrors:
-        for command in (MIRR_FOLD_R, MIRR_FOLD_L):
-          panda.set_safety_mode(SAFETY_ALLOUTPUT)
-          panda.can_send(TOYOTA_DIAG_ADDR, command, 0)
-          time.sleep(0.150)
-          panda.send_heartbeat()
+    # # --- close windows (disabled) ---
+    # for command in (WINDOW_CLOSE_RR, WINDOW_CLOSE_RL, WINDOW_CLOSE_FL, WINDOW_CLOSE_FR):
+    #   panda.set_safety_mode(SAFETY_ALLOUTPUT)
+    #   panda.can_send(TOYOTA_DIAG_ADDR, command, 0)
+    #   time.sleep(0.150)
+    #   panda.send_heartbeat()
 
-      if close_windows:
-        for command in (WINDOW_CLOSE_RR, WINDOW_CLOSE_RL, WINDOW_CLOSE_FL, WINDOW_CLOSE_FR):
-          panda.set_safety_mode(SAFETY_ALLOUTPUT)
-          panda.can_send(TOYOTA_DIAG_ADDR, command, 0)
-          time.sleep(0.150)
-          panda.send_heartbeat()
-
-    time.sleep(1)
-
-    can_parser.update_strings(messaging.drain_sock_raw(can_sock, wait_for_one=True))
-    lock_status = can_parser.vl["DOOR_LOCKS"]["LOCK_STATUS"]
-    cloudlog.warning(f"doorlockd: LOCK_STATUS={lock_status}")
-    if lock_status == 0:
-      cloudlog.warning("doorlockd: doors confirmed locked")
-      break
+  cloudlog.warning("doorlockd: mirror fold commands sent")
 
 
 def run_secure_sequence(sm: messaging.SubMaster, params: Params) -> None:
