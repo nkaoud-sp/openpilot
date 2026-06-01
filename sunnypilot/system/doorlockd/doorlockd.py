@@ -147,11 +147,11 @@ def secure_vehicle(sm: messaging.SubMaster, params: Params, dbc: str) -> None:
 
 
 def run_secure_sequence(sm: messaging.SubMaster, params: Params) -> None:
-  time_threshold = params.get_int("LockDoorsTimer")
+  time_threshold = params.get("LockDoorsTimer", return_default=True)
   if time_threshold <= 0:
     return
 
-  dbc = params.get("DoorLockDBC", encoding="utf-8") or DEFAULT_DBC
+  dbc = params.get("DoorLockDBC", return_default=True) or DEFAULT_DBC
 
   try:
     if wait_for_no_driver(sm, params, dbc, time_threshold):
