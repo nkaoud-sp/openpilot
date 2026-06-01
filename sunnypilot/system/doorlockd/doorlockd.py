@@ -10,7 +10,6 @@
 # sunnypilot tree. The raw Toyota diagnostic CAN commands originate from
 # AlexandreSato. Toyota/Lexus only.
 import time
-import traceback
 from typing import NoReturn
 
 import cereal.messaging as messaging
@@ -24,18 +23,23 @@ from openpilot.selfdrive.pandad import can_capnp_to_list
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
 from panda import Panda
 
-# On-screen diagnostics: every status() call updates this offroad alert, which
-# shows on the device home screen (tap the alert indicator). Lets us follow the
-# sequence without log/file/SSH access.
+# Phase breadcrumbs go to the cloud log via status(). The on-screen offroad
+# banner (show_alert) is reserved for the one case worth surfacing to the
+# driver: when the driver-view dmonitoringd can't be started, so the daemon
+# falls back to timer-only gating.
 DOORLOCK_ALERT = "Offroad_DoorlockStatus"
 
 
 def status(msg: str) -> None:
   cloudlog.warning(f"doorlockd: {msg}")
+
+
+def show_alert(msg: str | None) -> None:
+  """Show the on-screen offroad banner, or clear it when msg is None."""
   try:
-    set_offroad_alert(DOORLOCK_ALERT, True, extra_text=msg)
+    set_offroad_alert(DOORLOCK_ALERT, msg is not None, extra_text=msg or "")
   except Exception:
-    cloudlog.exception("doorlockd: failed to set offroad alert")
+    cloudlog.exception("doorlockd: failed to update offroad alert")
 
 SAFETY_TOYOTA = CarParams.SafetyModel.toyota
 SAFETY_ALLOUTPUT = CarParams.SafetyModel.allOutput
@@ -128,6 +132,7 @@ def wait_for_no_driver(sm: messaging.SubMaster, params: Params, dbc: str, time_t
         return False
       if time.monotonic() - t0 > DM_WAIT_TIMEOUT:
         status("timeout: dmonitoringd never came up; proceeding WITHOUT face gating")
+        show_alert("driver-view camera unavailable - securing on timer only")
         dm_available = False
         break
       time.sleep(DT_HW)
@@ -227,6 +232,7 @@ def secure_vehicle(sm: messaging.SubMaster, params: Params, dbc: str) -> None:
 
 
 def run_secure_sequence(sm: messaging.SubMaster, params: Params) -> None:
+  show_alert(None)  # clear any banner from a previous park
   try:
     time_threshold = params.get("LockDoorsTimer", return_default=True)
     status(f"run_secure_sequence, LockDoorsTimer={time_threshold!r}")
@@ -238,17 +244,8 @@ def run_secure_sequence(sm: messaging.SubMaster, params: Params) -> None:
 
     if wait_for_no_driver(sm, params, dbc, time_threshold):
       secure_vehicle(sm, params, dbc)
-  except Exception as e:
+  except Exception:
     cloudlog.exception("doorlockd: failed to secure vehicle")
-    # surface the actual exception on screen (last frame + type/message), since
-    # there's no log access on the device
-    tb = traceback.extract_tb(e.__traceback__)
-    where = f"{tb[-1].name}:{tb[-1].lineno}" if tb else "?"
-    detail = f"ERROR at {where}: {type(e).__name__}: {e}"
-    try:
-      set_offroad_alert(DOORLOCK_ALERT, True, extra_text=detail[:300])
-    except Exception:
-      cloudlog.exception("doorlockd: failed to set error offroad alert")
 
 
 def main() -> NoReturn:
