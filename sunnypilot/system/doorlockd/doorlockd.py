@@ -208,11 +208,17 @@ def secure_vehicle(sm: messaging.SubMaster, params: Params, dbc: str) -> None:
 
       attempt += 1
       status(f"sending lock (mirrors={fold_mirrors} windows={close_windows}) attempt {attempt}")
-      send_diag(panda, LOCK_CMD, MIRROR_GAP)
+      send_diag(panda, LOCK_CMD)
       if fold_mirrors:
         # extra (doubled) gap between right and left mirror fold
-        send_diag(panda, MIRR_FOLD_R, MIRROR_GAP)
-        send_diag(panda, MIRR_FOLD_L, MIRROR_GAP)
+        #send_diag(panda, MIRR_FOLD_R, MIRROR_GAP)
+        send_diag(panda, MIRR_FOLD_R)
+        #send_diag(panda, MIRR_FOLD_L)
+      if fold_mirrors:
+        # extra (doubled) gap between right and left mirror fold
+        #send_diag(panda, MIRR_FOLD_R, MIRROR_GAP)
+        #send_diag(panda, MIRR_FOLD_R)
+        send_diag(panda, MIRR_FOLD_L)
       if close_windows:
         for command in (WINDOW_CLOSE_RR, WINDOW_CLOSE_RL, WINDOW_CLOSE_FL, WINDOW_CLOSE_FR):
           send_diag(panda, command)
