@@ -65,30 +65,39 @@ def wait_for_no_driver(sm: messaging.SubMaster, params: Params, dbc: str, time_t
   can_sock = messaging.sub_sock("can", timeout=100)
 
   # wait for the onroad driver-monitoring stack to shut down
+  cloudlog.warning("doorlockd: phase 1 - waiting for onroad dmonitoringd to stop")
   while dmonitoringd_running(sm):
     sm.update()
     if ignition_on(sm):
+      cloudlog.warning("doorlockd: ignition back on while waiting for dmonitoringd to stop, aborting")
       return False
     time.sleep(DT_HW)
 
   # bring the driver-view camera back up so we can watch the cabin while offroad
+  cloudlog.warning("doorlockd: phase 2 - set IsDriverViewEnabled, waiting for dmonitoringd to come up")
   params.put_bool("IsDriverViewEnabled", True)
   try:
     while not dmonitoringd_running(sm):
       sm.update()
       if ignition_on(sm):
+        cloudlog.warning("doorlockd: ignition back on while waiting for dmonitoringd to start, aborting")
         return False
       time.sleep(DT_HW)
 
+    cloudlog.warning(f"doorlockd: phase 3 - dmonitoringd up, starting {time_threshold}s countdown")
     start_time = time.monotonic()
+    last_log = 0.0
     while time.monotonic() - start_time < time_threshold:
       sm.update()
 
       if ignition_on(sm):
+        cloudlog.warning("doorlockd: ignition back on during countdown, aborting")
         return False
 
       # reset the timer while a face is still detected (someone is in the car)
-      if sm["driverMonitoringState"].faceDetected or not sm.alive["driverMonitoringState"]:
+      face = sm["driverMonitoringState"].faceDetected
+      dm_alive = sm.alive["driverMonitoringState"]
+      if face or not dm_alive:
         start_time = time.monotonic()
 
       can_parser.update_strings(messaging.drain_sock_raw(can_sock, wait_for_one=True))
@@ -99,10 +108,18 @@ def wait_for_no_driver(sm: messaging.SubMaster, params: Params, dbc: str, time_t
       if door_open:
         start_time = time.monotonic()
 
+      # throttled trace so we can see *why* the countdown is (or isn't) progressing
+      now = time.monotonic()
+      if now - last_log >= 2.0:
+        cloudlog.warning(f"doorlockd: countdown remaining={time_threshold - (now - start_time):.1f}s "
+                         f"face={face} dm_alive={dm_alive} door_open={door_open}")
+        last_log = now
+
       time.sleep(DT_DMON)
   finally:
     params.remove("IsDriverViewEnabled")
 
+  cloudlog.warning("doorlockd: phase 4 - countdown complete, cabin empty")
   return True
 
 
@@ -113,17 +130,23 @@ def secure_vehicle(sm: messaging.SubMaster, params: Params, dbc: str) -> None:
 
   fold_mirrors = params.get_bool("FoldMirrors")
   close_windows = params.get_bool("CloseWindows")
+  cloudlog.warning(f"doorlockd: securing (fold_mirrors={fold_mirrors} close_windows={close_windows})")
 
+  attempt = 0
   while True:
     sm.update()
     if ignition_on(sm):
+      cloudlog.warning("doorlockd: ignition back on, stopping lock attempts")
       break
 
+    attempt += 1
+    cloudlog.warning(f"doorlockd: opening panda, sending LOCK_CMD (attempt {attempt})")
     with Panda(disable_checks=True) as panda:
       panda.set_safety_mode(SAFETY_TOYOTA)
       panda.can_send(TOYOTA_DIAG_ADDR, LOCK_CMD, 0)
       time.sleep(0.150)
       panda.send_heartbeat()
+      cloudlog.warning("doorlockd: LOCK_CMD sent")
 
       if fold_mirrors:
         for command in (MIRR_FOLD_R, MIRR_FOLD_L):
@@ -142,18 +165,23 @@ def secure_vehicle(sm: messaging.SubMaster, params: Params, dbc: str) -> None:
     time.sleep(1)
 
     can_parser.update_strings(messaging.drain_sock_raw(can_sock, wait_for_one=True))
-    if can_parser.vl["DOOR_LOCKS"]["LOCK_STATUS"] == 0:
+    lock_status = can_parser.vl["DOOR_LOCKS"]["LOCK_STATUS"]
+    cloudlog.warning(f"doorlockd: LOCK_STATUS={lock_status}")
+    if lock_status == 0:
+      cloudlog.warning("doorlockd: doors confirmed locked")
       break
 
 
 def run_secure_sequence(sm: messaging.SubMaster, params: Params) -> None:
-  time_threshold = params.get("LockDoorsTimer", return_default=True)
-  if time_threshold <= 0:
-    return
-
-  dbc = params.get("DoorLockDBC", return_default=True) or DEFAULT_DBC
-
   try:
+    time_threshold = params.get("LockDoorsTimer", return_default=True)
+    cloudlog.warning(f"doorlockd: run_secure_sequence, LockDoorsTimer={time_threshold!r}")
+    if time_threshold <= 0:
+      cloudlog.warning("doorlockd: timer disabled (<=0), nothing to do")
+      return
+
+    dbc = params.get("DoorLockDBC", return_default=True) or DEFAULT_DBC
+
     if wait_for_no_driver(sm, params, dbc, time_threshold):
       cloudlog.warning("doorlockd: driver gone, securing vehicle")
       secure_vehicle(sm, params, dbc)
@@ -166,12 +194,14 @@ def main() -> NoReturn:
   sm = messaging.SubMaster(["deviceState", "pandaStates", "driverMonitoringState", "managerState"])
 
   was_onroad = params.get_bool("IsOnroad")
+  cloudlog.warning(f"doorlockd: started, was_onroad={was_onroad}")
   while True:
     sm.update(0)
     onroad = params.get_bool("IsOnroad")
 
     # trigger on the onroad -> offroad transition (the driver just parked)
     if was_onroad and not onroad:
+      cloudlog.warning("doorlockd: onroad->offroad transition detected")
       run_secure_sequence(sm, params)
 
     was_onroad = onroad
