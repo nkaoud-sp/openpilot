@@ -57,6 +57,9 @@ WINDOW_CLOSE_RL = b"\x93\x04\x30\x01\x05\x20\x00\x00"
 # Toyota UDS diagnostic request address all of the commands above are sent to.
 TOYOTA_DIAG_ADDR = 0x750
 
+# Cap lock retries so a mis-parsed LOCK_STATUS feedback can't loop forever.
+MAX_LOCK_ATTEMPTS = 10
+
 # DBC used to read door-open and lock-status feedback. Overridable via the
 # "DoorLockDBC" param for platforms that use a different generated DBC.
 DEFAULT_DBC = "toyota_nodsu_pt_generated"
@@ -141,39 +144,57 @@ def wait_for_no_driver(sm: messaging.SubMaster, params: Params, dbc: str, time_t
 
 
 def secure_vehicle(sm: messaging.SubMaster, params: Params, dbc: str) -> None:
-  """STEP-BY-STEP: fold the mirrors only.
+  """STEP-BY-STEP: lock the doors + fold the mirrors.
 
-  Door-lock and window-close are temporarily disabled so we can confirm the
-  trigger -> countdown -> panda-send path works against a single, visible
-  action (the mirrors folding). Re-enable the commented blocks below once that
-  is confirmed on the device.
+  Window-close and the driver-monitoring gate are still disabled. We confirmed
+  mirror-fold works end to end; this re-enables the door lock (LOCK_CMD under
+  toyota safety) and verifies it via the DOOR_LOCKS feedback, retrying up to
+  MAX_LOCK_ATTEMPTS so a mis-parsed LOCK_STATUS can't loop forever.
   """
-  if ignition_on(sm):
-    status("ignition back on, skipping secure")
-    return
+  can_parser = CANParser(dbc, [("DOOR_LOCKS", 3)], bus=0)
+  can_sock = messaging.sub_sock("can", timeout=100)
 
-  status("securing - MIRROR FOLD ONLY (door-lock + windows disabled)")
-  with Panda(disable_checks=True) as panda:
-    # # --- door lock (disabled) ---
-    # panda.set_safety_mode(SAFETY_TOYOTA)
-    # panda.can_send(TOYOTA_DIAG_ADDR, LOCK_CMD, 0)
-    # time.sleep(0.150)
-    # panda.send_heartbeat()
+  status("securing - LOCK + MIRROR FOLD (windows + driver-monitoring disabled)")
+  attempt = 0
+  while True:
+    sm.update()
+    if ignition_on(sm):
+      status("ignition back on, stopping lock attempts")
+      break
 
-    for command in (MIRR_FOLD_R, MIRR_FOLD_L):
-      panda.set_safety_mode(SAFETY_ALLOUTPUT)
-      panda.can_send(TOYOTA_DIAG_ADDR, command, 0)
+    attempt += 1
+    status(f"opening panda, sending LOCK_CMD + mirror fold (attempt {attempt})")
+    with Panda(disable_checks=True) as panda:
+      panda.set_safety_mode(SAFETY_TOYOTA)
+      panda.can_send(TOYOTA_DIAG_ADDR, LOCK_CMD, 0)
       time.sleep(0.150)
       panda.send_heartbeat()
 
-    # # --- close windows (disabled) ---
-    # for command in (WINDOW_CLOSE_RR, WINDOW_CLOSE_RL, WINDOW_CLOSE_FL, WINDOW_CLOSE_FR):
-    #   panda.set_safety_mode(SAFETY_ALLOUTPUT)
-    #   panda.can_send(TOYOTA_DIAG_ADDR, command, 0)
-    #   time.sleep(0.150)
-    #   panda.send_heartbeat()
+      for command in (MIRR_FOLD_R, MIRR_FOLD_L):
+        panda.set_safety_mode(SAFETY_ALLOUTPUT)
+        panda.can_send(TOYOTA_DIAG_ADDR, command, 0)
+        time.sleep(0.150)
+        panda.send_heartbeat()
 
-  status("mirror fold commands sent")
+      # # --- close windows (disabled) ---
+      # for command in (WINDOW_CLOSE_RR, WINDOW_CLOSE_RL, WINDOW_CLOSE_FL, WINDOW_CLOSE_FR):
+      #   panda.set_safety_mode(SAFETY_ALLOUTPUT)
+      #   panda.can_send(TOYOTA_DIAG_ADDR, command, 0)
+      #   time.sleep(0.150)
+      #   panda.send_heartbeat()
+
+    time.sleep(1)
+
+    can_parser.update(can_capnp_to_list(messaging.drain_sock_raw(can_sock, wait_for_one=True)))
+    lock_status = can_parser.vl["DOOR_LOCKS"]["LOCK_STATUS"]
+    status(f"LOCK_STATUS={lock_status} (attempt {attempt})")
+    if lock_status == 0:
+      status("doors confirmed locked")
+      break
+
+    if attempt >= MAX_LOCK_ATTEMPTS:
+      status(f"gave up after {attempt} attempts, last LOCK_STATUS={lock_status}")
+      break
 
 
 def run_secure_sequence(sm: messaging.SubMaster, params: Params) -> None:
