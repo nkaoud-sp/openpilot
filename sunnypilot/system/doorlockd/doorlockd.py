@@ -15,10 +15,14 @@ from typing import NoReturn
 import cereal.messaging as messaging
 from cereal import log
 from opendbc.can.parser import CANParser
+from opendbc.car.structs import CarParams
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_DMON, DT_HW
 from openpilot.common.swaglog import cloudlog
 from panda import Panda
+
+SAFETY_TOYOTA = CarParams.SafetyModel.toyota
+SAFETY_ALLOUTPUT = CarParams.SafetyModel.allOutput
 
 # Lock / unlock door commands - Credit goes to AlexandreSato!
 LOCK_CMD = b"\x40\x05\x30\x11\x00\x80\x00\x00"
@@ -116,21 +120,21 @@ def secure_vehicle(sm: messaging.SubMaster, params: Params, dbc: str) -> None:
       break
 
     with Panda(disable_checks=True) as panda:
-      panda.set_safety_mode(panda.SAFETY_TOYOTA)
+      panda.set_safety_mode(SAFETY_TOYOTA)
       panda.can_send(TOYOTA_DIAG_ADDR, LOCK_CMD, 0)
       time.sleep(0.150)
       panda.send_heartbeat()
 
       if fold_mirrors:
         for command in (MIRR_FOLD_R, MIRR_FOLD_L):
-          panda.set_safety_mode(panda.SAFETY_ALLOUTPUT)
+          panda.set_safety_mode(SAFETY_ALLOUTPUT)
           panda.can_send(TOYOTA_DIAG_ADDR, command, 0)
           time.sleep(0.150)
           panda.send_heartbeat()
 
       if close_windows:
         for command in (WINDOW_CLOSE_RR, WINDOW_CLOSE_RL, WINDOW_CLOSE_FL, WINDOW_CLOSE_FR):
-          panda.set_safety_mode(panda.SAFETY_ALLOUTPUT)
+          panda.set_safety_mode(SAFETY_ALLOUTPUT)
           panda.can_send(TOYOTA_DIAG_ADDR, command, 0)
           time.sleep(0.150)
           panda.send_heartbeat()
