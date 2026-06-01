@@ -10,6 +10,7 @@
 # sunnypilot tree. The raw Toyota diagnostic CAN commands originate from
 # AlexandreSato. Toyota/Lexus only.
 import time
+import traceback
 from typing import NoReturn
 
 import cereal.messaging as messaging
@@ -186,10 +187,15 @@ def run_secure_sequence(sm: messaging.SubMaster, params: Params) -> None:
 
     if wait_for_no_driver(sm, params, dbc, time_threshold):
       secure_vehicle(sm, params, dbc)
-  except Exception:
+  except Exception as e:
     cloudlog.exception("doorlockd: failed to secure vehicle")
+    # surface the actual exception on screen (last frame + type/message), since
+    # there's no log access on the device
+    tb = traceback.extract_tb(e.__traceback__)
+    where = f"{tb[-1].name}:{tb[-1].lineno}" if tb else "?"
+    detail = f"ERROR at {where}: {type(e).__name__}: {e}"
     try:
-      set_offroad_alert(DOORLOCK_ALERT, True, extra_text="ERROR (see logs) - sequence raised an exception")
+      set_offroad_alert(DOORLOCK_ALERT, True, extra_text=detail[:300])
     except Exception:
       cloudlog.exception("doorlockd: failed to set error offroad alert")
 
