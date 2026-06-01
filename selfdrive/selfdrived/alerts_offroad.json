@@ -1,4 +1,9 @@
 {
+  "Offroad_DoorlockStatus": {
+    "text": "doorlockd: %1",
+    "severity": 0,
+    "_comment": "Diagnostic status from the secure-on-exit daemon. Set extra field to the current phase/message."
+  },
   "Offroad_TemperatureTooHigh": {
     "text": "Device temperature too high. System cooling down before starting. Current internal component temperature: %1",
     "severity": 0

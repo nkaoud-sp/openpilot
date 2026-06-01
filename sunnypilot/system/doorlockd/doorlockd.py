@@ -19,7 +19,21 @@ from opendbc.car.structs import CarParams
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_DMON, DT_HW
 from openpilot.common.swaglog import cloudlog
+from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
 from panda import Panda
+
+# On-screen diagnostics: every status() call updates this offroad alert, which
+# shows on the device home screen (tap the alert indicator). Lets us follow the
+# sequence without log/file/SSH access.
+DOORLOCK_ALERT = "Offroad_DoorlockStatus"
+
+
+def status(msg: str) -> None:
+  cloudlog.warning(f"doorlockd: {msg}")
+  try:
+    set_offroad_alert(DOORLOCK_ALERT, True, extra_text=msg)
+  except Exception:
+    cloudlog.exception("doorlockd: failed to set offroad alert")
 
 SAFETY_TOYOTA = CarParams.SafetyModel.toyota
 SAFETY_ALLOUTPUT = CarParams.SafetyModel.allOutput
@@ -88,14 +102,14 @@ def wait_for_no_driver(sm: messaging.SubMaster, params: Params, dbc: str, time_t
   #   time.sleep(DT_HW)
   # -------------------------------------------------------------------------
 
-  cloudlog.warning(f"doorlockd: phase 3 - starting {time_threshold}s countdown (driver-monitoring DISABLED)")
+  status(f"phase 3 - starting {time_threshold}s countdown (driver-monitoring DISABLED)")
   start_time = time.monotonic()
   last_log = 0.0
   while time.monotonic() - start_time < time_threshold:
     sm.update()
 
     if ignition_on(sm):
-      cloudlog.warning("doorlockd: ignition back on during countdown, aborting")
+      status("ignition back on during countdown, aborting")
       return False
 
     # # reset the timer while a face is still detected (someone is in the car)
@@ -115,13 +129,12 @@ def wait_for_no_driver(sm: messaging.SubMaster, params: Params, dbc: str, time_t
     # throttled trace so we can see *why* the countdown is (or isn't) progressing
     now = time.monotonic()
     if now - last_log >= 2.0:
-      cloudlog.warning(f"doorlockd: countdown remaining={time_threshold - (now - start_time):.1f}s "
-                       f"door_open={door_open}")
+      status(f"countdown remaining={time_threshold - (now - start_time):.1f}s door_open={door_open}")
       last_log = now
 
     time.sleep(DT_DMON)
 
-  cloudlog.warning("doorlockd: phase 4 - countdown complete")
+  status("phase 4 - countdown complete")
   return True
 
 
@@ -134,10 +147,10 @@ def secure_vehicle(sm: messaging.SubMaster, params: Params, dbc: str) -> None:
   is confirmed on the device.
   """
   if ignition_on(sm):
-    cloudlog.warning("doorlockd: ignition back on, skipping secure")
+    status("ignition back on, skipping secure")
     return
 
-  cloudlog.warning("doorlockd: securing - MIRROR FOLD ONLY (door-lock + windows disabled)")
+  status("securing - MIRROR FOLD ONLY (door-lock + windows disabled)")
   with Panda(disable_checks=True) as panda:
     # # --- door lock (disabled) ---
     # panda.set_safety_mode(SAFETY_TOYOTA)
@@ -158,24 +171,27 @@ def secure_vehicle(sm: messaging.SubMaster, params: Params, dbc: str) -> None:
     #   time.sleep(0.150)
     #   panda.send_heartbeat()
 
-  cloudlog.warning("doorlockd: mirror fold commands sent")
+  status("mirror fold commands sent")
 
 
 def run_secure_sequence(sm: messaging.SubMaster, params: Params) -> None:
   try:
     time_threshold = params.get("LockDoorsTimer", return_default=True)
-    cloudlog.warning(f"doorlockd: run_secure_sequence, LockDoorsTimer={time_threshold!r}")
+    status(f"run_secure_sequence, LockDoorsTimer={time_threshold!r}")
     if time_threshold <= 0:
-      cloudlog.warning("doorlockd: timer disabled (<=0), nothing to do")
+      status("timer disabled (<=0), nothing to do")
       return
 
     dbc = params.get("DoorLockDBC", return_default=True) or DEFAULT_DBC
 
     if wait_for_no_driver(sm, params, dbc, time_threshold):
-      cloudlog.warning("doorlockd: driver gone, securing vehicle")
       secure_vehicle(sm, params, dbc)
   except Exception:
     cloudlog.exception("doorlockd: failed to secure vehicle")
+    try:
+      set_offroad_alert(DOORLOCK_ALERT, True, extra_text="ERROR (see logs) - sequence raised an exception")
+    except Exception:
+      cloudlog.exception("doorlockd: failed to set error offroad alert")
 
 
 def main() -> NoReturn:
@@ -190,7 +206,7 @@ def main() -> NoReturn:
 
     # trigger on the onroad -> offroad transition (the driver just parked)
     if was_onroad and not onroad:
-      cloudlog.warning("doorlockd: onroad->offroad transition detected")
+      status("onroad->offroad transition detected")
       run_secure_sequence(sm, params)
 
     was_onroad = onroad
