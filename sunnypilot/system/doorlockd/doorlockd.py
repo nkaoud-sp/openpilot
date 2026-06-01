@@ -189,7 +189,10 @@ def secure_vehicle(sm: messaging.SubMaster, params: Params, dbc: str) -> None:
   can_parser = CANParser(dbc, [("DOOR_LOCKS", 3)], bus=0)
   can_sock = messaging.sub_sock("can", timeout=100)
 
-  status("securing - LOCK + MIRROR FOLD + WINDOW CLOSE under allOutput (DM gated)")
+  # optional extras, gated by their params (the door lock itself always runs)
+  fold_mirrors = params.get_bool("FoldMirrors")
+  close_windows = params.get_bool("CloseWindows")
+  status(f"securing - lock + mirrors={fold_mirrors} + windows={close_windows} (allOutput, DM gated)")
   with Panda(disable_checks=True) as panda:
     attempt = 0
     while True:
@@ -199,13 +202,15 @@ def secure_vehicle(sm: messaging.SubMaster, params: Params, dbc: str) -> None:
         break
 
       attempt += 1
-      status(f"sending lock + mirror fold + window close (attempt {attempt})")
+      status(f"sending lock (mirrors={fold_mirrors} windows={close_windows}) attempt {attempt}")
       send_diag(panda, LOCK_CMD)
-      # extra (doubled) gap between right and left mirror fold
-      send_diag(panda, MIRR_FOLD_R, MIRROR_GAP)
-      send_diag(panda, MIRR_FOLD_L)
-      for command in (WINDOW_CLOSE_RR, WINDOW_CLOSE_RL, WINDOW_CLOSE_FL, WINDOW_CLOSE_FR):
-        send_diag(panda, command)
+      if fold_mirrors:
+        # extra (doubled) gap between right and left mirror fold
+        send_diag(panda, MIRR_FOLD_R, MIRROR_GAP)
+        send_diag(panda, MIRR_FOLD_L)
+      if close_windows:
+        for command in (WINDOW_CLOSE_RR, WINDOW_CLOSE_RL, WINDOW_CLOSE_FL, WINDOW_CLOSE_FR):
+          send_diag(panda, command)
 
       time.sleep(1)
 
