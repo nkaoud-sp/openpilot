@@ -60,12 +60,13 @@ CRUISE_MIN_ACCEL = -1.2
 CRUISE_MAX_ACCEL = 1.6
 MIN_X_LEAD_FACTOR = 0.5
 
-# Dynamic follow: scale the follow time linearly with ego speed, overriding the
-# fixed personality-based gap. The speed range is fixed (0 km/h .. 130 km/h);
-# the follow-time endpoints are user-configurable (see Tweaks menu).
+# Dynamic follow: scale the follow time with ego speed, overriding the fixed
+# personality-based gap. The speed range is fixed (0 km/h .. 130 km/h); the
+# follow-time endpoints and the curve shape are user-configurable (Tweaks menu).
 DYNAMIC_T_FOLLOW_SPEED_BP = [0.0, 130.0 * CV.KPH_TO_MS]
-DYNAMIC_T_FOLLOW_MIN = 0.4   # default follow time (s) at 0 km/h
-DYNAMIC_T_FOLLOW_MAX = 1.2   # default follow time (s) at 130 km/h
+DYNAMIC_T_FOLLOW_MIN = 0.4    # default follow time (s) at 0 km/h
+DYNAMIC_T_FOLLOW_MAX = 1.2    # default follow time (s) at 130 km/h
+DYNAMIC_T_FOLLOW_CURVE = 1.0  # shape exponent: 1.0 = linear, <1 opens up early, >1 stays tight longer
 
 def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
   if personality==log.LongitudinalPersonality.relaxed:
@@ -89,10 +90,13 @@ def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard):
     raise NotImplementedError("Longitudinal personality not supported")
 
 
-def get_dynamic_T_FOLLOW(v_ego, t_follow_min=DYNAMIC_T_FOLLOW_MIN, t_follow_max=DYNAMIC_T_FOLLOW_MAX):
-  # Linearly interpolate the follow time between the configured endpoints across
-  # the 0..130 km/h speed range. np.interp clamps outside the breakpoints.
-  return float(np.interp(v_ego, DYNAMIC_T_FOLLOW_SPEED_BP, [t_follow_min, t_follow_max]))
+def get_dynamic_T_FOLLOW(v_ego, t_follow_min=DYNAMIC_T_FOLLOW_MIN, t_follow_max=DYNAMIC_T_FOLLOW_MAX,
+                         curve=DYNAMIC_T_FOLLOW_CURVE):
+  # Map ego speed (clamped to the 0..130 km/h range) onto the follow-time
+  # endpoints using a power curve. curve == 1.0 reproduces a straight line;
+  # curve < 1 opens the gap up earlier, curve > 1 stays tighter until highway speed.
+  v_norm = np.clip(v_ego / DYNAMIC_T_FOLLOW_SPEED_BP[1], 0.0, 1.0)
+  return float(t_follow_min + (t_follow_max - t_follow_min) * (v_norm ** curve))
 
 def get_stopped_equivalence_factor(v_lead):
   return (v_lead**2) / (2 * COMFORT_BRAKE)
@@ -329,11 +333,12 @@ class LongitudinalMpc:
     return lead_xv
 
   def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard,
-             dynamic_follow=False, t_follow_min=DYNAMIC_T_FOLLOW_MIN, t_follow_max=DYNAMIC_T_FOLLOW_MAX):
+             dynamic_follow=False, t_follow_min=DYNAMIC_T_FOLLOW_MIN, t_follow_max=DYNAMIC_T_FOLLOW_MAX,
+             t_follow_curve=DYNAMIC_T_FOLLOW_CURVE):
     v_ego = self.x0[1]
     if dynamic_follow:
       # Speed-based follow time, overrides the personality gap
-      t_follow = get_dynamic_T_FOLLOW(v_ego, t_follow_min, t_follow_max)
+      t_follow = get_dynamic_T_FOLLOW(v_ego, t_follow_min, t_follow_max, t_follow_curve)
     else:
       t_follow = get_T_FOLLOW(personality)
     self.t_follow = t_follow

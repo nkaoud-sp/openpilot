@@ -11,7 +11,7 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import DYNAMIC_T_FOLLOW_MIN, DYNAMIC_T_FOLLOW_MAX
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import DYNAMIC_T_FOLLOW_MIN, DYNAMIC_T_FOLLOW_MAX, DYNAMIC_T_FOLLOW_CURVE
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
@@ -74,6 +74,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.dynamic_follow = False
     self.dynamic_follow_min = DYNAMIC_T_FOLLOW_MIN
     self.dynamic_follow_max = DYNAMIC_T_FOLLOW_MAX
+    self.dynamic_follow_curve = DYNAMIC_T_FOLLOW_CURVE
     self.read_dynamic_follow_params()
 
   def read_dynamic_follow_params(self):
@@ -82,6 +83,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       self.dynamic_follow = self.params.get_bool("DynamicFollow")
       self.dynamic_follow_min = self.params.get("DynamicFollowMinTime", return_default=True) / 100.0
       self.dynamic_follow_max = self.params.get("DynamicFollowMaxTime", return_default=True) / 100.0
+      self.dynamic_follow_curve = self.params.get("DynamicFollowCurve", return_default=True) / 100.0
     self.param_read_frame += 1
 
   @staticmethod
@@ -159,7 +161,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
     self.mpc.update(sm['radarState'], v_cruise, personality=sm['selfdriveState'].personality,
                     dynamic_follow=self.dynamic_follow,
-                    t_follow_min=self.dynamic_follow_min, t_follow_max=self.dynamic_follow_max)
+                    t_follow_min=self.dynamic_follow_min, t_follow_max=self.dynamic_follow_max,
+                    t_follow_curve=self.dynamic_follow_curve)
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
     self.a_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.a_solution)

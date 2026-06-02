@@ -45,6 +45,18 @@ class DynamicFollowSettingsLayout(Widget):
       label_callback=lambda value: f"{value / 100:.2f} s",
       inline=True,
     )
+    self._dynamic_follow_curve = option_item_sp(
+      title=lambda: tr("Curve Shape"),
+      param="DynamicFollowCurve",
+      description=lambda: tr("Bend the follow-time curve between the two endpoints. 1.00 is a straight line. " +
+                            "Below 1.00 opens the gap up earlier (more cushion at low/mid speed); " +
+                            "above 1.00 stays tighter until highway speed."),
+      min_value=50,
+      max_value=200,
+      value_change_step=5,
+      label_callback=lambda value: f"{value / 100:.2f}",
+      inline=True,
+    )
     self._follow_readout = toggle_item_sp(
       title=lambda: tr("Follow Distance Readout"),
       description=lambda: tr("Display the desired follow time (what the planner is targeting) next to the actual " +
@@ -56,6 +68,7 @@ class DynamicFollowSettingsLayout(Widget):
     items = [
       self._dynamic_follow_min,
       self._dynamic_follow_max,
+      self._dynamic_follow_curve,
       self._follow_readout,
     ]
     return items
