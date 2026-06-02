@@ -88,6 +88,7 @@ class LongitudinalPlannerSP:
     longitudinalPlanSP.vTarget = float(self.output_v_target)
     longitudinalPlanSP.aTarget = float(self.output_a_target)
     longitudinalPlanSP.tFollow = float(self.mpc.t_follow)
+    longitudinalPlanSP.stopDistance = float(getattr(self.mpc, "stop_distance", 6.0))
     longitudinalPlanSP.launchAssistActive = bool(getattr(self, "launch_assist_active", False))
     longitudinalPlanSP.launchAssistLatched = bool(getattr(self, "launch_assist_latched", False))
     longitudinalPlanSP.events = self.events_sp.to_msg()

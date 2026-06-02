@@ -255,6 +255,7 @@ class LongitudinalMpc:
     self.a_prev = np.array(self.a_solution)
     self.t_follow = get_T_FOLLOW()
     self.park_assist_active = False
+    self.stop_distance = STOP_DISTANCE
     self.yref = np.zeros((N+1, COST_DIM))
 
     for i in range(N):
@@ -372,14 +373,17 @@ class LongitudinalMpc:
     # standstill behind a stopped lead; fades out as the lead/ego start moving,
     # restoring the full gap. FCW/crash checks use the real lead position, below.
     self.park_assist_active = False
+    park_off0 = 0.0
     if park_assist and park_distance < STOP_DISTANCE:
       reduce = STOP_DISTANCE - park_distance
       ego_scale = float(np.interp(v_ego, PARK_VEGO_FADE, [1.0, 0.0]))
-      off0 = reduce * ego_scale * float(np.interp(radarstate.leadOne.vLead, PARK_VLEAD_FADE, [1.0, 0.0])) if radarstate.leadOne.status else 0.0
+      park_off0 = reduce * ego_scale * float(np.interp(radarstate.leadOne.vLead, PARK_VLEAD_FADE, [1.0, 0.0])) if radarstate.leadOne.status else 0.0
       off1 = reduce * ego_scale * float(np.interp(radarstate.leadTwo.vLead, PARK_VLEAD_FADE, [1.0, 0.0])) if radarstate.leadTwo.status else 0.0
-      lead_0_obstacle = lead_0_obstacle + off0
+      lead_0_obstacle = lead_0_obstacle + park_off0
       lead_1_obstacle = lead_1_obstacle + off1
-      self.park_assist_active = off0 > 0.05 or off1 > 0.05
+      self.park_assist_active = park_off0 > 0.05 or off1 > 0.05
+    # Effective standstill buffer to the primary lead (what the follow readout shows)
+    self.stop_distance = STOP_DISTANCE - park_off0
 
     # Fake an obstacle for cruise, this ensures smooth acceleration to set speed
     # when the leads are no factor.

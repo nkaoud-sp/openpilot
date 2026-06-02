@@ -9,11 +9,9 @@ from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 
-# Fixed standstill buffer baked into the planner's safe-distance equation
-# (selfdrive/controls/lib/longitudinal_mpc_lib/long_mpc.py:STOP_DISTANCE). The
-# follow-time param does not include it, so the true target gap is
-# tFollow + STOP_DISTANCE / v_ego. Kept as a local constant to avoid importing
-# the (acados-heavy) long_mpc module into the UI process.
+# Fallback standstill buffer if the planner hasn't published stopDistance yet.
+# The planner publishes the live effective buffer (which park assist reduces),
+# so the readout's target reflects the real gap the car is holding.
 STOP_DISTANCE = 6.0
 M_TO_FT = 3.28084
 
@@ -64,17 +62,21 @@ class FollowReadout:
       return
 
     v_ego = sm['carState'].vEgo
-    t_follow = float(sm['longitudinalPlanSP'].tFollow)
+    lp_sp = sm['longitudinalPlanSP']
+    t_follow = float(lp_sp.tFollow)
+    stop_dist = float(lp_sp.stopDistance)
+    if stop_dist <= 0.0:
+      stop_dist = STOP_DISTANCE  # fallback if the planner hasn't published yet
     d_rel = lead.dRel
     has_speed = v_ego > _MIN_SPEED
 
-    # Time (s): raw param, true target (incl. stop buffer), and actual gap
+    # Time (s): raw param, true target (incl. live stop buffer), and actual gap
     set_t = t_follow
-    target_t = t_follow + STOP_DISTANCE / v_ego if has_speed else 0.0
+    target_t = t_follow + stop_dist / v_ego if has_speed else 0.0
     now_t = d_rel / v_ego if has_speed else 0.0
 
     # Distance: true target gap vs actual measured gap
-    set_d = t_follow * v_ego + STOP_DISTANCE
+    set_d = t_follow * v_ego + stop_dist
     now_d = d_rel
 
     color = self._actual_color(now_t, target_t) if has_speed else _DIM
