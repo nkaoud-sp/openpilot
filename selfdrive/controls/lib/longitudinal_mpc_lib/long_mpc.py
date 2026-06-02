@@ -243,6 +243,7 @@ class LongitudinalMpc:
     self.a_solution = np.zeros(N+1)
     self.j_solution = np.zeros(N)
     self.a_prev = np.array(self.a_solution)
+    self.t_follow = get_T_FOLLOW()
     self.yref = np.zeros((N+1, COST_DIM))
 
     for i in range(N):
@@ -335,6 +336,7 @@ class LongitudinalMpc:
       t_follow = get_dynamic_T_FOLLOW(v_ego, t_follow_min, t_follow_max)
     else:
       t_follow = get_T_FOLLOW(personality)
+    self.t_follow = t_follow
     self.status = radarstate.leadOne.status or radarstate.leadTwo.status
 
     lead_xv_0 = self.process_lead(radarstate.leadOne)

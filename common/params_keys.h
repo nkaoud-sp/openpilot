@@ -162,6 +162,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"DynamicFollow", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"DynamicFollowMinTime", {PERSISTENT | BACKUP, INT, "40"}},   // follow time at 0 km/h (0.40 s)
     {"DynamicFollowMaxTime", {PERSISTENT | BACKUP, INT, "120"}},  // follow time at 130 km/h (1.20 s)
+    {"FollowReadout", {PERSISTENT | BACKUP, BOOL, "0"}},          // on-screen desired-vs-actual follow readout
     {"CustomAccLongPressIncrement", {PERSISTENT | BACKUP, INT, "5"}},
     {"CustomAccShortPressIncrement", {PERSISTENT | BACKUP, INT, "1"}},
     {"DeviceBootMode", {PERSISTENT | BACKUP, INT, "0"}},

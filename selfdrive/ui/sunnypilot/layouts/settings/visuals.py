@@ -93,6 +93,12 @@ class VisualsLayout(Widget):
            "This displays what the car is currently doing, not what the planner is requesting."),
         None,
       ),
+      "FollowReadout": (
+        lambda: tr("Follow Distance Readout"),
+        tr("Display the desired follow time (what the planner is targeting) next to the actual follow time " +
+           "(your current gap to the lead) on the driving screen. Useful for tuning the follow distance."),
+        None,
+      ),
     }
     self._toggles = {}
     for param, (title, desc, callback) in self._toggle_defs.items():

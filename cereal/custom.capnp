@@ -194,6 +194,7 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
   aTarget @5 :Float32;
   events @6 :List(OnroadEventSP.Event);
   e2eAlerts @7 :E2eAlerts;
+  tFollow @8 :Float32;  # live follow time (s) used by the planner (personality or dynamic-follow)
 
   struct DynamicExperimentalControl {
     state @0 :DynamicExperimentalControlState;
