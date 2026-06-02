@@ -25,6 +25,14 @@ CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 ALLOW_THROTTLE_THRESHOLD = 0.4
 MIN_ALLOW_THROTTLE_SPEED = 2.5
 
+# Lead-departure launch assist: when stopped behind a lead that pulls away,
+# defer to the radar-based MPC (drop the model's conservative shouldStop hold)
+# so the car launches sooner. Heavily gated for safety.
+LAUNCH_MAX_EGO_SPEED = 0.5    # m/s; only assist from a near-standstill
+LAUNCH_MIN_DREL = 2.0         # m; lead must be at least this far ahead
+LAUNCH_VLEAD_BP = [1, 10]     # eagerness 1..10
+LAUNCH_VLEAD_V = [1.5, 0.2]   # required lead speed (m/s): less eager .. more eager
+
 # Lookup table for turns
 _A_TOTAL_MAX_V = [1.7, 3.2]
 _A_TOTAL_MAX_BP = [20., 40.]
@@ -78,6 +86,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     # Asymmetric jerk (separate accel / decel ramp smoothness)
     self.jerk_accel_factor = 1.0
     self.jerk_decel_factor = 1.0
+    # Lead-departure launch assist
+    self.launch_assist = False
+    self.launch_eagerness = 5
+    self.launch_assist_active = False
     self.read_dynamic_follow_params()
 
   def read_dynamic_follow_params(self):
@@ -93,7 +105,29 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       else:
         self.jerk_accel_factor = 1.0
         self.jerk_decel_factor = 1.0
+      self.launch_assist = self.params.get_bool("LaunchAssist")
+      self.launch_eagerness = self.params.get("LaunchEagerness", return_default=True)
     self.param_read_frame += 1
+
+  def launch_assist_ready(self, sm) -> bool:
+    # True when we are stopped behind a lead that is actively pulling away. When
+    # this holds, we drop the model's conservative shouldStop hold and defer to
+    # the radar-based MPC so the car launches sooner. Re-evaluated every cycle,
+    # so it reverts the instant the lead stops accelerating away.
+    if not self.launch_assist:
+      return False
+    CS = sm['carState']
+    lead = sm['radarState'].leadOne
+    if not lead.status:
+      return False
+    # only from a near-standstill, and never override a pedal input
+    if CS.vEgo > LAUNCH_MAX_EGO_SPEED or CS.brakePressed or CS.gasPressed:
+      return False
+    # lead must be meaningfully ahead (don't launch into something close)
+    if lead.dRel < LAUNCH_MIN_DREL:
+      return False
+    v_thresh = float(np.interp(self.launch_eagerness, LAUNCH_VLEAD_BP, LAUNCH_VLEAD_V))
+    return lead.vLead >= v_thresh
 
   @staticmethod
   def parse_model(model_msg):
@@ -200,6 +234,15 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       if output_a_target < output_a_target_mpc:
         self.mpc.source = LongitudinalPlanSource.e2e
     else:
+      output_a_target = output_a_target_mpc
+      self.output_should_stop = output_should_stop_mpc
+
+    # Lead-departure launch assist: when stopped behind a departing lead, defer
+    # to the radar-based MPC and drop the model's conservative hold so we launch
+    # sooner. The MPC still enforces the safe follow distance, so it will not
+    # command a launch unless the gap is actually opening.
+    self.launch_assist_active = self.launch_assist_ready(sm)
+    if self.launch_assist_active:
       output_a_target = output_a_target_mpc
       self.output_should_stop = output_should_stop_mpc
 
