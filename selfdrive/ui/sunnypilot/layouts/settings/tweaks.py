@@ -4,15 +4,26 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+from enum import IntEnum
+
+from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.dynamic_follow_settings import DynamicFollowSettingsLayout
 from openpilot.system.ui.lib.multilang import tr
-from openpilot.system.ui.sunnypilot.widgets.list_view import toggle_item_sp, option_item_sp
+from openpilot.system.ui.sunnypilot.widgets.list_view import toggle_item_sp, option_item_sp, simple_button_item_sp
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.scroller_tici import Scroller
+
+
+class PanelType(IntEnum):
+  TWEAKS = 0
+  DYNAMIC_FOLLOW = 1
 
 
 class TweaksLayout(Widget):
   def __init__(self):
     super().__init__()
+
+    self._current_panel = PanelType.TWEAKS
+    self._dynamic_follow_layout = DynamicFollowSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
 
     items = self._initialize_items()
     self._scroller = Scroller(items, line_separator=True, spacing=0)
@@ -43,6 +54,7 @@ class TweaksLayout(Widget):
     )
 
     # Dynamic follow distance (speed-based gap, overrides the personality setting).
+    # Detailed settings live in a sub-page reachable via the Manage button below.
     self._dynamic_follow = toggle_item_sp(
       title=lambda: tr("Dynamic Follow Distance"),
       description=lambda: tr("Vary the follow distance with vehicle speed instead of using the fixed driving " +
@@ -50,25 +62,10 @@ class TweaksLayout(Widget):
                             "to the high-speed value (at 130 km/h). Requires openpilot longitudinal control."),
       param="DynamicFollow",
     )
-    self._dynamic_follow_min = option_item_sp(
-      title=lambda: tr("Follow Time At 0 km/h"),
-      param="DynamicFollowMinTime",
-      description=lambda: tr("Follow time used at a standstill / low speed. Shorter means a closer gap."),
-      min_value=20,
-      max_value=150,
-      value_change_step=5,
-      label_callback=lambda value: f"{value / 100:.2f} s",
-      inline=True,
-    )
-    self._dynamic_follow_max = option_item_sp(
-      title=lambda: tr("Follow Time At 130 km/h"),
-      param="DynamicFollowMaxTime",
-      description=lambda: tr("Follow time used at highway speed. Longer means a larger gap."),
-      min_value=50,
-      max_value=250,
-      value_change_step=5,
-      label_callback=lambda value: f"{value / 100:.2f} s",
-      inline=True,
+    self._dynamic_follow_button = simple_button_item_sp(
+      button_text=lambda: tr("Manage Dynamic Follow Settings"),
+      button_width=800,
+      callback=lambda: self._set_current_panel(PanelType.DYNAMIC_FOLLOW),
     )
 
     items = [
@@ -76,10 +73,24 @@ class TweaksLayout(Widget):
       self._fold_mirrors,
       self._close_windows,
       self._dynamic_follow,
-      self._dynamic_follow_min,
-      self._dynamic_follow_max,
+      self._dynamic_follow_button,
     ]
     return items
+
+  def _render(self, rect):
+    if self._current_panel == PanelType.DYNAMIC_FOLLOW:
+      self._dynamic_follow_layout.render(rect)
+    else:
+      self._scroller.render(rect)
+
+  def show_event(self):
+    self._set_current_panel(PanelType.TWEAKS)
+    self._scroller.show_event()
+
+  def _set_current_panel(self, panel: PanelType):
+    self._current_panel = panel
+    if panel == PanelType.DYNAMIC_FOLLOW:
+      self._dynamic_follow_layout.show_event()
 
   def _update_state(self):
     super()._update_state()
@@ -89,13 +100,6 @@ class TweaksLayout(Widget):
     self._fold_mirrors.action_item.set_enabled(secure_enabled)
     self._close_windows.action_item.set_enabled(secure_enabled)
 
-    # the follow-time sliders only matter when dynamic follow is enabled
+    # the Manage button is only available once dynamic follow is enabled
     dynamic_follow_enabled = self._dynamic_follow.action_item.get_state()
-    self._dynamic_follow_min.action_item.set_enabled(dynamic_follow_enabled)
-    self._dynamic_follow_max.action_item.set_enabled(dynamic_follow_enabled)
-
-  def _render(self, rect):
-    self._scroller.render(rect)
-
-  def show_event(self):
-    self._scroller.show_event()
+    self._dynamic_follow_button.action_item.set_enabled(dynamic_follow_enabled)
