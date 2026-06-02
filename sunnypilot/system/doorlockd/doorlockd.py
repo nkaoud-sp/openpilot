@@ -248,6 +248,10 @@ def secure_vehicle(sm: messaging.SubMaster, params: Params, dbc: str) -> None:
 def run_secure_sequence(sm: messaging.SubMaster, params: Params) -> None:
   show_alert(None)  # clear any banner from a previous park
   try:
+    if not params.get_bool("AutoLockEnabled"):
+      status("auto lock disabled, nothing to do")
+      return
+
     time_threshold = params.get("LockDoorsTimer", return_default=True)
     status(f"run_secure_sequence, LockDoorsTimer={time_threshold!r}")
     if time_threshold <= 0:
