@@ -32,7 +32,7 @@ class AutoLockSettingsLayout(Widget):
                             "driver-monitoring camera, all doors closed, and the ignition off. Toyota/Lexus only."),
       min_value=2,
       max_value=180,
-      value_change_step=2,
+      value_change_step=1,
       label_callback=lambda value: f"{value} s",
       inline=True,
     )
