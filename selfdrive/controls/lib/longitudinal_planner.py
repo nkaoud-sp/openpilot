@@ -75,6 +75,9 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.dynamic_follow_min = DYNAMIC_T_FOLLOW_MIN
     self.dynamic_follow_max = DYNAMIC_T_FOLLOW_MAX
     self.dynamic_follow_curve = DYNAMIC_T_FOLLOW_CURVE
+    # Asymmetric jerk (separate accel / decel ramp smoothness)
+    self.jerk_accel_factor = 1.0
+    self.jerk_decel_factor = 1.0
     self.read_dynamic_follow_params()
 
   def read_dynamic_follow_params(self):
@@ -84,6 +87,12 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       self.dynamic_follow_min = self.params.get("DynamicFollowMinTime", return_default=True) / 100.0
       self.dynamic_follow_max = self.params.get("DynamicFollowMaxTime", return_default=True) / 100.0
       self.dynamic_follow_curve = self.params.get("DynamicFollowCurve", return_default=True) / 100.0
+      if self.params.get_bool("AsymmetricJerk"):
+        self.jerk_accel_factor = self.params.get("JerkFactorAccel", return_default=True) / 100.0
+        self.jerk_decel_factor = self.params.get("JerkFactorDecel", return_default=True) / 100.0
+      else:
+        self.jerk_accel_factor = 1.0
+        self.jerk_decel_factor = 1.0
     self.param_read_frame += 1
 
   @staticmethod
@@ -157,7 +166,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       v_cruise = 0.0
 
     self.read_dynamic_follow_params()
-    self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
+    self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality,
+                         jerk_accel_factor=self.jerk_accel_factor, jerk_decel_factor=self.jerk_decel_factor)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
     self.mpc.update(sm['radarState'], v_cruise, personality=sm['selfdriveState'].personality,
                     dynamic_follow=self.dynamic_follow,

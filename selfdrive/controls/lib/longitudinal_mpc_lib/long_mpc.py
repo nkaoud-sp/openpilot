@@ -270,12 +270,18 @@ class LongitudinalMpc:
     self.x0 = np.zeros(X_DIM)
     self.set_weights()
 
-  def set_cost_weights(self, cost_weights, constraint_cost_weights):
+  def set_cost_weights(self, cost_weights, constraint_cost_weights, jerk_accel_factor=1.0, jerk_decel_factor=1.0):
     W = np.asfortranarray(np.diag(cost_weights))
     for i in range(N):
+      # Asymmetric jerk: scale the jerk-related weights (a-a_prev and j_ego) by
+      # the accel/decel factor, gated on the predicted acceleration sign at this
+      # stage (from the previous solution). A larger factor -> more jerk penalty
+      # -> gentler ramp in that direction.
+      jf = jerk_decel_factor if self.a_solution[i] < 0.0 else jerk_accel_factor
       # TODO don't hardcode A_CHANGE_COST idx
       # reduce the cost on (a-a_prev) later in the horizon.
-      W[4,4] = cost_weights[4] * np.interp(T_IDXS[i], [0.0, 1.0, 2.0], [1.0, 1.0, 0.0])
+      W[4,4] = cost_weights[4] * np.interp(T_IDXS[i], [0.0, 1.0, 2.0], [1.0, 1.0, 0.0]) * jf
+      W[5,5] = cost_weights[5] * jf
       self.solver.cost_set(i, 'W', W)
     # Setting the slice without the copy make the array not contiguous,
     # causing issues with the C interface.
@@ -286,12 +292,13 @@ class LongitudinalMpc:
     for i in range(N):
       self.solver.cost_set(i, 'Zl', Zl)
 
-  def set_weights(self, prev_accel_constraint=True, personality=log.LongitudinalPersonality.standard):
+  def set_weights(self, prev_accel_constraint=True, personality=log.LongitudinalPersonality.standard,
+                  jerk_accel_factor=1.0, jerk_decel_factor=1.0):
     jerk_factor = get_jerk_factor(personality)
     a_change_cost = A_CHANGE_COST if prev_accel_constraint else 0
     cost_weights = [X_EGO_OBSTACLE_COST, X_EGO_COST, V_EGO_COST, A_EGO_COST, jerk_factor * a_change_cost, jerk_factor * J_EGO_COST]
     constraint_cost_weights = [LIMIT_COST, LIMIT_COST, LIMIT_COST, DANGER_ZONE_COST]
-    self.set_cost_weights(cost_weights, constraint_cost_weights)
+    self.set_cost_weights(cost_weights, constraint_cost_weights, jerk_accel_factor, jerk_decel_factor)
 
   def set_cur_state(self, v, a):
     v_prev = self.x0[1]
