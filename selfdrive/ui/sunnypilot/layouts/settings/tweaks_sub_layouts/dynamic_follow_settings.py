@@ -29,7 +29,7 @@ class DynamicFollowSettingsLayout(Widget):
       title=lambda: tr("Follow Time At 0 km/h"),
       param="DynamicFollowMinTime",
       description=lambda: tr("Follow time used at a standstill / low speed. Shorter means a closer gap."),
-      min_value=20,
+      min_value=30,
       max_value=150,
       value_change_step=5,
       label_callback=lambda value: f"{value / 100:.2f} s",
@@ -52,7 +52,7 @@ class DynamicFollowSettingsLayout(Widget):
                             "Below 1.00 opens the gap up earlier (more cushion at low/mid speed); " +
                             "above 1.00 stays tighter until highway speed."),
       min_value=50,
-      max_value=200,
+      max_value=300,
       value_change_step=5,
       label_callback=lambda value: f"{value / 100:.2f}",
       inline=True,
