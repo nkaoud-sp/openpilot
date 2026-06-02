@@ -82,9 +82,9 @@ class FollowReadout:
     panel_w = pad + label_w + 16 + value_w + pad
     panel_h = pad + len(rows) * row_h
 
-    # Top-centred, just below the top edge (clear of the alert band's usual spot)
+    # Horizontally centred, top edge at the top of the bottom quarter of the screen
     x = rect.x + (rect.width - panel_w) / 2
-    y = rect.y + 40
+    y = rect.y + rect.height * 0.75
 
     bg = rl.Color(0, 0, 0, int(110 * a))
     rl.draw_rectangle_rounded(rl.Rectangle(x, y, panel_w, panel_h), 0.25, 10, bg)
