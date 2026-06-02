@@ -219,9 +219,17 @@ def secure_vehicle(sm: messaging.SubMaster, params: Params, dbc: str) -> None:
         #send_diag(panda, MIRR_FOLD_R, MIRROR_GAP)
         #send_diag(panda, MIRR_FOLD_R)
         send_diag(panda, MIRR_FOLD_L)
+      #if close_windows:
+        #for command in (WINDOW_CLOSE_RR, WINDOW_CLOSE_RL, WINDOW_CLOSE_FL, WINDOW_CLOSE_FR):
+          #send_diag(panda, command)
       if close_windows:
-        for command in (WINDOW_CLOSE_RR, WINDOW_CLOSE_RL, WINDOW_CLOSE_FL, WINDOW_CLOSE_FR):
-          send_diag(panda, command)
+        send_diag(panda, WINDOW_CLOSE_RR)
+      if close_windows:
+        send_diag(panda, WINDOW_CLOSE_RL)
+      if close_windows:
+        send_diag(panda, WINDOW_CLOSE_FL)
+      if close_windows:
+        send_diag(panda, WINDOW_CLOSE_FR)
 
       time.sleep(1)
 
