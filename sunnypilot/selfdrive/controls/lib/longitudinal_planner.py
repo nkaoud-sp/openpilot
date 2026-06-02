@@ -89,6 +89,7 @@ class LongitudinalPlannerSP:
     longitudinalPlanSP.aTarget = float(self.output_a_target)
     longitudinalPlanSP.tFollow = float(self.mpc.t_follow)
     longitudinalPlanSP.launchAssistActive = bool(getattr(self, "launch_assist_active", False))
+    longitudinalPlanSP.launchAssistLatched = bool(getattr(self, "launch_assist_latched", False))
     longitudinalPlanSP.events = self.events_sp.to_msg()
 
     # Dynamic Experimental Control

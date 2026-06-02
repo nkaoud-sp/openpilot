@@ -33,6 +33,10 @@ LAUNCH_MIN_DREL = 2.0         # m; lead must be at least this far ahead
 LAUNCH_VLEAD_BP = [1, 10]     # eagerness 1..10
 LAUNCH_VLEAD_V = [1.5, 0.2]   # required lead speed (m/s): less eager .. more eager
 
+# One-shot latch states: fire once per stop, then stay out of the way (DONE)
+# until a genuine settled stop re-arms it (READY).
+LAUNCH_READY, LAUNCH_LAUNCHING, LAUNCH_DONE = 0, 1, 2
+
 # Lookup table for turns
 _A_TOTAL_MAX_V = [1.7, 3.2]
 _A_TOTAL_MAX_BP = [20., 40.]
@@ -90,6 +94,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.launch_assist = False
     self.launch_eagerness = 5
     self.launch_assist_active = False
+    self.launch_assist_latched = False
+    self.launch_state = LAUNCH_READY
     self.read_dynamic_follow_params()
 
   def read_dynamic_follow_params(self):
@@ -112,22 +118,41 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
   def launch_assist_ready(self, sm) -> bool:
     # True when we are stopped behind a lead that is actively pulling away. When
     # this holds, we drop the model's conservative shouldStop hold and defer to
-    # the radar-based MPC so the car launches sooner. Re-evaluated every cycle,
-    # so it reverts the instant the lead stops accelerating away.
+    # the radar-based MPC so the car launches sooner.
+    #
+    # One-shot latch: fires once per stop. After the car launches out of the
+    # stop window the latch moves to DONE and stays there - so if the model
+    # brakes us back down for a hazard while the lead is still departing, we do
+    # NOT re-fire and fight it. The latch only re-arms on a genuine settled stop
+    # (stopped again with the lead no longer pulling away).
     if not self.launch_assist:
+      self.launch_state = LAUNCH_READY
       return False
+
     CS = sm['carState']
     lead = sm['radarState'].leadOne
-    if not lead.status:
-      return False
-    # only from a near-standstill, and never override a pedal input
-    if CS.vEgo > LAUNCH_MAX_EGO_SPEED or CS.brakePressed or CS.gasPressed:
-      return False
-    # lead must be meaningfully ahead (don't launch into something close)
-    if lead.dRel < LAUNCH_MIN_DREL:
-      return False
+    stopped = CS.vEgo <= LAUNCH_MAX_EGO_SPEED
     v_thresh = float(np.interp(self.launch_eagerness, LAUNCH_VLEAD_BP, LAUNCH_VLEAD_V))
-    return lead.vLead >= v_thresh
+    lead_departing = bool(lead.status) and lead.vLead >= v_thresh
+
+    # Re-arm only on a genuine settled stop, not a momentary dip mid-launch.
+    if self.launch_state == LAUNCH_DONE and stopped and not lead_departing:
+      self.launch_state = LAUNCH_READY
+
+    can_fire = (self.launch_state in (LAUNCH_READY, LAUNCH_LAUNCHING) and
+                lead.status and stopped and not CS.brakePressed and not CS.gasPressed and
+                lead.dRel >= LAUNCH_MIN_DREL and lead_departing)
+
+    if can_fire:
+      self.launch_state = LAUNCH_LAUNCHING
+      return True
+
+    # Not firing this cycle: if we were launching, decide where the latch lands.
+    if self.launch_state == LAUNCH_LAUNCHING:
+      # moved out of the stop window -> launched: latch DONE. still stopped (lead
+      # quit departing) -> false start: back to READY so a real departure can fire.
+      self.launch_state = LAUNCH_DONE if not stopped else LAUNCH_READY
+    return False
 
   @staticmethod
   def parse_model(model_msg):
@@ -242,6 +267,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     # sooner. The MPC still enforces the safe follow distance, so it will not
     # command a launch unless the gap is actually opening.
     self.launch_assist_active = self.launch_assist_ready(sm)
+    self.launch_assist_latched = self.launch_state == LAUNCH_DONE
     if self.launch_assist_active:
       output_a_target = output_a_target_mpc
       self.output_should_stop = output_should_stop_mpc

@@ -196,6 +196,7 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
   e2eAlerts @7 :E2eAlerts;
   tFollow @8 :Float32;  # live follow time (s) used by the planner (personality or dynamic-follow)
   launchAssistActive @9 :Bool;  # lead-departure launch assist is currently overriding the stop hold
+  launchAssistLatched @10 :Bool;  # launch assist has fired this stop and is latched off until a fresh stop
 
   struct DynamicExperimentalControl {
     state @0 :DynamicExperimentalControlState;

@@ -16,6 +16,7 @@ _SHOW_BELOW_SPEED = 2.0  # m/s; only show the readout near a stop / during launc
 
 _GO_C = rl.Color(0, 200, 90, 255)
 _ARMED_C = rl.Color(255, 180, 0, 255)
+_DONE_C = rl.Color(120, 170, 255, 255)
 _WHITE = rl.Color(255, 255, 255, 255)
 _DIM = rl.Color(180, 180, 180, 255)
 
@@ -53,11 +54,14 @@ class LaunchReadout:
     has_lead = bool(lead.status)
     v_lead = lead.vLead if has_lead else 0.0
     stopped = v_ego < 0.5
+    latched = bool(sm['longitudinalPlanSP'].launchAssistLatched)
 
     if not ui_state.launch_assist:
       state, state_c = "OFF", _DIM
     elif active:
       state, state_c = "GO", _GO_C
+    elif latched:
+      state, state_c = "DONE", _DONE_C
     elif stopped and has_lead:
       state, state_c = "ARMED", _ARMED_C
     else:
