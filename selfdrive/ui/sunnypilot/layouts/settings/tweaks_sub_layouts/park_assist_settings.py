@@ -29,9 +29,9 @@ class ParkAssistSettingsLayout(Widget):
       title=lambda: tr("Standstill Gap"),
       param="ParkDistance",
       description=lambda: tr("How close to stop behind a stopped lead. Only applies near a standstill and " +
-                            "smoothly restores the normal gap once the lead starts moving. 6.00 m matches stock."),
+                            "smoothly restores the normal gap once the lead starts moving."),
       min_value=200,
-      max_value=600,
+      max_value=300,
       value_change_step=10,
       label_callback=lambda value: f"{value / 100:.2f} m",
       inline=True,
