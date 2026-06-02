@@ -20,8 +20,9 @@ _DIM = rl.Color(180, 180, 180, 255)
 
 
 class JerkReadout:
-  """On-screen readout of the asymmetric accel/decel jerk smoothing: which
-  direction is currently active and which smoothness factor is being applied."""
+  """On-screen readout of the asymmetric accel/decel jerk smoothing: the current
+  mode, commanded vs actual acceleration, the planned jerk (which the smoothness
+  factor shapes), and the active factor."""
 
   def __init__(self):
     self._alpha: float = 0.0
@@ -41,9 +42,15 @@ class JerkReadout:
       return
 
     a_ego = sm['carState'].aEgo
-    decel = a_ego < -_ACCEL_DEADBAND
-    accel = a_ego > _ACCEL_DEADBAND
+    lp = sm['longitudinalPlan']
+    a_target = float(lp.aTarget)
+    jerks = lp.jerks
+    jerk = float(jerks[0]) if len(jerks) else 0.0
 
+    # Mode / active factor follow the planner's commanded acceleration (aTarget),
+    # which is what the MPC's per-stage jerk weighting is gated on.
+    decel = a_target < -_ACCEL_DEADBAND
+    accel = a_target > _ACCEL_DEADBAND
     if decel:
       mode, mode_c = "DECEL", _DECEL_C
     elif accel:
@@ -51,7 +58,6 @@ class JerkReadout:
     else:
       mode, mode_c = "HOLD", _DIM
 
-    # Active factor mirrors the planner: decel factor when braking, else accel.
     if ui_state.asymmetric_jerk:
       factor = ui_state.jerk_factor_decel if decel else ui_state.jerk_factor_accel
     else:
@@ -60,7 +66,9 @@ class JerkReadout:
 
     cells = [
       ("MODE", mode, mode_c),
-      ("RATE m/s²", f"{a_ego:+.2f}", _WHITE),
+      ("CMD m/s²", f"{a_target:+.2f}", _WHITE),
+      ("RATE m/s²", f"{a_ego:+.2f}", _DIM),
+      ("JERK m/s³", f"{jerk:+.2f}", mode_c),
       ("SMOOTH", f"{factor:.2f}x", factor_c),
     ]
     self._render(rect, cells)
@@ -69,7 +77,6 @@ class JerkReadout:
     a = self._alpha
     cap_size = 24
     val_size = 40
-    gl_size = 28
     pad = 20
     cell_gap = 26
     cap_val_gap = 4
@@ -83,10 +90,8 @@ class JerkReadout:
                measure_text_cached(self._val_font, val, val_size, 0).x)
       cell_w = max(cell_w, cw)
 
-    gl = "JERK"
-    gl_w = measure_text_cached(self._val_font, gl, gl_size, 0).x
     row_h = cap_size + cap_val_gap + val_size
-    content_w = gl_w + cell_gap + len(cells) * cell_w + (len(cells) - 1) * cell_gap
+    content_w = len(cells) * cell_w + (len(cells) - 1) * cell_gap
     panel_w = pad + content_w + pad
     panel_h = pad + row_h + pad
 
@@ -97,12 +102,8 @@ class JerkReadout:
     rl.draw_rectangle_rounded(rl.Rectangle(x, y, panel_w, panel_h), 0.18, 10, rl.Color(0, 0, 0, int(120 * a)))
 
     row_y = y + pad
-    gl_y = row_y + (row_h - gl_size) / 2
-    rl.draw_text_ex(self._val_font, gl, rl.Vector2(int(x + pad), int(gl_y)), gl_size, 0, fade(_DIM))
-
-    cells_x = x + pad + gl_w + cell_gap
     for c, (cap, val, color) in enumerate(cells):
-      cx = cells_x + c * (cell_w + cell_gap)
+      cx = x + pad + c * (cell_w + cell_gap)
       cap_w = measure_text_cached(self._cap_font, cap, cap_size, 0).x
       rl.draw_text_ex(self._cap_font, cap, rl.Vector2(int(cx + (cell_w - cap_w) / 2), int(row_y)),
                       cap_size, 0, fade(_DIM))
