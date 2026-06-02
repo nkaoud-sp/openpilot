@@ -6,6 +6,7 @@ See the LICENSE.md file in the root directory for more details.
 """
 from openpilot.selfdrive.ui.sunnypilot.onroad.chevron_metrics import ChevronMetrics
 from openpilot.selfdrive.ui.sunnypilot.onroad.follow_readout import FollowReadout
+from openpilot.selfdrive.ui.sunnypilot.onroad.jerk_readout import JerkReadout
 from openpilot.selfdrive.ui.sunnypilot.onroad.rainbow_path import RainbowPath
 
 
@@ -14,3 +15,4 @@ class ModelRendererSP:
     self.rainbow_path = RainbowPath()
     self.chevron_metrics = ChevronMetrics()
     self.follow_readout = FollowReadout()
+    self.jerk_readout = JerkReadout()

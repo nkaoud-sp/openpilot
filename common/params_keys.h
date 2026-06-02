@@ -168,6 +168,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"AsymmetricJerk", {PERSISTENT | BACKUP, BOOL, "0"}},         // separate accel/decel ramp smoothness
     {"JerkFactorAccel", {PERSISTENT | BACKUP, INT, "100"}},       // jerk-cost multiplier x100 while accelerating
     {"JerkFactorDecel", {PERSISTENT | BACKUP, INT, "100"}},       // jerk-cost multiplier x100 while braking
+    {"JerkReadout", {PERSISTENT | BACKUP, BOOL, "0"}},            // on-screen accel/decel jerk-smoothness readout
     {"CustomAccLongPressIncrement", {PERSISTENT | BACKUP, INT, "5"}},
     {"CustomAccShortPressIncrement", {PERSISTENT | BACKUP, INT, "1"}},
     {"DeviceBootMode", {PERSISTENT | BACKUP, INT, "0"}},

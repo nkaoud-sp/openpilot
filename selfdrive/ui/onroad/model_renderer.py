@@ -140,6 +140,9 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
       self.chevron_metrics.draw_lead_status(sm, radar_state, self._rect, self._lead_vehicles)
       self.follow_readout.draw(sm, radar_state, self._rect)
 
+    # jerk readout does not depend on a lead
+    self.jerk_readout.draw(sm, self._rect)
+
   def _update_raw_points(self, model):
     """Update raw 3D points from model data"""
     self._path.raw_points = np.array([model.position.x, np.array(model.position.y) + self._camera_offset, model.position.z], dtype=np.float32).T

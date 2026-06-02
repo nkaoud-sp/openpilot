@@ -134,6 +134,10 @@ class UIStateSP:
     self.custom_interactive_timeout = self.params.get("InteractivityTimeout", return_default=True)
     self.developer_ui = self.params.get("DevUIInfo")
     self.follow_readout = self.params.get_bool("FollowReadout")
+    self.jerk_readout = self.params.get_bool("JerkReadout")
+    self.asymmetric_jerk = self.params.get_bool("AsymmetricJerk")
+    self.jerk_factor_accel = self.params.get("JerkFactorAccel", return_default=True) / 100.0
+    self.jerk_factor_decel = self.params.get("JerkFactorDecel", return_default=True) / 100.0
     self.hide_v_ego_ui = self.params.get_bool("HideVEgoUI")
     self.onroad_brightness = int(float(self.params.get("OnroadScreenOffBrightness", return_default=True)))
     self.onroad_brightness_timer_param = self.params.get("OnroadScreenOffTimer", return_default=True)

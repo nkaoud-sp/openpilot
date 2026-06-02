@@ -8,7 +8,7 @@ from collections.abc import Callable
 
 import pyray as rl
 from openpilot.system.ui.lib.multilang import tr
-from openpilot.system.ui.sunnypilot.widgets.list_view import option_item_sp
+from openpilot.system.ui.sunnypilot.widgets.list_view import option_item_sp, toggle_item_sp
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.network import NavButton
 from openpilot.system.ui.widgets.scroller_tici import Scroller
@@ -48,9 +48,17 @@ class JerkSettingsLayout(Widget):
       inline=True,
     )
 
+    self._jerk_readout = toggle_item_sp(
+      title=lambda: tr("Accel / Decel Readout"),
+      description=lambda: tr("Display the current accel/decel mode, live acceleration, and the active " +
+                            "smoothness factor on the driving screen. Useful for tuning."),
+      param="JerkReadout",
+    )
+
     items = [
       self._jerk_accel,
       self._jerk_decel,
+      self._jerk_readout,
     ]
     return items
 
