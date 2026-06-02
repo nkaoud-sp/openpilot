@@ -9,9 +9,18 @@ from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 
-# Tolerance (s) around the desired follow time within which the actual gap is
-# considered "on target" and drawn green. Closer than this -> amber/red.
+# Fixed standstill buffer baked into the planner's safe-distance equation
+# (selfdrive/controls/lib/longitudinal_mpc_lib/long_mpc.py:STOP_DISTANCE). The
+# follow-time param does not include it, so the true target gap is
+# tFollow + STOP_DISTANCE / v_ego. Kept as a local constant to avoid importing
+# the (acados-heavy) long_mpc module into the UI process.
+STOP_DISTANCE = 6.0
+M_TO_FT = 3.28084
+
+# Tolerance (s) around the true target follow time within which the actual gap
+# is considered "on target" and drawn green. Closer than this -> amber/red.
 _ON_TARGET_BAND = 0.15
+_MIN_SPEED = 0.5  # m/s below which time gaps are undefined (division blows up)
 
 _GREEN = rl.Color(0, 200, 90, 255)
 _AMBER = rl.Color(255, 180, 0, 255)
@@ -21,13 +30,13 @@ _DIM = rl.Color(180, 180, 180, 255)
 
 
 class FollowReadout:
-  """On-screen readout comparing the planner's desired follow time with the
-  actual (measured) gap to the lead vehicle."""
+  """On-screen readout comparing the planner's desired follow gap with the
+  actual (measured) gap to the lead vehicle, in both time and distance."""
 
   def __init__(self):
     self._alpha: float = 0.0
-    self._font = gui_app.font(FontWeight.SEMI_BOLD)
-    self._font_bold = gui_app.font(FontWeight.BOLD)
+    self._cap_font = gui_app.font(FontWeight.SEMI_BOLD)
+    self._val_font = gui_app.font(FontWeight.BOLD)
 
   def _update_alpha(self, visible: bool):
     if visible:
@@ -36,10 +45,10 @@ class FollowReadout:
       self._alpha = max(0.0, self._alpha - 0.05)
 
   @staticmethod
-  def _actual_color(actual: float, desired: float) -> rl.Color:
-    if actual >= desired - _ON_TARGET_BAND:
+  def _actual_color(actual: float, target: float) -> rl.Color:
+    if actual >= target - _ON_TARGET_BAND:
       return _GREEN
-    if actual >= desired - 2 * _ON_TARGET_BAND:
+    if actual >= target - 2 * _ON_TARGET_BAND:
       return _AMBER
     return _RED
 
@@ -55,46 +64,92 @@ class FollowReadout:
       return
 
     v_ego = sm['carState'].vEgo
-    desired_t = float(sm['longitudinalPlanSP'].tFollow)
-    actual_t = (lead.dRel / v_ego) if v_ego > 0.5 else 0.0
+    t_follow = float(sm['longitudinalPlanSP'].tFollow)
+    d_rel = lead.dRel
+    has_speed = v_ego > _MIN_SPEED
 
-    desired_str = f"{desired_t:.2f}s"
-    actual_str = f"{actual_t:.2f}s" if v_ego > 0.5 else "--"
-    actual_color = self._actual_color(actual_t, desired_t) if v_ego > 0.5 else _DIM
+    # Time (s): raw param, true target (incl. stop buffer), and actual gap
+    set_t = t_follow
+    target_t = t_follow + STOP_DISTANCE / v_ego if has_speed else 0.0
+    now_t = d_rel / v_ego if has_speed else 0.0
 
-    self._render(rect, desired_str, actual_str, actual_color)
+    # Distance: true target gap vs actual measured gap
+    set_d = t_follow * v_ego + STOP_DISTANCE
+    now_d = d_rel
 
-  def _render(self, rect: rl.Rectangle, desired_str: str, actual_str: str, actual_color: rl.Color):
-    a = self._alpha
-    label_size = 30
-    value_size = 44
-    pad = 18
-    row_h = 52
+    color = self._actual_color(now_t, target_t) if has_speed else _DIM
 
-    rows = [
-      ("SET", desired_str, _WHITE),
-      ("NOW", actual_str, actual_color),
+    metric = ui_state.is_metric
+    du = "m" if metric else "ft"
+    df = 1.0 if metric else M_TO_FT
+
+    def ts(v):
+      return f"{v:.2f}s" if has_speed else "--"
+
+    # Two groups of cells: (group label, [(caption, value, color), ...])
+    groups = [
+      ("TIME", [
+        ("SET", f"{set_t:.2f}s", _DIM),
+        ("TARGET", ts(target_t), _WHITE),
+        ("NOW", ts(now_t), color),
+      ]),
+      ("DIST", [
+        ("SET", f"{set_d * df:.0f}{du}", _WHITE),
+        ("NOW", f"{now_d * df:.0f}{du}", color),
+      ]),
     ]
+    self._render(rect, groups)
 
-    # Widest content determines the panel width
-    label_w = max(measure_text_cached(self._font, lbl, label_size, 0).x for lbl, _, _ in rows)
-    value_w = max(measure_text_cached(self._font_bold, val, value_size, 0).x for _, val, _ in rows)
-    panel_w = pad + label_w + 16 + value_w + pad
-    panel_h = pad + len(rows) * row_h
+  def _render(self, rect: rl.Rectangle, groups):
+    a = self._alpha
+    cap_size = 24
+    val_size = 40
+    gl_size = 28          # group label
+    pad = 20
+    cell_gap = 26
+    row_gap = 18
+    cap_val_gap = 4
+
+    def fade(c: rl.Color) -> rl.Color:
+      return rl.Color(c.r, c.g, c.b, int(255 * a))
+
+    # Uniform cell width across all cells for tidy columns
+    cell_w = 0.0
+    for _, cells in groups:
+      for cap, val, _c in cells:
+        cw = max(measure_text_cached(self._cap_font, cap, cap_size, 0).x,
+                 measure_text_cached(self._val_font, val, val_size, 0).x)
+        cell_w = max(cell_w, cw)
+
+    gl_w = max(measure_text_cached(self._val_font, gl, gl_size, 0).x for gl, _ in groups)
+    cell_h = cap_size + cap_val_gap + val_size
+    row_h = cell_h
+
+    max_cells = max(len(cells) for _, cells in groups)
+    content_w = gl_w + cell_gap + max_cells * cell_w + (max_cells - 1) * cell_gap
+    panel_w = pad + content_w + pad
+    panel_h = pad + len(groups) * row_h + (len(groups) - 1) * row_gap + pad
 
     # Horizontally centred, top edge at the top of the bottom quarter of the screen
     x = rect.x + (rect.width - panel_w) / 2
     y = rect.y + rect.height * 0.75
 
-    bg = rl.Color(0, 0, 0, int(110 * a))
-    rl.draw_rectangle_rounded(rl.Rectangle(x, y, panel_w, panel_h), 0.25, 10, bg)
+    rl.draw_rectangle_rounded(rl.Rectangle(x, y, panel_w, panel_h), 0.18, 10, rl.Color(0, 0, 0, int(120 * a)))
 
-    for i, (label, value, color) in enumerate(rows):
-      ry = y + pad + i * row_h
-      lbl_color = rl.Color(_DIM.r, _DIM.g, _DIM.b, int(255 * a))
-      val_color = rl.Color(color.r, color.g, color.b, int(255 * a))
+    for r, (gl, cells) in enumerate(groups):
+      row_y = y + pad + r * (row_h + row_gap)
 
-      lbl_y = ry + (value_size - label_size) / 2
-      rl.draw_text_ex(self._font, label, rl.Vector2(int(x + pad), int(lbl_y)), label_size, 0, lbl_color)
-      vx = x + pad + label_w + 16
-      rl.draw_text_ex(self._font_bold, value, rl.Vector2(int(vx), int(ry)), value_size, 0, val_color)
+      # group label, vertically centred in the row
+      gl_y = row_y + (row_h - gl_size) / 2
+      rl.draw_text_ex(self._val_font, gl, rl.Vector2(int(x + pad), int(gl_y)), gl_size, 0, fade(_DIM))
+
+      cells_x = x + pad + gl_w + cell_gap
+      for c, (cap, val, color) in enumerate(cells):
+        cx = cells_x + c * (cell_w + cell_gap)
+        # caption centred over the value
+        cap_w = measure_text_cached(self._cap_font, cap, cap_size, 0).x
+        rl.draw_text_ex(self._cap_font, cap, rl.Vector2(int(cx + (cell_w - cap_w) / 2), int(row_y)),
+                        cap_size, 0, fade(_DIM))
+        val_w = measure_text_cached(self._val_font, val, val_size, 0).x
+        rl.draw_text_ex(self._val_font, val, rl.Vector2(int(cx + (cell_w - val_w) / 2), int(row_y + cap_size + cap_val_gap)),
+                        val_size, 0, fade(color))
