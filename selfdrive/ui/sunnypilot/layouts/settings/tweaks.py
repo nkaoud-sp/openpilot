@@ -10,6 +10,7 @@ from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.auto_
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.dynamic_follow_settings import DynamicFollowSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.jerk_settings import JerkSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.launch_assist_settings import LaunchAssistSettingsLayout
+from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.park_assist_settings import ParkAssistSettingsLayout
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.sunnypilot.widgets.list_view import toggle_item_sp, simple_button_item_sp
 from openpilot.system.ui.widgets import Widget
@@ -22,6 +23,7 @@ class PanelType(IntEnum):
   DYNAMIC_FOLLOW = 2
   JERK = 3
   LAUNCH = 4
+  PARK = 5
 
 
 class TweaksLayout(Widget):
@@ -33,6 +35,7 @@ class TweaksLayout(Widget):
     self._dynamic_follow_layout = DynamicFollowSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._jerk_layout = JerkSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._launch_layout = LaunchAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
+    self._park_layout = ParkAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
 
     items = self._initialize_items()
     self._scroller = Scroller(items, line_separator=True, spacing=0)
@@ -98,6 +101,21 @@ class TweaksLayout(Widget):
       callback=lambda: self._set_current_panel(PanelType.LAUNCH),
     )
 
+    # Lead park assist (closer standstill gap behind a stopped lead).
+    # Detailed settings live in a sub-page reachable via the Manage button below.
+    self._park_assist = toggle_item_sp(
+      title=lambda: tr("Lead Park Assist"),
+      description=lambda: tr("When stopped behind a stopped lead, settle at a closer gap than the default. The " +
+                            "gap smoothly returns to normal once the lead moves. Only acts near a standstill. " +
+                            "Requires openpilot longitudinal control."),
+      param="ParkAssist",
+    )
+    self._park_assist_button = simple_button_item_sp(
+      button_text=lambda: tr("Manage Park Assist Settings"),
+      button_width=800,
+      callback=lambda: self._set_current_panel(PanelType.PARK),
+    )
+
     items = [
       self._auto_lock,
       self._auto_lock_button,
@@ -107,6 +125,8 @@ class TweaksLayout(Widget):
       self._asymmetric_jerk_button,
       self._launch_assist,
       self._launch_assist_button,
+      self._park_assist,
+      self._park_assist_button,
     ]
     return items
 
@@ -119,6 +139,8 @@ class TweaksLayout(Widget):
       self._jerk_layout.render(rect)
     elif self._current_panel == PanelType.LAUNCH:
       self._launch_layout.render(rect)
+    elif self._current_panel == PanelType.PARK:
+      self._park_layout.render(rect)
     else:
       self._scroller.render(rect)
 
@@ -136,6 +158,8 @@ class TweaksLayout(Widget):
       self._jerk_layout.show_event()
     elif panel == PanelType.LAUNCH:
       self._launch_layout.show_event()
+    elif panel == PanelType.PARK:
+      self._park_layout.show_event()
 
   def _update_state(self):
     super()._update_state()
@@ -145,3 +169,4 @@ class TweaksLayout(Widget):
     self._dynamic_follow_button.action_item.set_enabled(self._dynamic_follow.action_item.get_state())
     self._asymmetric_jerk_button.action_item.set_enabled(self._asymmetric_jerk.action_item.get_state())
     self._launch_assist_button.action_item.set_enabled(self._launch_assist.action_item.get_state())
+    self._park_assist_button.action_item.set_enabled(self._park_assist.action_item.get_state())

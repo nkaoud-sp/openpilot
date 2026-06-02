@@ -12,6 +12,7 @@ from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import DYNAMIC_T_FOLLOW_MIN, DYNAMIC_T_FOLLOW_MAX, DYNAMIC_T_FOLLOW_CURVE
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import STOP_DISTANCE
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
@@ -96,6 +97,9 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.launch_assist_active = False
     self.launch_assist_latched = False
     self.launch_state = LAUNCH_READY
+    # Lead park assist (closer standstill gap behind a stopped lead)
+    self.park_assist = False
+    self.park_distance = STOP_DISTANCE
     self.read_dynamic_follow_params()
 
   def read_dynamic_follow_params(self):
@@ -113,6 +117,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
         self.jerk_decel_factor = 1.0
       self.launch_assist = self.params.get_bool("LaunchAssist")
       self.launch_eagerness = self.params.get("LaunchEagerness", return_default=True)
+      self.park_assist = self.params.get_bool("ParkAssist")
+      self.park_distance = self.params.get("ParkDistance", return_default=True) / 100.0
     self.param_read_frame += 1
 
   def launch_assist_ready(self, sm) -> bool:
@@ -231,7 +237,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.mpc.update(sm['radarState'], v_cruise, personality=sm['selfdriveState'].personality,
                     dynamic_follow=self.dynamic_follow,
                     t_follow_min=self.dynamic_follow_min, t_follow_max=self.dynamic_follow_max,
-                    t_follow_curve=self.dynamic_follow_curve)
+                    t_follow_curve=self.dynamic_follow_curve,
+                    park_assist=self.park_assist, park_distance=self.park_distance)
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
     self.a_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.a_solution)

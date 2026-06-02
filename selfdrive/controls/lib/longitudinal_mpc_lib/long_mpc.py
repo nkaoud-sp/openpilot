@@ -68,6 +68,12 @@ DYNAMIC_T_FOLLOW_MIN = 0.4    # default follow time (s) at 0 km/h
 DYNAMIC_T_FOLLOW_MAX = 1.2    # default follow time (s) at 130 km/h
 DYNAMIC_T_FOLLOW_CURVE = 1.0  # shape exponent: 1.0 = linear, <1 opens up early, >1 stays tight longer
 
+# Lead park assist: when stopped behind a stopped lead, allow a closer standstill
+# gap than STOP_DISTANCE by nudging the lead obstacle forward at runtime. The
+# effect fades out as the lead (or ego) starts moving, restoring the full gap.
+PARK_VLEAD_FADE = [0.5, 1.5]  # m/s lead speed: full effect below 0.5, none above 1.5
+PARK_VEGO_FADE = [2.0, 4.0]   # m/s ego speed: full effect below 2.0, none above 4.0
+
 def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
   if personality==log.LongitudinalPersonality.relaxed:
     return 1.0
@@ -248,6 +254,7 @@ class LongitudinalMpc:
     self.j_solution = np.zeros(N)
     self.a_prev = np.array(self.a_solution)
     self.t_follow = get_T_FOLLOW()
+    self.park_assist_active = False
     self.yref = np.zeros((N+1, COST_DIM))
 
     for i in range(N):
@@ -341,7 +348,7 @@ class LongitudinalMpc:
 
   def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard,
              dynamic_follow=False, t_follow_min=DYNAMIC_T_FOLLOW_MIN, t_follow_max=DYNAMIC_T_FOLLOW_MAX,
-             t_follow_curve=DYNAMIC_T_FOLLOW_CURVE):
+             t_follow_curve=DYNAMIC_T_FOLLOW_CURVE, park_assist=False, park_distance=STOP_DISTANCE):
     v_ego = self.x0[1]
     if dynamic_follow:
       # Speed-based follow time, overrides the personality gap
@@ -359,6 +366,20 @@ class LongitudinalMpc:
     # and then treat that as a stopped car/obstacle at this new distance.
     lead_0_obstacle = lead_xv_0[:,0] + get_stopped_equivalence_factor(lead_xv_0[:,1])
     lead_1_obstacle = lead_xv_1[:,0] + get_stopped_equivalence_factor(lead_xv_1[:,1])
+
+    # Lead park assist: nudge the lead obstacle forward so the car settles at a
+    # closer standstill gap (park_distance) than STOP_DISTANCE. Only near a
+    # standstill behind a stopped lead; fades out as the lead/ego start moving,
+    # restoring the full gap. FCW/crash checks use the real lead position, below.
+    self.park_assist_active = False
+    if park_assist and park_distance < STOP_DISTANCE:
+      reduce = STOP_DISTANCE - park_distance
+      ego_scale = float(np.interp(v_ego, PARK_VEGO_FADE, [1.0, 0.0]))
+      off0 = reduce * ego_scale * float(np.interp(radarstate.leadOne.vLead, PARK_VLEAD_FADE, [1.0, 0.0])) if radarstate.leadOne.status else 0.0
+      off1 = reduce * ego_scale * float(np.interp(radarstate.leadTwo.vLead, PARK_VLEAD_FADE, [1.0, 0.0])) if radarstate.leadTwo.status else 0.0
+      lead_0_obstacle = lead_0_obstacle + off0
+      lead_1_obstacle = lead_1_obstacle + off1
+      self.park_assist_active = off0 > 0.05 or off1 > 0.05
 
     # Fake an obstacle for cruise, this ensures smooth acceleration to set speed
     # when the leads are no factor.
