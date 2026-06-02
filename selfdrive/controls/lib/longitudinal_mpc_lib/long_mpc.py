@@ -68,11 +68,15 @@ DYNAMIC_T_FOLLOW_MIN = 0.4    # default follow time (s) at 0 km/h
 DYNAMIC_T_FOLLOW_MAX = 1.2    # default follow time (s) at 130 km/h
 DYNAMIC_T_FOLLOW_CURVE = 1.0  # shape exponent: 1.0 = linear, <1 opens up early, >1 stays tight longer
 
-# Lead park assist: when stopped behind a stopped lead, allow a closer standstill
-# gap than STOP_DISTANCE by nudging the lead obstacle forward at runtime. The
-# effect fades out as the lead (or ego) starts moving, restoring the full gap.
-PARK_VLEAD_FADE = [0.5, 1.5]  # m/s lead speed: full effect below 0.5, none above 1.5
+# Lead park assist: allow a closer standstill gap than STOP_DISTANCE by nudging
+# the lead obstacle forward at runtime. The offset fades on EGO speed (not lead
+# speed) so it holds the close gap through a launch - cooperating with launch
+# assist - and only opens back to the full gap as the ego itself speeds up.
 PARK_VEGO_FADE = [2.0, 4.0]   # m/s ego speed: full effect below 2.0, none above 4.0
+PARK_ENGAGE_EGO = 0.5         # m/s; ego "stopped" threshold to latch dead-stop engagement
+PARK_ENGAGE_VLEAD = 0.5       # m/s; lead "stopped" threshold to latch dead-stop engagement
+PARK_MODE_DEAD_STOP = 0       # engage only after a full stop behind a stopped lead
+PARK_MODE_ALL_LOW_SPEED = 1   # engage during any low-speed following
 
 def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
   if personality==log.LongitudinalPersonality.relaxed:
@@ -255,6 +259,7 @@ class LongitudinalMpc:
     self.a_prev = np.array(self.a_solution)
     self.t_follow = get_T_FOLLOW()
     self.park_assist_active = False
+    self.park_engaged = False
     self.stop_distance = STOP_DISTANCE
     self.yref = np.zeros((N+1, COST_DIM))
 
@@ -349,7 +354,8 @@ class LongitudinalMpc:
 
   def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard,
              dynamic_follow=False, t_follow_min=DYNAMIC_T_FOLLOW_MIN, t_follow_max=DYNAMIC_T_FOLLOW_MAX,
-             t_follow_curve=DYNAMIC_T_FOLLOW_CURVE, park_assist=False, park_distance=STOP_DISTANCE):
+             t_follow_curve=DYNAMIC_T_FOLLOW_CURVE, park_assist=False, park_distance=STOP_DISTANCE,
+             park_mode=PARK_MODE_DEAD_STOP):
     v_ego = self.x0[1]
     if dynamic_follow:
       # Speed-based follow time, overrides the personality gap
@@ -369,21 +375,34 @@ class LongitudinalMpc:
     lead_1_obstacle = lead_xv_1[:,0] + get_stopped_equivalence_factor(lead_xv_1[:,1])
 
     # Lead park assist: nudge the lead obstacle forward so the car settles at a
-    # closer standstill gap (park_distance) than STOP_DISTANCE. Only near a
-    # standstill behind a stopped lead; fades out as the lead/ego start moving,
-    # restoring the full gap. FCW/crash checks use the real lead position, below.
+    # closer standstill gap (park_distance). The offset fades on EGO speed, so it
+    # holds the close gap through a launch (cooperating with launch assist) and
+    # opens back to the full gap as the ego speeds up.
+    #   - dead-stop mode: latch on once stopped behind a stopped lead
+    #   - low-speed mode: engage during any low-speed following
+    # FCW/crash checks use the real lead position, below.
     self.park_assist_active = False
-    park_off0 = 0.0
-    if park_assist and park_distance < STOP_DISTANCE:
-      reduce = STOP_DISTANCE - park_distance
-      ego_scale = float(np.interp(v_ego, PARK_VEGO_FADE, [1.0, 0.0]))
-      park_off0 = reduce * ego_scale * float(np.interp(radarstate.leadOne.vLead, PARK_VLEAD_FADE, [1.0, 0.0])) if radarstate.leadOne.status else 0.0
-      off1 = reduce * ego_scale * float(np.interp(radarstate.leadTwo.vLead, PARK_VLEAD_FADE, [1.0, 0.0])) if radarstate.leadTwo.status else 0.0
-      lead_0_obstacle = lead_0_obstacle + park_off0
-      lead_1_obstacle = lead_1_obstacle + off1
-      self.park_assist_active = park_off0 > 0.05 or off1 > 0.05
+    park_off = 0.0
+    lead = radarstate.leadOne
+    if park_assist and park_distance < STOP_DISTANCE and v_ego < PARK_VEGO_FADE[1]:
+      if park_mode == PARK_MODE_ALL_LOW_SPEED:
+        engaged = lead.status
+      else:
+        if lead.status and v_ego <= PARK_ENGAGE_EGO and lead.vLead <= PARK_ENGAGE_VLEAD:
+          self.park_engaged = True
+        engaged = self.park_engaged and lead.status
+      if engaged:
+        park_off = (STOP_DISTANCE - park_distance) * float(np.interp(v_ego, PARK_VEGO_FADE, [1.0, 0.0]))
+      self.park_assist_active = park_off > 0.05
+    else:
+      self.park_engaged = False
+
+    if park_off > 0.0:
+      lead_0_obstacle = lead_0_obstacle + park_off
+      if radarstate.leadTwo.status:
+        lead_1_obstacle = lead_1_obstacle + park_off
     # Effective standstill buffer to the primary lead (what the follow readout shows)
-    self.stop_distance = STOP_DISTANCE - park_off0
+    self.stop_distance = STOP_DISTANCE - park_off
 
     # Fake an obstacle for cruise, this ensures smooth acceleration to set speed
     # when the leads are no factor.

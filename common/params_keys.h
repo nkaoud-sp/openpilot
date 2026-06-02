@@ -174,6 +174,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LaunchReadout", {PERSISTENT | BACKUP, BOOL, "0"}},          // on-screen launch-assist readout
     {"ParkAssist", {PERSISTENT | BACKUP, BOOL, "0"}},             // closer standstill gap behind a stopped lead
     {"ParkDistance", {PERSISTENT | BACKUP, INT, "300"}},          // standstill gap (cm) when park assist active
+    {"ParkAssistMode", {PERSISTENT | BACKUP, INT, "0"}},          // 0 = from full stop, 1 = any low-speed following
     {"CustomAccLongPressIncrement", {PERSISTENT | BACKUP, INT, "5"}},
     {"CustomAccShortPressIncrement", {PERSISTENT | BACKUP, INT, "1"}},
     {"DeviceBootMode", {PERSISTENT | BACKUP, INT, "0"}},

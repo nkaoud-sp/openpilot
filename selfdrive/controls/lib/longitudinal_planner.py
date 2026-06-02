@@ -100,6 +100,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     # Lead park assist (closer standstill gap behind a stopped lead)
     self.park_assist = False
     self.park_distance = STOP_DISTANCE
+    self.park_mode = 0
     self.read_dynamic_follow_params()
 
   def read_dynamic_follow_params(self):
@@ -119,6 +120,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       self.launch_eagerness = self.params.get("LaunchEagerness", return_default=True)
       self.park_assist = self.params.get_bool("ParkAssist")
       self.park_distance = self.params.get("ParkDistance", return_default=True) / 100.0
+      self.park_mode = self.params.get("ParkAssistMode", return_default=True)
     self.param_read_frame += 1
 
   def launch_assist_ready(self, sm) -> bool:
@@ -238,7 +240,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
                     dynamic_follow=self.dynamic_follow,
                     t_follow_min=self.dynamic_follow_min, t_follow_max=self.dynamic_follow_max,
                     t_follow_curve=self.dynamic_follow_curve,
-                    park_assist=self.park_assist, park_distance=self.park_distance)
+                    park_assist=self.park_assist, park_distance=self.park_distance, park_mode=self.park_mode)
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
     self.a_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.a_solution)
