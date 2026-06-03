@@ -143,6 +143,7 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
     # jerk and launch readouts do not depend on a lead
     self.jerk_readout.draw(sm, self._rect)
     self.launch_readout.draw(sm, self._rect)
+    self.lane_position_indicator.draw(sm, self._rect)
 
   def _update_raw_points(self, model):
     """Update raw 3D points from model data"""

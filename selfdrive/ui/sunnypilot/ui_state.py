@@ -138,6 +138,7 @@ class UIStateSP:
     self.asymmetric_jerk = self.params.get_bool("AsymmetricJerk")
     self.jerk_factor_accel = self.params.get("JerkFactorAccel", return_default=True) / 100.0
     self.jerk_factor_decel = self.params.get("JerkFactorDecel", return_default=True) / 100.0
+    self.lane_position_indicator = self.params.get_bool("LanePositionIndicator")
     self.launch_readout = self.params.get_bool("LaunchReadout")
     self.launch_assist = self.params.get_bool("LaunchAssist")
     self.launch_eagerness = self.params.get("LaunchEagerness", return_default=True)

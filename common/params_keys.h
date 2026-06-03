@@ -172,6 +172,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LaunchAssist", {PERSISTENT | BACKUP, BOOL, "0"}},           // launch sooner when a stopped lead pulls away
     {"LaunchEagerness", {PERSISTENT | BACKUP, INT, "5"}},         // 1..10; higher launches with less lead movement
     {"LaunchReadout", {PERSISTENT | BACKUP, BOOL, "0"}},          // on-screen launch-assist readout
+    {"LanePositionIndicator", {PERSISTENT | BACKUP, BOOL, "0"}},  // on-screen lane-position indicator (squares + confidence border)
     {"ParkAssist", {PERSISTENT | BACKUP, BOOL, "0"}},             // closer standstill gap behind a stopped lead
     {"ParkDistance", {PERSISTENT | BACKUP, INT, "300"}},          // standstill gap (cm) when park assist active
     {"ParkAssistMode", {PERSISTENT | BACKUP, INT, "0"}},          // 0 = from full stop, 1 = any low-speed following

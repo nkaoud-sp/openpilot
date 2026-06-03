@@ -116,6 +116,17 @@ class TweaksLayout(Widget):
       callback=lambda: self._set_current_panel(PanelType.PARK),
     )
 
+    # Lane position indicator: small on-screen widget with squares for each lane
+    # detected and the current lane filled. Border colour reflects detection
+    # confidence (green/amber/red). Estimated from modelV2 road edges.
+    self._lane_position_indicator = toggle_item_sp(
+      title=lambda: tr("Lane Position Indicator"),
+      description=lambda: tr("Small on-screen indicator showing how many lanes are detected and which one you're " +
+                            "in (e.g. [□□■□]). The border colour reflects detection " +
+                            "confidence: green = high, amber = medium, red = low."),
+      param="LanePositionIndicator",
+    )
+
     items = [
       self._auto_lock,
       self._auto_lock_button,
@@ -127,6 +138,7 @@ class TweaksLayout(Widget):
       self._launch_assist_button,
       self._park_assist,
       self._park_assist_button,
+      self._lane_position_indicator,
     ]
     return items
 
