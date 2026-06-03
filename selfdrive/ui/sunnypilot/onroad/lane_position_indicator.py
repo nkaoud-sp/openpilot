@@ -10,11 +10,13 @@ from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.sunnypilot.selfdrive.controls.lib.lane_position import LanePositionEstimator
 
 # Square size / spacing for the [□□■□] indicator
-_SQ = 36           # filled square side (px)
-_SQ_GAP = 8        # gap between squares
-_BORDER = 4        # outer border thickness
-_INNER_PAD = 12    # padding between squares and border
-_TOP_OFFSET = 30   # distance from top of the rect
+_SQ = 27           # filled square side (px)
+_SQ_GAP = 6        # gap between squares
+_BORDER = 3        # outer border thickness
+_INNER_PAD = 9     # padding between squares and border
+# Sit just above the follow readout (which anchors its top edge at 0.75 * rect.height)
+_BOTTOM_ANCHOR = 0.75
+_BOTTOM_MARGIN = 16  # gap (px) between this widget's bottom and the follow readout's top
 
 _BG = rl.Color(0, 0, 0, 130)
 _FILL_FG = rl.Color(255, 255, 255, 255)
@@ -66,7 +68,7 @@ class LanePositionIndicator:
     panel_h = _SQ + 2 * (_INNER_PAD + _BORDER)
 
     x = rect.x + (rect.width - panel_w) / 2
-    y = rect.y + _TOP_OFFSET
+    y = rect.y + rect.height * _BOTTOM_ANCHOR - _BOTTOM_MARGIN - panel_h
 
     # Background
     rl.draw_rectangle_rounded(rl.Rectangle(x, y, panel_w, panel_h), 0.25, 8, fade(_BG))
