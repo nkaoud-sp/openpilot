@@ -281,6 +281,13 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       output_a_target = output_a_target_mpc
       self.output_should_stop = output_should_stop_mpc
 
+    # Park creep: when stopped and park assist wants a closer gap, drop the
+    # model's hold so the MPC can creep forward to the park distance (it stops
+    # there on its own). Only at a near-standstill; the MPC bounds the approach.
+    if self.mpc.park_assist_active and sm['carState'].vEgo <= LAUNCH_MAX_EGO_SPEED:
+      output_a_target = output_a_target_mpc
+      self.output_should_stop = output_should_stop_mpc
+
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
     self.output_a_target = np.clip(output_a_target, accel_clip[0], accel_clip[1])
