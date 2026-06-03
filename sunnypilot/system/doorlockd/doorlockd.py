@@ -63,7 +63,7 @@ TOYOTA_DIAG_ADDR = 0x750
 
 # Delay after each diagnostic command. MIRROR_GAP is the (doubled) separation
 # between the right and left mirror fold so they don't step on each other.
-CMD_DELAY = 0.150
+CMD_DELAY = 0.250 # 0.150
 MIRROR_GAP = CMD_DELAY * 2
 
 # Cap lock retries so a mis-parsed LOCK_STATUS feedback can't loop forever.
