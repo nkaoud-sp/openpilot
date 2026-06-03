@@ -63,7 +63,7 @@ TOYOTA_DIAG_ADDR = 0x750
 
 # Delay after each diagnostic command. MIRROR_GAP is the (doubled) separation
 # between the right and left mirror fold so they don't step on each other.
-CMD_DELAY = 0.250 # 0.150
+CMD_DELAY = 0.150
 MIRROR_GAP = CMD_DELAY * 2
 
 # Cap lock retries so a mis-parsed LOCK_STATUS feedback can't loop forever.
@@ -206,26 +206,23 @@ def secure_vehicle(sm: messaging.SubMaster, params: Params, dbc: str) -> None:
         status("ignition back on, stopping lock attempts")
         break
 
+      #send_diag(panda, MIRR_FOLD_R, MIRROR_GAP)
+      
       attempt += 1
       status(f"sending lock (mirrors={fold_mirrors} windows={close_windows}) attempt {attempt}")
       send_diag(panda, LOCK_CMD)
+      
       if fold_mirrors:
-        # extra (doubled) gap between right and left mirror fold
-        #send_diag(panda, MIRR_FOLD_R, MIRROR_GAP)
         send_diag(panda, MIRR_FOLD_R)
-        #send_diag(panda, MIRR_FOLD_L)
-      if fold_mirrors:
-        # extra (doubled) gap between right and left mirror fold
-        #send_diag(panda, MIRR_FOLD_R, MIRROR_GAP)
-        #send_diag(panda, MIRR_FOLD_R)
-        send_diag(panda, MIRR_FOLD_L)
-      #if close_windows:
-        #for command in (WINDOW_CLOSE_RR, WINDOW_CLOSE_RL, WINDOW_CLOSE_FL, WINDOW_CLOSE_FR):
-          #send_diag(panda, command)
+        
       if close_windows:
         send_diag(panda, WINDOW_CLOSE_RR)
       if close_windows:
         send_diag(panda, WINDOW_CLOSE_RL)
+        
+      if fold_mirrors:
+        send_diag(panda, MIRR_FOLD_L)
+        
       if close_windows:
         send_diag(panda, WINDOW_CLOSE_FL)
       if close_windows:
