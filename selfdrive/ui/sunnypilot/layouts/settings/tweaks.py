@@ -88,7 +88,7 @@ class TweaksLayout(Widget):
     # Lead-departure launch assist (launch sooner when a stopped lead pulls away).
     # Detailed settings live in a sub-page reachable via the Manage button below.
     self._launch_assist = toggle_item_sp(
-      title=lambda: tr("Lead Departure Launch Assist"),
+      title=lambda: tr("Lead Launch Assist"),
       description=lambda: tr("When stopped behind a lead that pulls away, launch sooner instead of waiting for " +
                             "the model. The radar-based planner still enforces the safe gap, and it only acts " +
                             "from a full stop and never overrides the brake or gas. Requires openpilot " +
@@ -104,14 +104,14 @@ class TweaksLayout(Widget):
     # Lead park assist (closer standstill gap behind a stopped lead).
     # Detailed settings live in a sub-page reachable via the Manage button below.
     self._park_assist = toggle_item_sp(
-      title=lambda: tr("Lead Park Assist"),
+      title=lambda: tr("Lead Halt Assist"),
       description=lambda: tr("When stopped behind a stopped lead, settle at a closer gap than the default. The " +
                             "gap smoothly returns to normal once the lead moves. Only acts near a standstill. " +
                             "Requires openpilot longitudinal control."),
       param="ParkAssist",
     )
     self._park_assist_button = simple_button_item_sp(
-      button_text=lambda: tr("Manage Park Assist Settings"),
+      button_text=lambda: tr("Manage Halt Assist Settings"),
       button_width=800,
       callback=lambda: self._set_current_panel(PanelType.PARK),
     )
