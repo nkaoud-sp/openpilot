@@ -10,6 +10,7 @@ from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.auto_
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.dynamic_follow_settings import DynamicFollowSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.jerk_settings import JerkSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.launch_assist_settings import LaunchAssistSettingsLayout
+from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.nav_settings import NavSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.park_assist_settings import ParkAssistSettingsLayout
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.sunnypilot.widgets.list_view import toggle_item_sp, simple_button_item_sp
@@ -24,6 +25,7 @@ class PanelType(IntEnum):
   JERK = 3
   LAUNCH = 4
   PARK = 5
+  NAVIGATION = 6
 
 
 class TweaksLayout(Widget):
@@ -36,6 +38,7 @@ class TweaksLayout(Widget):
     self._jerk_layout = JerkSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._launch_layout = LaunchAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._park_layout = ParkAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
+    self._navigation_layout = NavSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
 
     items = self._initialize_items()
     self._scroller = Scroller(items, line_separator=True, spacing=0)
@@ -127,6 +130,21 @@ class TweaksLayout(Widget):
       param="LanePositionIndicator",
     )
 
+    # Experimental Mapbox-based navigation. Polyline overlay + maneuver banner + optional
+    # turn-slowdown. Master gate starts the nkaoud_navd process; submenu has the rest.
+    self._navigation = toggle_item_sp(
+      title=lambda: tr("Navigation (experimental)"),
+      description=lambda: tr("Route to a preset destination with a Mapbox-fetched polyline and maneuver banner. " +
+                            "Optionally slow for upcoming turns. Experimental — visual layer first, control " +
+                            "is opt-in inside the submenu."),
+      param="NkaoudNavEnabled",
+    )
+    self._navigation_button = simple_button_item_sp(
+      button_text=lambda: tr("Manage Navigation Settings"),
+      button_width=800,
+      callback=lambda: self._set_current_panel(PanelType.NAVIGATION),
+    )
+
     items = [
       self._auto_lock,
       self._auto_lock_button,
@@ -139,6 +157,8 @@ class TweaksLayout(Widget):
       self._park_assist,
       self._park_assist_button,
       self._lane_position_indicator,
+      self._navigation,
+      self._navigation_button,
     ]
     return items
 
@@ -153,6 +173,8 @@ class TweaksLayout(Widget):
       self._launch_layout.render(rect)
     elif self._current_panel == PanelType.PARK:
       self._park_layout.render(rect)
+    elif self._current_panel == PanelType.NAVIGATION:
+      self._navigation_layout.render(rect)
     else:
       self._scroller.render(rect)
 
@@ -172,6 +194,8 @@ class TweaksLayout(Widget):
       self._launch_layout.show_event()
     elif panel == PanelType.PARK:
       self._park_layout.show_event()
+    elif panel == PanelType.NAVIGATION:
+      self._navigation_layout.show_event()
 
   def _update_state(self):
     super()._update_state()
@@ -182,3 +206,4 @@ class TweaksLayout(Widget):
     self._asymmetric_jerk_button.action_item.set_enabled(self._asymmetric_jerk.action_item.get_state())
     self._launch_assist_button.action_item.set_enabled(self._launch_assist.action_item.get_state())
     self._park_assist_button.action_item.set_enabled(self._park_assist.action_item.get_state())
+    self._navigation_button.action_item.set_enabled(self._navigation.action_item.get_state())

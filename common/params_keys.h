@@ -176,6 +176,15 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"ParkAssist", {PERSISTENT | BACKUP, BOOL, "0"}},             // closer standstill gap behind a stopped lead
     {"ParkDistance", {PERSISTENT | BACKUP, INT, "300"}},          // standstill gap (cm) when park assist active
     {"ParkAssistMode", {PERSISTENT | BACKUP, INT, "0"}},          // 0 = from full stop, 1 = any low-speed following
+
+    // Experimental navigation (nkaoud_nav). Mapbox-direct, polyline overlay, maneuver banner,
+    // and turn-slowdown target speed published on nkaoudNavigationSP.
+    {"NkaoudNavEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},           // master on/off, gates the navd process
+    {"NkaoudNavMapboxToken", {PERSISTENT | BACKUP, STRING, ""}},      // user-provided Mapbox access token
+    {"NkaoudNavDestination", {PERSISTENT | BACKUP, JSON}},            // {latitude, longitude, place_name} or null
+    {"NkaoudNavShowPolyline", {PERSISTENT | BACKUP, BOOL, "1"}},      // overlay route polyline on driving view
+    {"NkaoudNavShowBanner", {PERSISTENT | BACKUP, BOOL, "1"}},        // show maneuver banner widget
+    {"NkaoudNavControlSpeed", {PERSISTENT | BACKUP, BOOL, "0"}},      // allow nav to influence longitudinal target speed
     {"CustomAccLongPressIncrement", {PERSISTENT | BACKUP, INT, "5"}},
     {"CustomAccShortPressIncrement", {PERSISTENT | BACKUP, INT, "1"}},
     {"DeviceBootMode", {PERSISTENT | BACKUP, INT, "0"}},

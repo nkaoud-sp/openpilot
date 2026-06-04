@@ -460,7 +460,19 @@ struct ModelDataV2SP @0xa1680744031fdb2d {
   }
 }
 
-struct CustomReserved10 @0xcb9fd56c7057593a {
+struct NkaoudNavigationSP @0xcb9fd56c7057593a {
+  # Master state
+  enabled @0 :Bool;       # NkaoudNavEnabled param mirror
+  active @1 :Bool;        # we have a fetched route and a valid GPS fix
+  onRoute @2 :Bool;       # vehicle currently follows the route geometry
+  routeId @3 :Text;       # opaque id (mapbox uuid or our own) for route invalidation
+  rerouting @4 :Bool;     # bearing-misalignment detector tripped, refetch in flight
+
+  # Maneuver-derived target speed (Phase 6 will consume this)
+  maneuverTargetSpeed @5 :Float32;       # m/s; <= 0 means no constraint
+  distanceToManeuver @6 :Float32;        # m
+  maneuverType @7 :Text;                 # e.g. "turn", "fork"
+  maneuverModifier @8 :Text;             # e.g. "left", "right", "uturn"
 }
 
 struct CustomReserved11 @0xc2243c65e0340384 {
