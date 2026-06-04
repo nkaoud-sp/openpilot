@@ -30,7 +30,16 @@ from openpilot.system.ui.lib.application import gui_app
 
 
 MAX_RENDER_DISTANCE_M = 250.0
-BEHIND_SLACK_M = 5.0
+# Drop polyline points closer than this to the camera. Below ~3 m the
+# perspective projection becomes ill-conditioned (1/z blows up as the point
+# approaches the camera plane) and previously-stable points start whipping
+# around the screen as the car passes them. Visually the bottom few meters
+# would be at the very edge of the frame anyway.
+MIN_FORWARD_M = 3.0
+# In the projected (view-frame) z component, drop anything below this to
+# guard against camera-behind or grazing cases that survive the forward
+# check (mostly relevant near sharp slopes / pitch transients).
+MIN_PROJ_Z = 0.1
 LINE_THICKNESS = 10.0
 LINE_COLOR_PRIMARY = rl.Color(0, 191, 255, 220)   # deep sky blue
 LINE_COLOR_OUTLINE = rl.Color(0, 0, 0, 140)
@@ -120,8 +129,9 @@ class NavRouteOverlay:
     z_ground = (float(calib.height[0]) if (calib.height and len(calib.height))
                 else float(HEIGHT_INIT[0])) + Z_GROUND_OFFSET_M
 
-    # Build a contiguous polyline of (forward, right) points, dropping segments
-    # that are entirely behind the vehicle or beyond the render distance.
+    # Build segments of (forward, right) points. Break a segment whenever a
+    # point falls outside the [MIN_FORWARD_M, MAX_RENDER_DISTANCE_M] window so
+    # behind-the-car points never connect to ahead-of-the-car points.
     segments: list[list[tuple[float, float]]] = []
     current: list[tuple[float, float]] = []
     for c in coords:
@@ -130,7 +140,7 @@ class NavRouteOverlay:
       forward = de * sin_yaw + dn * cos_yaw
       right = de * cos_yaw - dn * sin_yaw
 
-      in_window = (-BEHIND_SLACK_M <= forward <= MAX_RENDER_DISTANCE_M)
+      in_window = (MIN_FORWARD_M <= forward <= MAX_RENDER_DISTANCE_M)
       if in_window:
         current.append((forward, right))
       elif current:
@@ -145,17 +155,25 @@ class NavRouteOverlay:
   def _draw_segment(self, seg: list[tuple[float, float]], z_ground: float) -> None:
     if len(seg) < 2:
       return
-    pts: list[rl.Vector2] = []
+    # Sub-segment any projected point that lands on the wrong side of the
+    # image plane (p[2] < MIN_PROJ_Z) so the line never connects across a
+    # degenerate point.
+    sub_segments: list[list[rl.Vector2]] = []
+    current: list[rl.Vector2] = []
     for forward, right in seg:
       p = self._transform @ np.array([forward, right, z_ground], dtype=np.float32)
-      if abs(p[2]) < 1e-6:
+      if p[2] < MIN_PROJ_Z:
+        if len(current) >= 2:
+          sub_segments.append(current)
+        current = []
         continue
-      pts.append(rl.Vector2(float(p[0] / p[2]), float(p[1] / p[2])))
-    if len(pts) < 2:
-      return
+      current.append(rl.Vector2(float(p[0] / p[2]), float(p[1] / p[2])))
+    if len(current) >= 2:
+      sub_segments.append(current)
 
-    # Outline first (thicker) for contrast, then the bright line on top.
-    for i in range(len(pts) - 1):
-      rl.draw_line_ex(pts[i], pts[i + 1], LINE_THICKNESS + 4.0, LINE_COLOR_OUTLINE)
-    for i in range(len(pts) - 1):
-      rl.draw_line_ex(pts[i], pts[i + 1], LINE_THICKNESS, LINE_COLOR_PRIMARY)
+    for pts in sub_segments:
+      # Outline first (thicker) for contrast, then the bright line on top.
+      for i in range(len(pts) - 1):
+        rl.draw_line_ex(pts[i], pts[i + 1], LINE_THICKNESS + 4.0, LINE_COLOR_OUTLINE)
+      for i in range(len(pts) - 1):
+        rl.draw_line_ex(pts[i], pts[i + 1], LINE_THICKNESS, LINE_COLOR_PRIMARY)
