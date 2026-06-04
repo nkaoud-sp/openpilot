@@ -16,7 +16,6 @@ maneuverTargetSpeed is still 0.0 here -- phase 6 fills that in.
 """
 from __future__ import annotations
 
-import json
 import math
 import threading
 import time
@@ -49,12 +48,9 @@ TURN_MANEUVER_MODIFIERS = ("left", "right", "uturn", "sharpLeft", "sharpRight")
 
 
 def _read_destination(params: Params) -> Coordinate | None:
-  raw = params.get("NkaoudNavDestination")
-  if not raw:
-    return None
-  try:
-    d = json.loads(raw)
-  except (ValueError, TypeError):
+  # JSON-typed params come back as the parsed object directly (dict here), not a string.
+  d = params.get("NkaoudNavDestination")
+  if not isinstance(d, dict):
     return None
   if "latitude" not in d or "longitude" not in d:
     return None

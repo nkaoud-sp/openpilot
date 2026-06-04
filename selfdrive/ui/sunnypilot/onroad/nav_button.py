@@ -10,7 +10,6 @@ Only visible when NkaoudNavEnabled is set.
 """
 from __future__ import annotations
 
-import json
 import pyray as rl
 from openpilot.common.params import Params
 from openpilot.sunnypilot.nkaoud_nav.destinations import PRESETS
@@ -68,7 +67,8 @@ class NavButton(Widget):
       return
     for preset in PRESETS:
       if preset.label == selection:
-        self._params.put("NkaoudNavDestination", json.dumps(preset.as_dict()))
+        # NkaoudNavDestination is a JSON param: pass a dict, Params serializes it.
+        self._params.put("NkaoudNavDestination", preset.as_dict())
         return
 
   def _render(self, rect: rl.Rectangle) -> None:
