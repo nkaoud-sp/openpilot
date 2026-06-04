@@ -41,6 +41,12 @@ BEARING_MISALIGN_COUNTER_MIN = 3
 ARRIVAL_DISTANCE_M = 25.0          # consider the destination reached within this
 MIN_REROUTE_INTERVAL_S = 8.0       # back off so reroutes don't spam the API
 
+# Turn-slowdown target speed (ported from old fork's
+# navigation_test_maneuver_target_speed / TURN_SLOWDOWN_MIN_SPEED_MS).
+TURN_SLOWDOWN_SPEED_MS = 25.0 / 3.6   # ~6.94 m/s (25 km/h)
+TURN_SLOWDOWN_RANGE_M = 150.0         # only apply within this distance to maneuver
+TURN_MANEUVER_MODIFIERS = ("left", "right", "uturn", "sharpLeft", "sharpRight")
+
 
 def _read_destination(params: Params) -> Coordinate | None:
   raw = params.get("NkaoudNavDestination")
@@ -281,7 +287,7 @@ class NkaoudNavd:
     nav.onRoute = nav.active and not self.rerouting
     nav.routeId = self.route.route_id if self.route is not None else ""
     nav.rerouting = self.rerouting or self.fetcher.in_flight()
-    nav.maneuverTargetSpeed = 0.0  # phase 6
+    nav.maneuverTargetSpeed = self._maneuver_target_speed()
     nav.distanceToManeuver = self._distance_to_maneuver()
     cur_step = self._current_step()
     nav.maneuverType = cur_step.maneuver_type if cur_step is not None else ""
@@ -344,6 +350,26 @@ class NkaoudNavd:
     step = self.route.steps[idx]
     step_end = step_start + step.distance
     return max(0.0, step_end - self.last_distance_along)
+
+  def _maneuver_target_speed(self) -> float:
+    """Turn-slowdown target speed (m/s).
+
+    Returns 0.0 when no constraint applies. The longitudinal planner treats
+    0.0 / negative as "ignore this source". Mirrors the old fork's
+    navigation_test_maneuver_target_speed: a fixed slow speed when a sharp
+    turn / u-turn is the next maneuver and we're within range.
+    """
+    if self.route is None:
+      return 0.0
+    # Look at the NEXT maneuver (the end of the current step is the
+    # upcoming maneuver), not the previous one.
+    cur_step = self._current_step()
+    if cur_step is None or cur_step.maneuver_modifier not in TURN_MANEUVER_MODIFIERS:
+      return 0.0
+    dist = self._distance_to_maneuver()
+    if dist <= 0.0 or dist > TURN_SLOWDOWN_RANGE_M:
+      return 0.0
+    return TURN_SLOWDOWN_SPEED_MS
 
   @staticmethod
   def _select_banner(banners: list[Banner], distance_to_maneuver: float) -> Banner | None:
