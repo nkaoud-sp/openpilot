@@ -17,6 +17,7 @@ maneuverTargetSpeed is still 0.0 here -- phase 6 fills that in.
 from __future__ import annotations
 
 import math
+import os
 import threading
 import time
 
@@ -60,6 +61,35 @@ def _read_destination(params: Params) -> Coordinate | None:
 
 def _read_token(params: Params) -> str:
   return (params.get("NkaoudNavMapboxToken") or "").strip()
+
+
+# Drop-in token import: place the token in any of these files (one of which is
+# reachable via the copyparty web UI when EnableCopyparty is on) and navd will
+# read it, write it to the param, and delete the file. Avoids typing a long
+# token on the on-screen keyboard.
+TOKEN_DROP_PATHS = (
+  "/data/openpilot/nkaoud_mapbox_token.txt",
+  "/data/openpilot/sunnypilot/nkaoud_nav/mapbox_token.txt",
+)
+
+
+def _maybe_import_token_file(params: Params) -> None:
+  for path in TOKEN_DROP_PATHS:
+    if not os.path.exists(path):
+      continue
+    try:
+      with open(path) as f:
+        token = f.read().strip()
+      os.remove(path)
+    except OSError as e:
+      cloudlog.warning(f"nkaoud_navd: token-file import failed at {path}: {e}")
+      continue
+    if not token:
+      cloudlog.warning(f"nkaoud_navd: token-file at {path} was empty, removed")
+      continue
+    params.put("NkaoudNavMapboxToken", token)
+    cloudlog.info(f"nkaoud_navd: imported Mapbox token from {path}, file removed")
+    return
 
 
 def _location_from_llk(llk) -> tuple[Coordinate | None, float | None, float]:
@@ -155,6 +185,8 @@ class NkaoudNavd:
   # ---- core loop ----
   def step(self) -> None:
     self.sm.update(0)
+
+    _maybe_import_token_file(self.params)
 
     pos, bearing, v_ego = _location_from_llk(self.sm['liveLocationKalman'])
     if pos is not None:

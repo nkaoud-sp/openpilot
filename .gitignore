@@ -3,6 +3,10 @@ venv/
 .ci_cache
 .env
 .clang-format
+
+# nkaoud_nav: token drop-points (navd reads + deletes these on next tick)
+/nkaoud_mapbox_token.txt
+/sunnypilot/nkaoud_nav/mapbox_token.txt
 .DS_Store
 .tags
 .ipynb_checkpoints
