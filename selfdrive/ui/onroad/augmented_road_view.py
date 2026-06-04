@@ -95,6 +95,7 @@ class AugmentedRoadView(CameraView, AugmentedRoadViewSP):
     # Draw all UI overlays
     self.model_renderer.render(self._content_rect)
     AugmentedRoadViewSP.update_fade_out_bottom_overlay(self, self._content_rect)
+    AugmentedRoadViewSP.render_nav_route(self, self._content_rect)
     self._hud_renderer.render(self._content_rect)
     self.alert_renderer.render(self._content_rect)
     self.driver_state_renderer.render(self._content_rect)
@@ -224,6 +225,7 @@ class AugmentedRoadView(CameraView, AugmentedRoadViewSP):
       [0.0, 0.0, 1.0]
     ])
     self.model_renderer.set_transform(video_transform @ calib_transform)
+    AugmentedRoadViewSP.set_nav_route_transform(self, video_transform @ calib_transform)
 
     return self._cached_matrix
 
