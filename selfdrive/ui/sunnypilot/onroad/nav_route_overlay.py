@@ -2,11 +2,18 @@
 Projects the active Mapbox route polyline (navRoute) onto the driving view.
 
 Supports several rendering styles via NkaoudNavPolylineStyle:
-  0 SOLID    -- original sharp blue stroke with black outline.
-  1 SMOOTH   -- Catmull-Rom interpolated curve, width tapers wider near the
-                car, alpha fades toward the horizon. Calm + polished.
-  2 GLOW     -- smooth curve with a multi-pass halo, neon look.
-  3 CHEVRONS -- animated forward-flowing chevrons over a faint base line.
+  0 SOLID     -- original sharp blue stroke with black outline.
+  1 SMOOTH    -- Catmull-Rom interpolated curve, width tapers wider near the
+                 car, alpha fades toward the horizon. Calm + polished.
+  2 GLOW      -- smooth curve with a multi-pass halo, neon look.
+  3 CHEVRONS  -- animated forward-flowing chevrons over a faint base line.
+  4 RIBBON    -- filled ribbon (quad strip) with width that tapers; a soft
+                 lane-shaped "this is the route" swath rather than a stroke.
+  5 DASHED    -- dashes at constant world-space spacing, walked along the
+                 path; reads like a navigation-app waypoint dotted line.
+  6 SMOKE     -- diffuse soft trail; 5 stacked passes of varying width
+                 and slight horizontal jitter, looks like a thick aurora.
+  7 COMPOSITE -- SMOOTH base with CHEVRONS overlaid for direction + body.
 
 Gated on NkaoudNavEnabled + NkaoudNavShowPolyline.
 
@@ -70,12 +77,42 @@ CHEVRON_THICKNESS_NEAR = 8.0
 CHEVRON_THICKNESS_FAR = 3.0
 CHEVRON_BASELINE_ALPHA = 60     # faint base line under the chevrons
 
+# RIBBON (screen-space perpendicular offset; tapers with forward distance)
+RIBBON_HALFWIDTH_NEAR = 52.0
+RIBBON_HALFWIDTH_FAR = 10.0
+RIBBON_FILL_ALPHA_NEAR = 150
+RIBBON_FILL_ALPHA_FAR = 35
+RIBBON_EDGE_ALPHA_NEAR = 230
+RIBBON_EDGE_ALPHA_FAR = 70
+
+# DASHED (constant world-space step)
+DASH_ON_M = 4.0
+DASH_OFF_M = 3.0
+DASH_THICKNESS_NEAR = 14.0
+DASH_THICKNESS_FAR = 4.0
+DASH_ALPHA_NEAR = 240
+DASH_ALPHA_FAR = 60
+
+# SMOKE (multi-pass diffuse trail)
+SMOKE_LAYERS = (
+  # (width, base_alpha, x_jitter_px)
+  (28.0, 22, -4),
+  (22.0, 35, +3),
+  (16.0, 55, -2),
+  (10.0, 90, +1),
+  (4.0,  220, 0),     # bright core
+)
+
 
 class NavPolylineStyle(IntEnum):
   SOLID = 0
   SMOOTH = 1
   GLOW = 2
   CHEVRONS = 3
+  RIBBON = 4
+  DASHED = 5
+  SMOKE = 6
+  COMPOSITE = 7
 
 
 def _clip01(t: float) -> float:
@@ -243,13 +280,23 @@ class NavRouteOverlay:
   def _draw_style(self, pts: list[rl.Vector2], fwds: list[float]) -> None:
     if len(pts) < 2:
       return
-    if self._style == NavPolylineStyle.SOLID:
+    style = self._style
+    if style == NavPolylineStyle.SOLID:
       self._draw_solid(pts)
-    elif self._style == NavPolylineStyle.SMOOTH:
+    elif style == NavPolylineStyle.SMOOTH:
       self._draw_smooth(pts, fwds)
-    elif self._style == NavPolylineStyle.GLOW:
+    elif style == NavPolylineStyle.GLOW:
       self._draw_glow(pts, fwds)
-    elif self._style == NavPolylineStyle.CHEVRONS:
+    elif style == NavPolylineStyle.CHEVRONS:
+      self._draw_chevrons(pts, fwds)
+    elif style == NavPolylineStyle.RIBBON:
+      self._draw_ribbon(pts, fwds)
+    elif style == NavPolylineStyle.DASHED:
+      self._draw_dashed(pts, fwds)
+    elif style == NavPolylineStyle.SMOKE:
+      self._draw_smoke(pts, fwds)
+    elif style == NavPolylineStyle.COMPOSITE:
+      self._draw_smooth(pts, fwds)
       self._draw_chevrons(pts, fwds)
 
   # ---------- styles ----------
@@ -317,6 +364,94 @@ class NavRouteOverlay:
           rl.draw_line_ex(back_l, tip, thick, color)
           rl.draw_line_ex(back_r, tip, thick, color)
       d += CHEVRON_SPACING_M
+
+  def _draw_ribbon(self, pts: list[rl.Vector2], fwds: list[float]) -> None:
+    spts, sfwds = _catmull_rom(pts, fwds, SMOOTH_SUBSAMPLES)
+    if len(spts) < 2:
+      return
+    # Build left/right offset polylines in screen space. Width tapers with forward.
+    left: list[rl.Vector2] = []
+    right: list[rl.Vector2] = []
+    for i in range(len(spts)):
+      # Use the local tangent (segment to next, or previous if at the end).
+      j = i + 1 if i + 1 < len(spts) else i - 1
+      dx, dy = spts[j].x - spts[i].x, spts[j].y - spts[i].y
+      n = math.hypot(dx, dy)
+      if n < 1e-3:
+        left.append(spts[i])
+        right.append(spts[i])
+        continue
+      # Perpendicular (right-handed rotate 90° clockwise on screen: (dx, dy) -> (-dy, dx))
+      px = -dy / n
+      py = dx / n
+      t_far = _clip01(sfwds[i] / MAX_RENDER_DISTANCE_M)
+      half = _lerp(RIBBON_HALFWIDTH_NEAR, RIBBON_HALFWIDTH_FAR, t_far)
+      left.append(rl.Vector2(spts[i].x + px * half, spts[i].y + py * half))
+      right.append(rl.Vector2(spts[i].x - px * half, spts[i].y - py * half))
+
+    # Quad strip filled. Two triangles per quad.
+    for i in range(len(spts) - 1):
+      t_far = _clip01(0.5 * (sfwds[i] + sfwds[i + 1]) / MAX_RENDER_DISTANCE_M)
+      alpha = int(_lerp(RIBBON_FILL_ALPHA_NEAR, RIBBON_FILL_ALPHA_FAR, t_far))
+      fill = _rgba(BLUE, alpha)
+      # raylib expects vertices in counter-clockwise order for the visible face.
+      rl.draw_triangle(left[i], right[i], right[i + 1], fill)
+      rl.draw_triangle(left[i], right[i + 1], left[i + 1], fill)
+
+    # Bright edges along the ribbon for definition.
+    for i in range(len(spts) - 1):
+      t_far = _clip01(0.5 * (sfwds[i] + sfwds[i + 1]) / MAX_RENDER_DISTANCE_M)
+      alpha = int(_lerp(RIBBON_EDGE_ALPHA_NEAR, RIBBON_EDGE_ALPHA_FAR, t_far))
+      edge = _rgba(BLUE, alpha)
+      rl.draw_line_ex(left[i], left[i + 1], 3.0, edge)
+      rl.draw_line_ex(right[i], right[i + 1], 3.0, edge)
+
+  def _draw_dashed(self, pts: list[rl.Vector2], fwds: list[float]) -> None:
+    spts, sfwds = _catmull_rom(pts, fwds, SMOOTH_SUBSAMPLES)
+    if len(spts) < 2:
+      return
+    min_f, max_f = sfwds[0], sfwds[-1]
+    if max_f - min_f < DASH_ON_M:
+      return
+    period = DASH_ON_M + DASH_OFF_M
+
+    def screen_at(d: float, hint_idx: int) -> tuple[rl.Vector2 | None, int]:
+      i = hint_idx
+      while i < len(sfwds) - 1 and sfwds[i + 1] < d:
+        i += 1
+      if i >= len(sfwds) - 1:
+        return None, i
+      f0, f1 = sfwds[i], sfwds[i + 1]
+      if f1 - f0 < 1e-3:
+        return spts[i], i
+      t = (d - f0) / (f1 - f0)
+      return rl.Vector2(
+        spts[i].x + t * (spts[i + 1].x - spts[i].x),
+        spts[i].y + t * (spts[i + 1].y - spts[i].y),
+      ), i
+
+    d = min_f
+    hint = 0
+    while d + DASH_ON_M <= max_f:
+      p1, hint = screen_at(d, hint)
+      p2, hint = screen_at(d + DASH_ON_M, hint)
+      if p1 is not None and p2 is not None:
+        t = _clip01(d / MAX_RENDER_DISTANCE_M)
+        w = _lerp(DASH_THICKNESS_NEAR, DASH_THICKNESS_FAR, t)
+        a = int(_lerp(DASH_ALPHA_NEAR, DASH_ALPHA_FAR, t))
+        rl.draw_line_ex(p1, p2, w + 3.0, rl.Color(0, 0, 0, max(0, a // 3)))
+        rl.draw_line_ex(p1, p2, w, _rgba(BLUE, a))
+      d += period
+
+  def _draw_smoke(self, pts: list[rl.Vector2], fwds: list[float]) -> None:
+    spts, sfwds = _catmull_rom(pts, fwds, SMOOTH_SUBSAMPLES)
+    for width, base_alpha, jitter_x in SMOKE_LAYERS:
+      for i in range(len(spts) - 1):
+        t_far = _clip01(0.5 * (sfwds[i] + sfwds[i + 1]) / MAX_RENDER_DISTANCE_M)
+        a = int(_lerp(base_alpha, max(8, base_alpha // 4), t_far))
+        p1 = rl.Vector2(spts[i].x + jitter_x, spts[i].y)
+        p2 = rl.Vector2(spts[i + 1].x + jitter_x, spts[i + 1].y)
+        rl.draw_line_ex(p1, p2, width, _rgba(BLUE, a))
 
   # ---------- shared helpers ----------
   def _alpha_at(self, forward: float, near: int, far: int) -> int:

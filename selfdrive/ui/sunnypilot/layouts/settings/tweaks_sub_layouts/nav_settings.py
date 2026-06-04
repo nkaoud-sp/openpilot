@@ -43,13 +43,16 @@ class NavSettingsLayout(Widget):
     )
     self._polyline_style = multiple_button_item_sp(
       title=lambda: tr("Polyline Style"),
-      description=lambda: tr("Solid: sharp blue stroke (literal Mapbox geometry). " +
-                            "Smooth: Catmull-Rom interpolated curve with width taper. " +
-                            "Glow: smooth + neon halo. " +
-                            "Chevrons: animated forward-flow chevrons."),
+      description=lambda: tr("Solid: literal Mapbox geometry. Smooth: interpolated, " +
+                            "tapered. Glow: neon halo. Chevrons: animated arrows. " +
+                            "Ribbon: filled lane swath. Dashed: dotted waypoint look. " +
+                            "Smoke: diffuse trail. Composite: smooth + chevrons."),
       buttons=[lambda: tr("Solid"), lambda: tr("Smooth"),
-               lambda: tr("Glow"), lambda: tr("Chevrons")],
+               lambda: tr("Glow"), lambda: tr("Chevrons"),
+               lambda: tr("Ribbon"), lambda: tr("Dashed"),
+               lambda: tr("Smoke"), lambda: tr("Composite")],
       param="NkaoudNavPolylineStyle",
+      button_width=240,
     )
     self._show_banner = toggle_item_sp(
       title=lambda: tr("Show Maneuver Banner"),
