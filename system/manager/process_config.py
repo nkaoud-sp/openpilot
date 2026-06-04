@@ -191,6 +191,9 @@ procs += [
   # Experimental Mapbox-based navigation (nkaoud_nav). Gated on NkaoudNavEnabled so it
   # costs nothing when the master toggle is off.
   PythonProcess("nkaoud_navd", "sunnypilot.nkaoud_nav.navd", nkaoud_nav_enabled),
+  # Tiny offroad-only web form on :8081 to paste the Mapbox token without
+  # using the on-screen keyboard. Same threat model as copyparty.
+  PythonProcess("nkaoud_nav_token_server", "sunnypilot.nkaoud_nav.token_server", only_offroad),
 ]
 
 if os.path.exists("./github_runner.sh"):
