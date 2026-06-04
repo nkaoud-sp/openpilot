@@ -5,8 +5,9 @@ from collections.abc import Callable
 
 import pyray as rl
 from openpilot.common.params import Params
+from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.nav_token_qr_dialog import NavTokenQrDialog
+from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr
-from openpilot.system.ui.sunnypilot.widgets.input_dialog import InputDialogSP
 from openpilot.system.ui.sunnypilot.widgets.list_view import toggle_item_sp, simple_button_item_sp
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.network import NavButton
@@ -71,14 +72,9 @@ class NavSettingsLayout(Widget):
     return tr("Set Mapbox Token")
 
   def _open_token_input(self) -> None:
-    current = (self._params.get("NkaoudNavMapboxToken") or "").strip()
-    dialog = InputDialogSP(
-      title="Mapbox Access Token",
-      sub_title="Paste your token (pk.eyJ...).",
-      current_text=current,
-      param="NkaoudNavMapboxToken",
-    )
-    dialog.show()
+    # Pushes the QR dialog. The dialog starts a temporary HTTP server on
+    # :8081 in its __init__ and stops it on cancel / token receipt.
+    gui_app.push_widget(NavTokenQrDialog())
 
   def _render(self, rect):
     self._back_button.set_position(self._rect.x, self._rect.y + 20)

@@ -189,11 +189,10 @@ procs += [
   NativeProcess("locationd_llk", "sunnypilot/selfdrive/locationd", ["./locationd"], only_onroad),
 
   # Experimental Mapbox-based navigation (nkaoud_nav). Gated on NkaoudNavEnabled so it
-  # costs nothing when the master toggle is off.
+  # costs nothing when the master toggle is off. The token-entry web form lives
+  # inside the settings UI dialog (sunnypilot.nkaoud_nav.token_server) and only
+  # runs while that dialog is visible, so it's not registered as a process.
   PythonProcess("nkaoud_navd", "sunnypilot.nkaoud_nav.navd", nkaoud_nav_enabled),
-  # Tiny offroad-only web form on :8081 to paste the Mapbox token without
-  # using the on-screen keyboard. Same threat model as copyparty.
-  PythonProcess("nkaoud_nav_token_server", "sunnypilot.nkaoud_nav.token_server", only_offroad),
 ]
 
 if os.path.exists("./github_runner.sh"):
