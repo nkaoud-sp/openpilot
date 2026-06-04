@@ -12,9 +12,24 @@ Phase 6 will fill in maneuverTargetSpeed for longitudinal turn-slowdown.
 """
 from __future__ import annotations
 
+import json
+
 import cereal.messaging as messaging
 from openpilot.common.params import Params
 from openpilot.common.realtime import Ratekeeper
+
+
+def _read_destination(params: Params) -> dict | None:
+  raw = params.get("NkaoudNavDestination")
+  if not raw:
+    return None
+  try:
+    d = json.loads(raw)
+  except (ValueError, TypeError):
+    return None
+  if "latitude" not in d or "longitude" not in d:
+    return None
+  return d
 
 
 class NkaoudNavd:
@@ -32,8 +47,9 @@ class NkaoudNavd:
     nav = msg.nkaoudNavigationSP
 
     nav.enabled = self.params.get_bool("NkaoudNavEnabled")
-    nav.active = False
-    nav.onRoute = False
+    destination = _read_destination(self.params)
+    nav.active = nav.enabled and destination is not None
+    nav.onRoute = False  # filled in once route fetching lands in phase 3
     nav.routeId = ""
     nav.rerouting = False
     nav.maneuverTargetSpeed = 0.0
