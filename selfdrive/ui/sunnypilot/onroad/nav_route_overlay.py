@@ -5,8 +5,11 @@ Reuses the same car-space-to-screen transform that ModelRenderer uses, so the
 polyline follows the road. Gated on NkaoudNavEnabled + NkaoudNavShowPolyline.
 
 Device frame convention (per common/transformations/camera.py): x=forward,
-y=right, z=down. So a world point straight ahead of the vehicle at ground
-level maps to (forward_m, right_m, 0).
+y=right, z=down. Camera is mounted ~1.22 m above the road, so the road surface
+sits at z = +live_calibration.height (positive = downward). Passing z = 0
+would place the polyline at the camera's own height -- i.e. flat on the
+horizon plane -- which is why an early version of this overlay rendered as
+a horizontal line along the horizon.
 """
 from __future__ import annotations
 
@@ -15,6 +18,7 @@ import time
 
 import numpy as np
 import pyray as rl
+from openpilot.selfdrive.locationd.calibrationd import HEIGHT_INIT
 from openpilot.selfdrive.ui.ui_state import ui_state
 
 
@@ -73,6 +77,11 @@ class NavRouteOverlay:
     sin_yaw = math.sin(yaw)
     me_per_deg_lon = METERS_PER_DEG_LAT * cos_lat0
 
+    # Road surface is below the camera by the calibrated height. In device
+    # frame z = down, so this is positive.
+    calib = sm['liveCalibration']
+    z_ground = float(calib.height[0]) if (calib.height and len(calib.height)) else float(HEIGHT_INIT[0])
+
     # Build a contiguous polyline of (forward, right, 0) points, dropping segments
     # that are entirely behind the vehicle or beyond the render distance.
     segments: list[list[tuple[float, float]]] = []
@@ -93,14 +102,14 @@ class NavRouteOverlay:
       segments.append(current)
 
     for seg in segments:
-      self._draw_segment(seg)
+      self._draw_segment(seg, z_ground)
 
-  def _draw_segment(self, seg: list[tuple[float, float]]) -> None:
+  def _draw_segment(self, seg: list[tuple[float, float]], z_ground: float) -> None:
     if len(seg) < 2:
       return
     pts: list[rl.Vector2] = []
     for forward, right in seg:
-      p = self._transform @ np.array([forward, right, 0.0], dtype=np.float32)
+      p = self._transform @ np.array([forward, right, z_ground], dtype=np.float32)
       if abs(p[2]) < 1e-6:
         continue
       pts.append(rl.Vector2(float(p[0] / p[2]), float(p[1] / p[2])))
