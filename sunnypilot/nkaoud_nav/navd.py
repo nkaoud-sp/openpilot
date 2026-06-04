@@ -23,6 +23,7 @@ import time
 import cereal.messaging as messaging
 from openpilot.common.params import Params
 from openpilot.common.realtime import Ratekeeper
+from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.nkaoud_nav.geometry import (
   Coordinate, closest_segment_index, distance_along_geometry,
   route_bearing_at, total_geometry_length,
@@ -192,13 +193,18 @@ class NkaoudNavd:
             and abs(d.longitude - self.destination.longitude) < 1e-7)
 
   def _try_fetch_initial(self) -> None:
-    if self.destination is None or self.last_pos is None:
+    if self.destination is None:
+      return
+    if self.last_pos is None:
+      cloudlog.warning("nkaoud_navd: have destination but no GPS yet, deferring fetch")
       return
     token = _read_token(self.params)
     if not token:
+      cloudlog.warning("nkaoud_navd: NkaoudNavMapboxToken is empty, cannot fetch route")
       return
     if self.fetcher.in_flight():
       return
+    cloudlog.info(f"nkaoud_navd: fetching route to {self.destination.latitude:.5f},{self.destination.longitude:.5f}")
     self.fetcher.submit(self.last_pos, self.destination, token, self.last_bearing)
     self.last_route_fetch_t = time.monotonic()
     self.rerouting = self.route is not None  # mark only if replacing an existing route
@@ -208,11 +214,12 @@ class NkaoudNavd:
       return
     result, error = self.fetcher.take_result()
     if result is not None:
+      cloudlog.info(f"nkaoud_navd: route received ({result.distance_total:.0f} m, {len(result.steps)} steps)")
       self.route = result
       self.step_idx = 0
       self.rerouting = False
     elif error is not None:
-      # silent for now; could publish to onroadEvents in a later phase
+      cloudlog.warning(f"nkaoud_navd: route fetch failed: {error}")
       self.rerouting = False
 
   def _update_progress(self) -> None:
