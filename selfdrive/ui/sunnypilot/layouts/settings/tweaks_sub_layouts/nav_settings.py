@@ -52,7 +52,7 @@ class NavSettingsLayout(Widget):
                lambda: tr("Ribbon"), lambda: tr("Dashed"),
                lambda: tr("Smoke"), lambda: tr("Composite")],
       param="NkaoudNavPolylineStyle",
-      button_width=240,
+      button_width=220,
     )
     self._show_banner = toggle_item_sp(
       title=lambda: tr("Show Maneuver Banner"),
