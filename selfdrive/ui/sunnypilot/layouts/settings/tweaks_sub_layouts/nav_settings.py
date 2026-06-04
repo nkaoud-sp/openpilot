@@ -8,7 +8,7 @@ from openpilot.common.params import Params
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.nav_token_qr_dialog import NavTokenQrDialog
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr
-from openpilot.system.ui.sunnypilot.widgets.list_view import toggle_item_sp, simple_button_item_sp
+from openpilot.system.ui.sunnypilot.widgets.list_view import toggle_item_sp, simple_button_item_sp, multiple_button_item_sp
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.network import NavButton
 from openpilot.system.ui.widgets.scroller_tici import Scroller
@@ -41,6 +41,16 @@ class NavSettingsLayout(Widget):
       description=lambda: tr("Overlay the active route onto the driving view as a polyline."),
       param="NkaoudNavShowPolyline",
     )
+    self._polyline_style = multiple_button_item_sp(
+      title=lambda: tr("Polyline Style"),
+      description=lambda: tr("Solid: sharp blue stroke (literal Mapbox geometry). " +
+                            "Smooth: Catmull-Rom interpolated curve with width taper. " +
+                            "Glow: smooth + neon halo. " +
+                            "Chevrons: animated forward-flow chevrons."),
+      buttons=[lambda: tr("Solid"), lambda: tr("Smooth"),
+               lambda: tr("Glow"), lambda: tr("Chevrons")],
+      param="NkaoudNavPolylineStyle",
+    )
     self._show_banner = toggle_item_sp(
       title=lambda: tr("Show Maneuver Banner"),
       description=lambda: tr("Display the upcoming maneuver (turn direction, street name, distance) on the driving " +
@@ -58,6 +68,7 @@ class NavSettingsLayout(Widget):
       self._token_button,
       self._clear_destination_button,
       self._show_polyline,
+      self._polyline_style,
       self._show_banner,
       self._control_speed,
     ]

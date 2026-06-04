@@ -185,6 +185,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"NkaoudNavShowPolyline", {PERSISTENT | BACKUP, BOOL, "1"}},      // overlay route polyline on driving view
     {"NkaoudNavShowBanner", {PERSISTENT | BACKUP, BOOL, "1"}},        // show maneuver banner widget
     {"NkaoudNavControlSpeed", {PERSISTENT | BACKUP, BOOL, "0"}},      // allow nav to influence longitudinal target speed
+    {"NkaoudNavPolylineStyle", {PERSISTENT | BACKUP, INT, "1"}},      // 0=solid, 1=smooth, 2=glow, 3=chevrons
     {"CustomAccLongPressIncrement", {PERSISTENT | BACKUP, INT, "5"}},
     {"CustomAccShortPressIncrement", {PERSISTENT | BACKUP, INT, "1"}},
     {"DeviceBootMode", {PERSISTENT | BACKUP, INT, "0"}},
