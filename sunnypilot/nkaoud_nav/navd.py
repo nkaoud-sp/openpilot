@@ -86,6 +86,14 @@ MISS_COUNTER_MIN = 1
 NAV_LC_COOLDOWN_S = 4.0
 AUTO_LANE_CHANGE_OFF = -1        # AutoLaneChangeTimer param value meaning "off"
 
+# Phase 10: highway-cruising default lane. When the next maneuver is far
+# enough away that the lane-keep window hasn't opened, target the center
+# lane on motorway-class roads so passes and either-side exits stay
+# reachable.
+HIGHWAY_CLASSES = ("motorway", "motorway_link", "trunk")
+HIGHWAY_DEFAULT_MIN_SPEED_MS = 60.0 / 3.6      # ~60 km/h; below this we don't auto-position
+HIGHWAY_DEFAULT_MIN_DIST_M = 1500.0            # only target center when next maneuver is at least this far
+
 
 def _ranges_for(maneuver_type: str) -> tuple[float, float]:
   return MANEUVER_RANGES.get((maneuver_type or "").strip(), DEFAULT_RANGES)
@@ -566,59 +574,52 @@ class NkaoudNavd:
     return max(0.0, step_end - self.last_distance_along)
 
   def _recommended_desire(self):
-    """Phase 7 lateral influence.
+    """Phase 7-10 lateral influence.
 
-    Gated by NkaoudNavControlSteer. Falls back to none unless:
-      - We have an active route and an upcoming maneuver.
-      - We're inside DESIRE_TURN_RANGE_M -> emit turnLeft/turnRight matching
-        the upcoming modifier.
-      - Otherwise inside DESIRE_LANE_KEEP_RANGE_M -> consult Mapbox banner
-        lanes plus the lane-position estimator. If we're not on the half
-        of the road that has active lanes, emit keepLeft/keepRight.
-
-    Returns a custom.NkaoudNavigationSP.NavDesire enum value.
+    Gated by NkaoudNavControlSteer. Order of precedence (only one fires):
+      1. Direct turn cue within turn_cue_m -> turnLeft/turnRight.
+      2. Lane-positioning for an upcoming maneuver within lane_keep_m.
+         Target lane is incremental -- loose at the far edge of the
+         window (any lane on the correct side), strict at the near edge
+         (outermost lane).
+      3. Highway-cruise default -- when no maneuver is imminent and the
+         current step is motorway-class, target the center lane so we
+         keep our options open.
     """
     if not self.params.get_bool("NkaoudNavControlSteer"):
       return NavDesire.none
     cur_step = self._current_step()
     upcoming = self._upcoming_step()
-    if cur_step is None or upcoming is None:
+    if cur_step is None:
       return NavDesire.none
     dist = self._distance_to_maneuver()
-    lane_keep_m, turn_cue_m = _ranges_for(upcoming.maneuver_type)
-    if dist <= 0.0 or dist > lane_keep_m:
-      return NavDesire.none
 
-    # The UPCOMING maneuver -- the one at the start of the next step --
-    # is what we want to react to. cur_step.maneuver_modifier was the
-    # action that started this step (already executed).
-    modifier = upcoming.maneuver_modifier
-    # Direct turn cue close to the maneuver.
-    if dist <= turn_cue_m:
-      if modifier in LEFT_TURN_MODIFIERS:
-        return NavDesire.turnLeft
-      if modifier in RIGHT_TURN_MODIFIERS:
-        return NavDesire.turnRight
-      return NavDesire.none
+    # Imminent maneuver path
+    if upcoming is not None and dist > 0.0:
+      lane_keep_m, turn_cue_m = _ranges_for(upcoming.maneuver_type)
+      if dist <= lane_keep_m:
+        modifier = upcoming.maneuver_modifier
+        if dist <= turn_cue_m:
+          if modifier in LEFT_TURN_MODIFIERS:
+            return NavDesire.turnLeft
+          if modifier in RIGHT_TURN_MODIFIERS:
+            return NavDesire.turnRight
+          return NavDesire.none
 
-    # Otherwise figure out which side the route wants. Mapbox banner lane
-    # guidance is the most accurate (highway exits / forks), so prefer it.
-    # For surface-street turns the banner usually has no sub.components,
-    # so fall back to inferring "left turn -> left side" from the upcoming
-    # maneuver modifier itself. Then ask the lane-position estimator
-    # whether we're already on that side; if so, do nothing.
-    side = self._route_side(cur_step, dist, modifier)
-    needs_move = ((side == "left" and self._need_to_move("left"))
-                  or (side == "right" and self._need_to_move("right")))
-    if not needs_move:
-      return NavDesire.none
+        side = self._route_side(cur_step, dist, modifier)
+        if side:
+          target = self._target_lane(side, dist, lane_keep_m, turn_cue_m)
+          if target is not None and self._need_to_move(side, target):
+            return self._lc_or_keep(side)
+        return NavDesire.none
 
-    # Active lane change only if:
-    #   - The user has the openpilot AutoLaneChangeTimer set to anything
-    #     except OFF (so they consent to auto-executed lane changes).
-    #   - A lane change isn't already underway and our cooldown has
-    #     elapsed (so we don't chain).
-    # Fall back to keepLeft/keepRight bias otherwise.
+    # Highway-cruise default path -- only reached when no imminent maneuver
+    # tweaks lateral. Target the center lane on motorway-class roads.
+    return self._highway_default_desire(cur_step, dist)
+
+  def _lc_or_keep(self, side: str):
+    """Pick laneChange* (auto-execute) or keep* (bias) based on whether
+    the user has AutoLaneChange enabled + we're outside the cooldown."""
     alc_timer = self.params.get("AutoLaneChangeTimer", return_default=True)
     auto_lc_allowed = (alc_timer is not None and int(alc_timer) != AUTO_LANE_CHANGE_OFF
                        and self._last_lane_change_state == "off"
@@ -626,6 +627,48 @@ class NkaoudNavd:
     if auto_lc_allowed:
       return NavDesire.laneChangeLeft if side == "left" else NavDesire.laneChangeRight
     return NavDesire.keepLeft if side == "left" else NavDesire.keepRight
+
+  def _target_lane(self, side: str, dist: float, lane_keep_m: float, turn_cue_m: float) -> int | None:
+    """1-indexed target lane. Lerps from 'any lane on the correct side'
+    at lane_keep_m to 'outermost' at turn_cue_m so the requirement
+    tightens as we approach the maneuver."""
+    if side not in ("left", "right") or self.lane_total <= 0:
+      return None
+    n = self.lane_total
+    if n == 1:
+      return 1
+    span = lane_keep_m - turn_cue_m
+    progress = 1.0 if span <= 0 else max(0.0, min(1.0, 1.0 - (dist - turn_cue_m) / span))
+    half_tolerance = math.ceil(n / 2)
+    if side == "right":
+      loose = n - half_tolerance + 1   # smallest acceptable on right (e.g. lane 3 of 4)
+      strict = n                       # outermost lane
+      return int(0.5 + loose + (strict - loose) * progress)
+    # side == "left"
+    loose = half_tolerance             # largest acceptable on left (e.g. lane 2 of 4)
+    strict = 1
+    return int(0.5 + loose - (loose - strict) * progress)
+
+  def _highway_default_desire(self, cur_step, dist: float):
+    """When cruising on a motorway with no imminent maneuver, drift to
+    the center lane. ceil(N/2) means: 3-lane -> 2 (center), 4-lane ->
+    2 (center-left), 5-lane -> 3 (center)."""
+    if cur_step is None or not cur_step.road_classes:
+      return NavDesire.none
+    if not any(c in HIGHWAY_CLASSES for c in cur_step.road_classes):
+      return NavDesire.none
+    # Don't fight the imminent-maneuver logic at the boundary.
+    if dist > 0.0 and dist < HIGHWAY_DEFAULT_MIN_DIST_M:
+      return NavDesire.none
+    if self.last_v_ego < HIGHWAY_DEFAULT_MIN_SPEED_MS:
+      return NavDesire.none
+    if self.lane_conf in ("unknown", "low") or self.lane_total <= 1 or self.lane_current <= 0:
+      return NavDesire.none
+    target = math.ceil(self.lane_total / 2)
+    if self.lane_current == target:
+      return NavDesire.none
+    side = "left" if self.lane_current > target else "right"
+    return self._lc_or_keep(side)
 
   def _route_side(self, cur_step, dist_to_maneuver: float, modifier: str) -> str:
     """Which half of the road the route wants for the upcoming maneuver.
@@ -671,20 +714,19 @@ class NkaoudNavd:
       return "right"
     return ""
 
-  def _need_to_move(self, side: str) -> bool:
-    """Use the lane-position estimator to decide whether the car is already
-    on the desired half of the road. If the estimator is uncertain we
-    return False (don't move) -- better to do nothing than to nudge into
-    the wrong lane."""
+  def _need_to_move(self, side: str, target_lane: int) -> bool:
+    """Whether we should move toward `side` to reach target_lane. Stays
+    conservative -- only triggers on a high-confidence lane read, never
+    on an unknown/low one (better to do nothing than nudge into the
+    wrong lane)."""
     if self.lane_conf in ("unknown", "low") or self.lane_total <= 0:
       return False
     if self.lane_current <= 0:
       return False
-    half = (self.lane_total + 1) / 2
-    if side == "left":
-      return self.lane_current > half
     if side == "right":
-      return self.lane_current < half
+      return self.lane_current < target_lane
+    if side == "left":
+      return self.lane_current > target_lane
     return False
 
   def _maneuver_target_speed(self) -> float:
