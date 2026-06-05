@@ -66,6 +66,14 @@ class NavSettingsLayout(Widget):
                             "openpilot longitudinal control. Experimental."),
       param="NkaoudNavControlSpeed",
     )
+    self._control_steer = toggle_item_sp(
+      title=lambda: tr("Bias Steering Toward The Route"),
+      description=lambda: tr("Inject route-derived desire flags into the driving model: turnLeft / turnRight " +
+                            "when within 50 m of a turn, and keepLeft / keepRight up to 200 m out when the " +
+                            "lane-position estimator says the car is on the wrong half of the road for the " +
+                            "upcoming maneuver. The model can still override. Experimental."),
+      param="NkaoudNavControlSteer",
+    )
 
     items = [
       self._token_button,
@@ -74,6 +82,7 @@ class NavSettingsLayout(Widget):
       self._polyline_style,
       self._show_banner,
       self._control_speed,
+      self._control_steer,
     ]
     return items
 

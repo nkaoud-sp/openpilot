@@ -23,12 +23,25 @@ MODIFIABLE_DIRECTIONS = ("left", "right")
 
 
 @dataclass
+class LaneOption:
+  """One lane entry from Mapbox banner.sub.components (type == "lane").
+
+  `active` is true if this lane leads to the upcoming maneuver. `directions`
+  is the list of arrows shown on the lane sign (e.g. ["straight", "right"]).
+  """
+  active: bool = False
+  directions: tuple[str, ...] = ()
+  active_direction: str = ""
+
+
+@dataclass
 class Banner:
   primary_text: str = ""
   secondary_text: str = ""
   maneuver_type: str = ""
   maneuver_modifier: str = ""
   distance_along_geometry: float = 0.0
+  lanes: tuple[LaneOption, ...] = ()
 
 
 @dataclass
@@ -78,6 +91,19 @@ def _parse_banners(raw_banners: list[dict[str, Any]] | None) -> list[Banner]:
     banner.maneuver_modifier = primary.get("modifier") or ""
     secondary = b.get("secondary") or {}
     banner.secondary_text = secondary.get("text") or ""
+
+    # Lane guidance lives under sub.components -- each entry of type "lane".
+    sub = b.get("sub") or {}
+    lanes: list[LaneOption] = []
+    for comp in (sub.get("components") or []):
+      if comp.get("type") != "lane":
+        continue
+      lanes.append(LaneOption(
+        active=bool(comp.get("active") or False),
+        directions=tuple(comp.get("directions") or ()),
+        active_direction=comp.get("active_direction") or "",
+      ))
+    banner.lanes = tuple(lanes)
     out.append(banner)
   return out
 

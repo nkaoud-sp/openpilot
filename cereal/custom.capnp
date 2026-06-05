@@ -474,6 +474,18 @@ struct NkaoudNavigationSP @0xcb9fd56c7057593a {
   distanceToManeuver @6 :Float32;        # m
   maneuverType @7 :Text;                 # e.g. "turn", "fork"
   maneuverModifier @8 :Text;             # e.g. "left", "right", "uturn"
+
+  # Lateral (steering) influence -- phase 7. Gated at navd by NkaoudNavControlSteer
+  # so this is `none` unless the toggle is on and we have a useful recommendation.
+  recommendedDesire @9 :NavDesire;
+
+  enum NavDesire {
+    none @0;
+    turnLeft @1;
+    turnRight @2;
+    keepLeft @3;
+    keepRight @4;
+  }
 }
 
 struct CustomReserved11 @0xc2243c65e0340384 {

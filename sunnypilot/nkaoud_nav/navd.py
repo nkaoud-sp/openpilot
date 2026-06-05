@@ -22,6 +22,7 @@ import threading
 import time
 
 import cereal.messaging as messaging
+from cereal import custom
 from openpilot.common.params import Params
 from openpilot.common.realtime import Ratekeeper
 from openpilot.common.swaglog import cloudlog
@@ -30,8 +31,11 @@ from openpilot.sunnypilot.nkaoud_nav.geometry import (
   route_bearing_at, total_geometry_length,
 )
 from openpilot.sunnypilot.nkaoud_nav.route_client import (
-  Banner, RouteData, RouteFetchError, fetch_route,
+  Banner, LaneOption, RouteData, RouteFetchError, fetch_route,
 )
+from openpilot.sunnypilot.selfdrive.controls.lib.lane_position import LanePositionEstimator
+
+NavDesire = custom.NkaoudNavigationSP.NavDesire
 
 
 # Reroute thresholds (ported from old fork's bearing-misalignment detector).
@@ -47,6 +51,16 @@ MIN_REROUTE_INTERVAL_S = 8.0       # back off so reroutes don't spam the API
 TURN_SLOWDOWN_SPEED_MS = 25.0 / 3.6   # ~6.94 m/s (25 km/h)
 TURN_SLOWDOWN_RANGE_M = 150.0         # only apply within this distance to maneuver
 TURN_MANEUVER_MODIFIERS = ("left", "right", "uturn", "sharpLeft", "sharpRight")
+
+# Lateral influence (phase 7) -- distance windows to the upcoming maneuver.
+# When closer than DESIRE_TURN_RANGE_M we emit turnLeft/turnRight as a direct
+# pre-turn cue. Between TURN_RANGE and LANE_KEEP_RANGE we emit keepLeft/
+# keepRight if the lane-position estimator says we're not on the correct
+# half of the road for the upcoming maneuver.
+DESIRE_TURN_RANGE_M = 50.0
+DESIRE_LANE_KEEP_RANGE_M = 200.0
+LEFT_TURN_MODIFIERS = ("left", "sharpLeft", "uturn")
+RIGHT_TURN_MODIFIERS = ("right", "sharpRight")
 
 
 def _read_destination(params: Params) -> Coordinate | None:
@@ -165,7 +179,7 @@ class RouteFetcher:
 class NkaoudNavd:
   def __init__(self) -> None:
     self.params = Params()
-    self.sm = messaging.SubMaster(['liveLocationKalman'])
+    self.sm = messaging.SubMaster(['liveLocationKalman', 'modelV2'])
     self.pm = messaging.PubMaster(['nkaoudNavigationSP', 'navRoute', 'navInstruction'])
     self.rk = Ratekeeper(5.0)
 
@@ -181,6 +195,10 @@ class NkaoudNavd:
     self.last_v_ego: float = 0.0
     self.last_distance_along: float = 0.0
     self.arrived: bool = False
+    self.lane_position_est = LanePositionEstimator()
+    self.lane_current: int = 0
+    self.lane_total: int = 0
+    self.lane_conf: str = "unknown"
 
   # ---- core loop ----
   def step(self) -> None:
@@ -194,6 +212,9 @@ class NkaoudNavd:
     if bearing is not None:
       self.last_bearing = bearing
     self.last_v_ego = v_ego
+
+    if self.sm.updated['modelV2']:
+      self.lane_current, self.lane_total, self.lane_conf = self.lane_position_est.update(self.sm['modelV2'])
 
     self._maybe_drain_fetcher()
 
@@ -327,6 +348,7 @@ class NkaoudNavd:
     cur_step = self._current_step()
     nav.maneuverType = cur_step.maneuver_type if cur_step is not None else ""
     nav.maneuverModifier = cur_step.maneuver_modifier if cur_step is not None else ""
+    nav.recommendedDesire = self._recommended_desire()
     self.pm.send('nkaoudNavigationSP', msg)
 
   def _publish_nav_route(self) -> None:
@@ -385,6 +407,87 @@ class NkaoudNavd:
     step = self.route.steps[idx]
     step_end = step_start + step.distance
     return max(0.0, step_end - self.last_distance_along)
+
+  def _recommended_desire(self):
+    """Phase 7 lateral influence.
+
+    Gated by NkaoudNavControlSteer. Falls back to none unless:
+      - We have an active route and an upcoming maneuver.
+      - We're inside DESIRE_TURN_RANGE_M -> emit turnLeft/turnRight matching
+        the upcoming modifier.
+      - Otherwise inside DESIRE_LANE_KEEP_RANGE_M -> consult Mapbox banner
+        lanes plus the lane-position estimator. If we're not on the half
+        of the road that has active lanes, emit keepLeft/keepRight.
+
+    Returns a custom.NkaoudNavigationSP.NavDesire enum value.
+    """
+    if not self.params.get_bool("NkaoudNavControlSteer"):
+      return NavDesire.none
+    cur_step = self._current_step()
+    if cur_step is None:
+      return NavDesire.none
+    dist = self._distance_to_maneuver()
+    if dist <= 0.0 or dist > DESIRE_LANE_KEEP_RANGE_M:
+      return NavDesire.none
+
+    modifier = cur_step.maneuver_modifier
+    # Direct turn cue close to the maneuver.
+    if dist <= DESIRE_TURN_RANGE_M:
+      if modifier in LEFT_TURN_MODIFIERS:
+        return NavDesire.turnLeft
+      if modifier in RIGHT_TURN_MODIFIERS:
+        return NavDesire.turnRight
+      return NavDesire.none
+
+    # Otherwise look at the active banner lanes and our current lane to
+    # decide whether we need to drift left or right before the turn.
+    side = self._banner_active_side(cur_step, dist)
+    if side == "left" and self._need_to_move("left"):
+      return NavDesire.keepLeft
+    if side == "right" and self._need_to_move("right"):
+      return NavDesire.keepRight
+    return NavDesire.none
+
+  @staticmethod
+  def _banner_active_side(step, dist_to_maneuver: float) -> str:
+    """Returns 'left' / 'right' / '' based on which half of the road the
+    active lanes are in. Picks the closest banner whose distance threshold
+    we've already crossed (same selector NavManeuverBanner uses)."""
+    if not step.banners:
+      return ""
+    current = step.banners[0]
+    for b in step.banners:
+      if dist_to_maneuver < b.distance_along_geometry:
+        current = b
+    lanes = current.lanes
+    if not lanes:
+      return ""
+    active_idx = [i for i, ln in enumerate(lanes) if ln.active]
+    if not active_idx:
+      return ""
+    n = len(lanes)
+    # All active lanes strictly in the left half -> route wants left side.
+    if all(i < n / 2 for i in active_idx):
+      return "left"
+    if all(i >= n / 2 for i in active_idx):
+      return "right"
+    return ""
+
+  def _need_to_move(self, side: str) -> bool:
+    """Use the lane-position estimator to decide whether the car is already
+    on the desired half of the road. If the estimator is uncertain we
+    return False (don't move) -- better to do nothing than to nudge into
+    the wrong lane."""
+    if self.lane_conf in ("unknown", "low") or self.lane_total <= 0:
+      return False
+    if self.lane_current <= 0:
+      return False
+    half = (self.lane_total + 1) / 2
+    if side == "left":
+      return self.lane_current > half
+    if side == "right":
+      return self.lane_current < half
+    return False
 
   def _maneuver_target_speed(self) -> float:
     """Turn-slowdown target speed (m/s).
