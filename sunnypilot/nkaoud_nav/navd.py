@@ -458,7 +458,8 @@ class NkaoudNavd:
 
     # Phase 8 fields.
     lane_keep_m, _ = _ranges_for(upcoming.maneuver_type if upcoming else "")
-    side = self._banner_active_side(cur_step, self._distance_to_maneuver()) if cur_step else ""
+    upcoming_modifier = upcoming.maneuver_modifier if upcoming is not None else ""
+    side = self._route_side(cur_step, self._distance_to_maneuver(), upcoming_modifier) if upcoming else ""
     if side == "left":
       nav.recommendedLaneSide = "left"
     elif side == "right":
@@ -600,9 +601,13 @@ class NkaoudNavd:
         return NavDesire.turnRight
       return NavDesire.none
 
-    # Otherwise look at the active banner lanes and our current lane to
-    # decide whether we need to drift left or right before the turn.
-    side = self._banner_active_side(cur_step, dist)
+    # Otherwise figure out which side the route wants. Mapbox banner lane
+    # guidance is the most accurate (highway exits / forks), so prefer it.
+    # For surface-street turns the banner usually has no sub.components,
+    # so fall back to inferring "left turn -> left side" from the upcoming
+    # maneuver modifier itself. Then ask the lane-position estimator
+    # whether we're already on that side; if so, do nothing.
+    side = self._route_side(cur_step, dist, modifier)
     needs_move = ((side == "left" and self._need_to_move("left"))
                   or (side == "right" and self._need_to_move("right")))
     if not needs_move:
@@ -621,6 +626,25 @@ class NkaoudNavd:
     if auto_lc_allowed:
       return NavDesire.laneChangeLeft if side == "left" else NavDesire.laneChangeRight
     return NavDesire.keepLeft if side == "left" else NavDesire.keepRight
+
+  def _route_side(self, cur_step, dist_to_maneuver: float, modifier: str) -> str:
+    """Which half of the road the route wants for the upcoming maneuver.
+
+    Tries Mapbox's explicit banner.sub.components lane guidance first; for
+    surface-street turns that data is usually absent, so falls back to the
+    maneuver modifier itself ('left' / 'sharpLeft' / 'uturn' -> 'left';
+    'right' / 'sharpRight' -> 'right'). Returns '' when there is no
+    actionable preference.
+    """
+    if cur_step is not None:
+      side = self._banner_active_side(cur_step, dist_to_maneuver)
+      if side:
+        return side
+    if modifier in LEFT_TURN_MODIFIERS:
+      return "left"
+    if modifier in RIGHT_TURN_MODIFIERS:
+      return "right"
+    return ""
 
   @staticmethod
   def _banner_active_side(step, dist_to_maneuver: float) -> str:
