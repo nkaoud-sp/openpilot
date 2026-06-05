@@ -665,6 +665,12 @@ class NkaoudNavd:
     if self.lane_conf in ("unknown", "low") or self.lane_total <= 1 or self.lane_current <= 0:
       return NavDesire.none
     target = math.ceil(self.lane_total / 2)
+    # ceil(N/2) deliberately biases center-LEFT on even-lane roads:
+    #   2 -> 1 (leftmost; no real center)
+    #   3 -> 2 (middle)
+    #   4 -> 2 (one in from leftmost; matches "leftmost - 1" intent)
+    #   5 -> 3 (true center)
+    #   6 -> 3 (center-left)
     if self.lane_current == target:
       return NavDesire.none
     side = "left" if self.lane_current > target else "right"
