@@ -40,6 +40,11 @@ MIN_PROJ_Z = 0.1
 PARAM_REFRESH_S = 0.5
 METERS_PER_DEG_LAT = 111320.0
 Z_GROUND_OFFSET_M = 0.10
+# Tilt the line forward so the far end lifts off the road and the near end
+# stays on it. Subtracted from z (z = down in device frame), so a positive
+# value here raises the far end UP in world space. The lift scales linearly
+# with forward distance: 0 at the camera, LIFT_FAR_M at MAX_RENDER_DISTANCE_M.
+LIFT_FAR_M = 1.0
 
 # Smoothing time constants.
 RC_POS = 0.10
@@ -259,12 +264,17 @@ class NavRouteOverlay:
   def _project_segment(self, seg: list[tuple[float, float]], z_ground: float
                        ) -> list[tuple[list[rl.Vector2], list[float]]]:
     """Project a world-frame segment to a list of (screen_pts, forwards) sub-segments,
-    breaking the segment any time a point projects to the wrong side of the image plane."""
+    breaking the segment any time a point projects to the wrong side of the image plane.
+
+    z is lifted linearly with forward distance (LIFT_FAR_M at MAX_RENDER_DISTANCE_M)
+    so the line tilts up toward the horizon instead of lying perfectly flat."""
     sub_segments: list[tuple[list[rl.Vector2], list[float]]] = []
     cur_pts: list[rl.Vector2] = []
     cur_fwd: list[float] = []
     for forward, right in seg:
-      p = self._transform @ np.array([forward, right, z_ground], dtype=np.float32)
+      lift = LIFT_FAR_M * min(1.0, max(0.0, forward / MAX_RENDER_DISTANCE_M))
+      z = z_ground - lift
+      p = self._transform @ np.array([forward, right, z], dtype=np.float32)
       if p[2] < MIN_PROJ_Z:
         if len(cur_pts) >= 2:
           sub_segments.append((cur_pts, cur_fwd))
