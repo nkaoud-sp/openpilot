@@ -67,11 +67,12 @@ class NavSettingsLayout(Widget):
       param="NkaoudNavControlSpeed",
     )
     self._control_steer = toggle_item_sp(
-      title=lambda: tr("Bias Steering Toward The Route"),
-      description=lambda: tr("Inject route-derived desire flags into the driving model: turnLeft / turnRight " +
-                            "when within 50 m of a turn, and keepLeft / keepRight up to 200 m out when the " +
-                            "lane-position estimator says the car is on the wrong half of the road for the " +
-                            "upcoming maneuver. The model can still override. Experimental."),
+      title=lambda: tr("Steer / Lane-Change With The Route"),
+      description=lambda: tr("Lets the route bias steering (turnLeft / turnRight near a turn, keepLeft / keepRight " +
+                            "when off-side of the road) AND trigger active lane changes via the standard " +
+                            "openpilot pipeline when the route requires moving to a different lane. Lane " +
+                            "changes require an AutoLaneChange timer set in your steering settings (anything " +
+                            "other than \"Off\"); blind-spot monitor still gates execution. Experimental."),
       param="NkaoudNavControlSteer",
     )
 

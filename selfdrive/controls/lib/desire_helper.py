@@ -8,16 +8,22 @@ LaneChangeState = log.LaneChangeState
 LaneChangeDirection = log.LaneChangeDirection
 TurnDirection = custom.ModelDataV2SP.TurnDirection
 
-# nkaoud_nav: map our 5-value NavDesire enum onto the upstream log.Desire.
-# Keys are the string names (pycapnp returns _EnumValueProxy objects on read
-# that don't hash the same way as the schema constants used at write time,
-# so we normalize via str()).
+# nkaoud_nav: map our NavDesire enum onto the upstream log.Desire. Keys are
+# the string names (pycapnp returns _EnumValueProxy objects on read that
+# don't hash the same way as the schema constants used at write time, so
+# we normalize via str()). The laneChange* values are NOT used here as a
+# direct desire override -- they kick the LaneChangeState machine and let
+# its existing logic produce the right desire as the lane change executes.
 NAV_DESIRE_MAP = {
   "none": log.Desire.none,
   "turnLeft": log.Desire.turnLeft,
   "turnRight": log.Desire.turnRight,
   "keepLeft": log.Desire.keepLeft,
   "keepRight": log.Desire.keepRight,
+}
+NAV_LANE_CHANGE_DIRS = {
+  "laneChangeLeft": LaneChangeDirection.left,
+  "laneChangeRight": LaneChangeDirection.right,
 }
 
 LANE_CHANGE_SPEED_MIN = 20 * CV.MPH_TO_MS
@@ -75,6 +81,11 @@ class DesireHelper:
     one_blinker = carstate.leftBlinker != carstate.rightBlinker
     below_lane_change_speed = v_ego < LANE_CHANGE_SPEED_MIN
 
+    # nkaoud_nav: is the route asking for an active lane change right now?
+    nav_name_pre = str(nav_desire)
+    nav_lc_dir = NAV_LANE_CHANGE_DIRS.get(nav_name_pre, LaneChangeDirection.none)
+    nav_requesting_lc = nav_lc_dir != LaneChangeDirection.none
+
     # Lane turn controller update
     self.lane_turn_controller.update_lane_turn(blindspot_left=carstate.leftBlindspot, blindspot_right=carstate.rightBlindspot,
                                                left_blinker=carstate.leftBlinker, right_blinker=carstate.rightBlinker, v_ego=v_ego)
@@ -84,17 +95,22 @@ class DesireHelper:
       self.lane_change_state = LaneChangeState.off
       self.lane_change_direction = LaneChangeDirection.none
     else:
-      # LaneChangeState.off
-      if self.lane_change_state == LaneChangeState.off and one_blinker and not self.prev_one_blinker and not below_lane_change_speed:
-        self.lane_change_state = LaneChangeState.preLaneChange
-        self.lane_change_ll_prob = 1.0
-        # Initialize lane change direction to prevent UI alert flicker
-        self.lane_change_direction = self.get_lane_change_direction(carstate)
+      # LaneChangeState.off -- enter on driver blinker or nav request.
+      if self.lane_change_state == LaneChangeState.off:
+        driver_kicked = one_blinker and not self.prev_one_blinker
+        if (driver_kicked or nav_requesting_lc) and not below_lane_change_speed:
+          self.lane_change_state = LaneChangeState.preLaneChange
+          self.lane_change_ll_prob = 1.0
+          # Initialize lane change direction (nav wins if both are active)
+          self.lane_change_direction = nav_lc_dir if nav_requesting_lc else self.get_lane_change_direction(carstate)
 
       # LaneChangeState.preLaneChange
       elif self.lane_change_state == LaneChangeState.preLaneChange:
-        # Update lane change direction
-        self.lane_change_direction = self.get_lane_change_direction(carstate)
+        # Direction: nav request takes precedence (it doesn't toggle blinkers).
+        if nav_requesting_lc:
+          self.lane_change_direction = nav_lc_dir
+        else:
+          self.lane_change_direction = self.get_lane_change_direction(carstate)
 
         torque_applied = carstate.steeringPressed and \
                          ((carstate.steeringTorque > 0 and self.lane_change_direction == LaneChangeDirection.left) or
@@ -105,10 +121,13 @@ class DesireHelper:
 
         self.alc.update_lane_change(blindspot_detected, carstate.brakePressed)
 
-        if not one_blinker or below_lane_change_speed:
+        # Exit only when neither driver nor nav is asking, or speed dropped.
+        if ((not one_blinker and not nav_requesting_lc) or below_lane_change_speed):
           self.lane_change_state = LaneChangeState.off
           self.lane_change_direction = LaneChangeDirection.none
-        elif (torque_applied or self.alc.auto_lane_change_allowed) and not blindspot_detected:
+        elif (torque_applied or self.alc.auto_lane_change_allowed or nav_requesting_lc) and not blindspot_detected:
+          # Nav-requested lane changes advance as soon as BSM is clear,
+          # respecting the alc timer the user set via their own settings.
           self.lane_change_state = LaneChangeState.laneChangeStarting
 
       # LaneChangeState.laneChangeStarting
@@ -144,13 +163,13 @@ class DesireHelper:
     else:
       self.desire = DESIRES[self.lane_change_direction][self.lane_change_state]
 
-    # nkaoud_nav: when a route-derived desire is present, it wins. Gated at
-    # navd by NkaoudNavControlSteer, so this stays "none" unless the user
-    # has opted in. An active lane change in progress is left alone -- we
-    # don't yank the wheel mid-maneuver.
+    # nkaoud_nav: when a route-derived desire is present (and isn't a
+    # lane-change request -- those drive the LaneChangeState machine above),
+    # override the desire here. Gated at navd by NkaoudNavControlSteer.
+    # We leave actively-running lane changes alone so we don't yank the
+    # wheel mid-maneuver.
     nav_name = str(nav_desire)
-    if (nav_name != "none"
-        and nav_name in NAV_DESIRE_MAP
+    if (nav_name in NAV_DESIRE_MAP and nav_name != "none"
         and self.lane_change_state in (LaneChangeState.off, LaneChangeState.preLaneChange)):
       self.desire = NAV_DESIRE_MAP[nav_name]
 

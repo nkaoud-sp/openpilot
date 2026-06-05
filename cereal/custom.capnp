@@ -495,6 +495,10 @@ struct NkaoudNavigationSP @0xcb9fd56c7057593a {
     turnRight @2;
     keepLeft @3;
     keepRight @4;
+    # Active lane changes (route forces preLaneChange -> BSM check ->
+    # laneChangeStarting via the standard openpilot pipeline).
+    laneChangeLeft @5;
+    laneChangeRight @6;
   }
 
   enum LaneSide {

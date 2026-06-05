@@ -79,6 +79,13 @@ MISS_HEADING_CHANGE_DEG = 30.0   # required absolute heading delta after the man
 MISS_OBSERVATION_S = 2.5         # how long we wait before evaluating
 MISS_COUNTER_MIN = 1
 
+# Phase 9: active lane-change cooldown -- once a nav-triggered lane change
+# finishes, give the lane-position estimator and the model time to settle
+# before we consider another one. Otherwise the (just-old) "wrong lane"
+# reading would chain into a second lane change.
+NAV_LC_COOLDOWN_S = 4.0
+AUTO_LANE_CHANGE_OFF = -1        # AutoLaneChangeTimer param value meaning "off"
+
 
 def _ranges_for(maneuver_type: str) -> tuple[float, float]:
   return MANEUVER_RANGES.get((maneuver_type or "").strip(), DEFAULT_RANGES)
@@ -232,6 +239,8 @@ class NkaoudNavd:
     self._missed_watch_until_t: float = 0.0
     self._missed_watch_bearing: float | None = None
     self._missed_watch_modifier: str = ""
+    self._last_lane_change_state: str = "off"
+    self._lc_cooldown_until_t: float = 0.0
     self._last_logged_desire: str = "none"
     self._last_logged_modifier: str = ""
 
@@ -249,7 +258,15 @@ class NkaoudNavd:
     self.last_v_ego = v_ego
 
     if self.sm.updated['modelV2']:
-      self.lane_current, self.lane_total, self.lane_conf = self.lane_position_est.update(self.sm['modelV2'])
+      mv2 = self.sm['modelV2']
+      self.lane_current, self.lane_total, self.lane_conf = self.lane_position_est.update(mv2)
+      # Track DesireHelper's lane-change state via modelV2.meta so we don't
+      # ask for a fresh lane change while one is already running (or right
+      # after one ends).
+      lcs = str(mv2.meta.laneChangeState)
+      if self._last_lane_change_state != "off" and lcs == "off":
+        self._lc_cooldown_until_t = time.monotonic() + NAV_LC_COOLDOWN_S
+      self._last_lane_change_state = lcs
 
     self._maybe_drain_fetcher()
 
@@ -586,11 +603,24 @@ class NkaoudNavd:
     # Otherwise look at the active banner lanes and our current lane to
     # decide whether we need to drift left or right before the turn.
     side = self._banner_active_side(cur_step, dist)
-    if side == "left" and self._need_to_move("left"):
-      return NavDesire.keepLeft
-    if side == "right" and self._need_to_move("right"):
-      return NavDesire.keepRight
-    return NavDesire.none
+    needs_move = ((side == "left" and self._need_to_move("left"))
+                  or (side == "right" and self._need_to_move("right")))
+    if not needs_move:
+      return NavDesire.none
+
+    # Active lane change only if:
+    #   - The user has the openpilot AutoLaneChangeTimer set to anything
+    #     except OFF (so they consent to auto-executed lane changes).
+    #   - A lane change isn't already underway and our cooldown has
+    #     elapsed (so we don't chain).
+    # Fall back to keepLeft/keepRight bias otherwise.
+    alc_timer = self.params.get("AutoLaneChangeTimer", return_default=True)
+    auto_lc_allowed = (alc_timer is not None and int(alc_timer) != AUTO_LANE_CHANGE_OFF
+                       and self._last_lane_change_state == "off"
+                       and time.monotonic() >= self._lc_cooldown_until_t)
+    if auto_lc_allowed:
+      return NavDesire.laneChangeLeft if side == "left" else NavDesire.laneChangeRight
+    return NavDesire.keepLeft if side == "left" else NavDesire.keepRight
 
   @staticmethod
   def _banner_active_side(step, dist_to_maneuver: float) -> str:
