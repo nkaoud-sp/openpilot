@@ -54,6 +54,13 @@ TURN_MANEUVER_MODIFIERS = ("left", "right", "uturn", "sharpLeft", "sharpRight")
 
 LEFT_TURN_MODIFIERS = ("left", "sharpLeft", "uturn")
 RIGHT_TURN_MODIFIERS = ("right", "sharpRight")
+# Broader sets used for "which half of the road do we want" lane
+# positioning. slight* doesn't warrant a turnLeft/Right cue (gentle
+# enough that the model handles it) but absolutely warrants getting
+# into the correct lane beforehand -- highway off-ramps in particular
+# come back from Mapbox with modifier="slightRight" most of the time.
+LEFT_SIDE_MODIFIERS = LEFT_TURN_MODIFIERS + ("slightLeft",)
+RIGHT_SIDE_MODIFIERS = RIGHT_TURN_MODIFIERS + ("slightRight",)
 
 # Phase 8: maneuver-type-aware ranges. Highway exits/forks need much earlier
 # lane positioning than a surface-street turn. (lane_keep_m, turn_cue_m).
@@ -689,9 +696,9 @@ class NkaoudNavd:
       side = self._banner_active_side(cur_step, dist_to_maneuver)
       if side:
         return side
-    if modifier in LEFT_TURN_MODIFIERS:
+    if modifier in LEFT_SIDE_MODIFIERS:
       return "left"
-    if modifier in RIGHT_TURN_MODIFIERS:
+    if modifier in RIGHT_SIDE_MODIFIERS:
       return "right"
     return ""
 
