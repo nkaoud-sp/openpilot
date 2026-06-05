@@ -199,7 +199,7 @@ class NkaoudNavd:
     self.lane_current: int = 0
     self.lane_total: int = 0
     self.lane_conf: str = "unknown"
-    self._last_logged_desire: int = NavDesire.none
+    self._last_logged_desire: str = "none"
     self._last_logged_modifier: str = ""
 
   # ---- core loop ----
@@ -358,11 +358,12 @@ class NkaoudNavd:
     if mod_str != self._last_logged_modifier:
       cloudlog.info(f"nkaoud_navd: upcoming modifier={mod_str!r} dist={nav.distanceToManeuver:.1f}m")
       self._last_logged_modifier = mod_str
-    if int(nav.recommendedDesire) != int(self._last_logged_desire):
-      cloudlog.info(f"nkaoud_navd: recommendedDesire={nav.recommendedDesire} "
+    desire_str = str(nav.recommendedDesire)
+    if desire_str != self._last_logged_desire:
+      cloudlog.info(f"nkaoud_navd: recommendedDesire={desire_str} "
                     f"(dist={nav.distanceToManeuver:.1f}m, lane={self.lane_current}/{self.lane_total} "
                     f"conf={self.lane_conf})")
-      self._last_logged_desire = int(nav.recommendedDesire)
+      self._last_logged_desire = desire_str
 
     self.pm.send('nkaoudNavigationSP', msg)
 
