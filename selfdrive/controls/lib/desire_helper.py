@@ -7,15 +7,17 @@ from openpilot.sunnypilot.selfdrive.controls.lib.lane_turn_desire import LaneTur
 LaneChangeState = log.LaneChangeState
 LaneChangeDirection = log.LaneChangeDirection
 TurnDirection = custom.ModelDataV2SP.TurnDirection
-NavDesire = custom.NkaoudNavigationSP.NavDesire
 
 # nkaoud_nav: map our 5-value NavDesire enum onto the upstream log.Desire.
+# Keys are the string names (pycapnp returns _EnumValueProxy objects on read
+# that don't hash the same way as the schema constants used at write time,
+# so we normalize via str()).
 NAV_DESIRE_MAP = {
-  NavDesire.none: log.Desire.none,
-  NavDesire.turnLeft: log.Desire.turnLeft,
-  NavDesire.turnRight: log.Desire.turnRight,
-  NavDesire.keepLeft: log.Desire.keepLeft,
-  NavDesire.keepRight: log.Desire.keepRight,
+  "none": log.Desire.none,
+  "turnLeft": log.Desire.turnLeft,
+  "turnRight": log.Desire.turnRight,
+  "keepLeft": log.Desire.keepLeft,
+  "keepRight": log.Desire.keepRight,
 }
 
 LANE_CHANGE_SPEED_MIN = 20 * CV.MPH_TO_MS
@@ -66,7 +68,7 @@ class DesireHelper:
   def get_lane_change_direction(CS):
     return LaneChangeDirection.left if CS.leftBlinker else LaneChangeDirection.right
 
-  def update(self, carstate, lateral_active, lane_change_prob, nav_desire=NavDesire.none):
+  def update(self, carstate, lateral_active, lane_change_prob, nav_desire="none"):
     self.alc.update_params()
     self.lane_turn_controller.update_params()
     v_ego = carstate.vEgo
@@ -143,12 +145,14 @@ class DesireHelper:
       self.desire = DESIRES[self.lane_change_direction][self.lane_change_state]
 
     # nkaoud_nav: when a route-derived desire is present, it wins. Gated at
-    # navd by NkaoudNavControlSteer, so this stays NavDesire.none unless the
-    # user has opted in. An active lane change in progress is left alone --
-    # we don't yank the wheel mid-maneuver.
-    if (nav_desire != NavDesire.none
+    # navd by NkaoudNavControlSteer, so this stays "none" unless the user
+    # has opted in. An active lane change in progress is left alone -- we
+    # don't yank the wheel mid-maneuver.
+    nav_name = str(nav_desire)
+    if (nav_name != "none"
+        and nav_name in NAV_DESIRE_MAP
         and self.lane_change_state in (LaneChangeState.off, LaneChangeState.preLaneChange)):
-      self.desire = NAV_DESIRE_MAP[nav_desire]
+      self.desire = NAV_DESIRE_MAP[nav_name]
 
     # Send keep pulse once per second during LaneChangeStart.preLaneChange
     if self.lane_change_state in (LaneChangeState.off, LaneChangeState.laneChangeStarting):
