@@ -199,6 +199,8 @@ class NkaoudNavd:
     self.lane_current: int = 0
     self.lane_total: int = 0
     self.lane_conf: str = "unknown"
+    self._last_logged_desire: int = NavDesire.none
+    self._last_logged_modifier: str = ""
 
   # ---- core loop ----
   def step(self) -> None:
@@ -345,10 +347,23 @@ class NkaoudNavd:
     nav.rerouting = self.rerouting or self.fetcher.in_flight()
     nav.maneuverTargetSpeed = self._maneuver_target_speed()
     nav.distanceToManeuver = self._distance_to_maneuver()
-    cur_step = self._current_step()
-    nav.maneuverType = cur_step.maneuver_type if cur_step is not None else ""
-    nav.maneuverModifier = cur_step.maneuver_modifier if cur_step is not None else ""
+    upcoming = self._upcoming_step()
+    nav.maneuverType = upcoming.maneuver_type if upcoming is not None else ""
+    nav.maneuverModifier = upcoming.maneuver_modifier if upcoming is not None else ""
     nav.recommendedDesire = self._recommended_desire()
+
+    # Log when the upcoming-maneuver modifier or our recommendation changes,
+    # rate-limited to once per change so the swaglog isn't flooded.
+    mod_str = nav.maneuverModifier
+    if mod_str != self._last_logged_modifier:
+      cloudlog.info(f"nkaoud_navd: upcoming modifier={mod_str!r} dist={nav.distanceToManeuver:.1f}m")
+      self._last_logged_modifier = mod_str
+    if int(nav.recommendedDesire) != int(self._last_logged_desire):
+      cloudlog.info(f"nkaoud_navd: recommendedDesire={nav.recommendedDesire} "
+                    f"(dist={nav.distanceToManeuver:.1f}m, lane={self.lane_current}/{self.lane_total} "
+                    f"conf={self.lane_conf})")
+      self._last_logged_desire = int(nav.recommendedDesire)
+
     self.pm.send('nkaoudNavigationSP', msg)
 
   def _publish_nav_route(self) -> None:
@@ -376,18 +391,24 @@ class NkaoudNavd:
     inst.timeRemainingTypical = inst.timeRemaining
 
     cur_step = self._current_step()
+    upcoming = self._upcoming_step()
     if cur_step is not None:
       dist_to_man = self._distance_to_maneuver()
       inst.maneuverDistance = dist_to_man
-      inst.maneuverType = cur_step.maneuver_type
-      inst.maneuverModifier = cur_step.maneuver_modifier
-
-      # Pick the highest-detail banner whose distance threshold has passed.
+      # Type/modifier describe the UPCOMING maneuver (start of the next
+      # step), not the one that started this step. Banners are on this
+      # step but describe the upcoming maneuver -- prefer the banner's
+      # modifier when present so the arrow always matches the text.
       banner = self._select_banner(cur_step.banners, dist_to_man)
       if banner is not None:
+        inst.maneuverType = banner.maneuver_type or (upcoming.maneuver_type if upcoming else "")
+        inst.maneuverModifier = banner.maneuver_modifier or (upcoming.maneuver_modifier if upcoming else "")
         inst.maneuverPrimaryText = banner.primary_text
         inst.maneuverSecondaryText = banner.secondary_text
         inst.showFull = dist_to_man < banner.distance_along_geometry
+      elif upcoming is not None:
+        inst.maneuverType = upcoming.maneuver_type
+        inst.maneuverModifier = upcoming.maneuver_modifier
 
     self.pm.send('navInstruction', msg)
 
@@ -398,6 +419,21 @@ class NkaoudNavd:
       return None
     idx = min(self.step_idx, len(self.route.steps) - 1)
     return self.route.steps[idx]
+
+  def _upcoming_step(self):
+    """The step whose start IS the next maneuver. In Mapbox each step's
+    maneuver is at its START, so the upcoming maneuver lives at
+    steps[step_idx + 1].maneuver_*. The bannerInstructions describing
+    that same upcoming maneuver are attached to steps[step_idx] (the
+    step we're currently driving), which is why _publish_nav_instruction
+    pulls banners from _current_step() but everything else (modifier,
+    desire gating, slowdown) reads from _upcoming_step()."""
+    if self.route is None or not self.route.steps:
+      return None
+    nxt = self.step_idx + 1
+    if nxt >= len(self.route.steps):
+      return None
+    return self.route.steps[nxt]
 
   def _distance_to_maneuver(self) -> float:
     if self.route is None or not self.route.cumulative_step_distance:
@@ -424,13 +460,18 @@ class NkaoudNavd:
     if not self.params.get_bool("NkaoudNavControlSteer"):
       return NavDesire.none
     cur_step = self._current_step()
-    if cur_step is None:
+    upcoming = self._upcoming_step()
+    if cur_step is None or upcoming is None:
       return NavDesire.none
     dist = self._distance_to_maneuver()
     if dist <= 0.0 or dist > DESIRE_LANE_KEEP_RANGE_M:
       return NavDesire.none
 
-    modifier = cur_step.maneuver_modifier
+    # The UPCOMING maneuver -- the one at the start of the next step --
+    # is what we want to react to. cur_step.maneuver_modifier was the
+    # action that started this step (already executed); reading from it
+    # was the original bug.
+    modifier = upcoming.maneuver_modifier
     # Direct turn cue close to the maneuver.
     if dist <= DESIRE_TURN_RANGE_M:
       if modifier in LEFT_TURN_MODIFIERS:
@@ -499,10 +540,11 @@ class NkaoudNavd:
     """
     if self.route is None:
       return 0.0
-    # Look at the NEXT maneuver (the end of the current step is the
-    # upcoming maneuver), not the previous one.
-    cur_step = self._current_step()
-    if cur_step is None or cur_step.maneuver_modifier not in TURN_MANEUVER_MODIFIERS:
+    # Look at the upcoming maneuver -- the one at the START of the next
+    # step, which is the action we'll execute at the END of the current
+    # step's geometry.
+    upcoming = self._upcoming_step()
+    if upcoming is None or upcoming.maneuver_modifier not in TURN_MANEUVER_MODIFIERS:
       return 0.0
     dist = self._distance_to_maneuver()
     if dist <= 0.0 or dist > TURN_SLOWDOWN_RANGE_M:
