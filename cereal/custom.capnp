@@ -479,12 +479,28 @@ struct NkaoudNavigationSP @0xcb9fd56c7057593a {
   # so this is `none` unless the toggle is on and we have a useful recommendation.
   recommendedDesire @9 :NavDesire;
 
+  # Phase 8 lane-guidance + road-class awareness.
+  recommendedLaneSide @10 :LaneSide;     # which half of the road the route wants
+  laneKeepDistance @11 :Float32;         # m; distance window over which the side hint applies
+  currentRoadClasses @12 :Text;          # comma-joined classes of the step we're driving
+  upcomingRoadClasses @13 :Text;         # comma-joined classes of the next step
+
+  # Phase 8 cross-track + missed-maneuver telemetry.
+  crossTrackDistance @14 :Float32;       # m; perpendicular distance to route geometry
+  missedManeuverCount @15 :Int32;        # ticks we appear to have driven past a turn without executing
+
   enum NavDesire {
     none @0;
     turnLeft @1;
     turnRight @2;
     keepLeft @3;
     keepRight @4;
+  }
+
+  enum LaneSide {
+    none @0;
+    left @1;
+    right @2;
   }
 }
 

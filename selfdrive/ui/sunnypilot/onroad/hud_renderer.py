@@ -10,6 +10,7 @@ from openpilot.common.constants import CV
 from openpilot.selfdrive.ui.mici.onroad.torque_bar import TorqueBar
 from openpilot.selfdrive.ui.sunnypilot.onroad.developer_ui import DeveloperUiRenderer, DeveloperUiState, get_bottom_dev_ui_offset
 from openpilot.selfdrive.ui.sunnypilot.onroad.nav_button import NavButton
+from openpilot.selfdrive.ui.sunnypilot.onroad.nav_lane_guidance import NavLaneGuidance
 from openpilot.selfdrive.ui.sunnypilot.onroad.nav_maneuver_banner import NavManeuverBanner
 from openpilot.selfdrive.ui.sunnypilot.onroad.road_name import RoadNameRenderer
 from openpilot.selfdrive.ui.sunnypilot.onroad.rocket_fuel import RocketFuel
@@ -41,6 +42,7 @@ class HudRendererSP(HudRenderer):
     self._torque_bar = TorqueBar(scale=3.0, always=True)
     self._nav_button = NavButton(UI_CONFIG.button_size)
     self._nav_maneuver_banner = NavManeuverBanner()
+    self._nav_lane_guidance = NavLaneGuidance()
 
     self.pcm_cruise_speed: bool = True
     self.show_icbm_status: bool = False
@@ -156,6 +158,7 @@ class HudRendererSP(HudRenderer):
 
     # Maneuver banner: top-center, drawn last so it sits above everything else.
     self._nav_maneuver_banner.render(rect)
+    self._nav_lane_guidance.render(rect)
 
   def user_interacting(self) -> bool:
     return super().user_interacting() or self._nav_button.is_pressed

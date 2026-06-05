@@ -52,15 +52,41 @@ TURN_SLOWDOWN_SPEED_MS = 25.0 / 3.6   # ~6.94 m/s (25 km/h)
 TURN_SLOWDOWN_RANGE_M = 150.0         # only apply within this distance to maneuver
 TURN_MANEUVER_MODIFIERS = ("left", "right", "uturn", "sharpLeft", "sharpRight")
 
-# Lateral influence (phase 7) -- distance windows to the upcoming maneuver.
-# When closer than DESIRE_TURN_RANGE_M we emit turnLeft/turnRight as a direct
-# pre-turn cue. Between TURN_RANGE and LANE_KEEP_RANGE we emit keepLeft/
-# keepRight if the lane-position estimator says we're not on the correct
-# half of the road for the upcoming maneuver.
-DESIRE_TURN_RANGE_M = 50.0
-DESIRE_LANE_KEEP_RANGE_M = 200.0
 LEFT_TURN_MODIFIERS = ("left", "sharpLeft", "uturn")
 RIGHT_TURN_MODIFIERS = ("right", "sharpRight")
+
+# Phase 8: maneuver-type-aware ranges. Highway exits/forks need much earlier
+# lane positioning than a surface-street turn. (lane_keep_m, turn_cue_m).
+MANEUVER_RANGES = {
+  "off ramp":   (1500.0, 200.0),
+  "on ramp":    (800.0, 150.0),
+  "fork":       (500.0, 100.0),
+  "roundabout": (300.0, 80.0),
+  "rotary":     (300.0, 80.0),
+  "merge":      (400.0, 100.0),
+}
+DEFAULT_RANGES = (200.0, 50.0)   # surface streets / "turn" / unknown
+
+# Phase 8: cross-track reroute -- catches gradual drift off-route that
+# bearing misalignment won't see because the heading stays roughly correct.
+CROSS_TRACK_THRESHOLD_M = 30.0
+CROSS_TRACK_COUNTER_MIN = 25     # ~5 s at 5 Hz
+
+# Phase 8: missed-maneuver detection. After step_idx advances past a step
+# whose upcoming maneuver was a left/right/uturn, expect a meaningful
+# heading change. If we didn't turn, trip the counter.
+MISS_HEADING_CHANGE_DEG = 30.0   # required absolute heading delta after the maneuver
+MISS_OBSERVATION_S = 2.5         # how long we wait before evaluating
+MISS_COUNTER_MIN = 1
+
+
+def _ranges_for(maneuver_type: str) -> tuple[float, float]:
+  return MANEUVER_RANGES.get((maneuver_type or "").strip(), DEFAULT_RANGES)
+
+
+def _bearing_delta(a: float, b: float) -> float:
+  d = (a - b + 540.0) % 360.0 - 180.0
+  return abs(d)
 
 
 def _read_destination(params: Params) -> Coordinate | None:
@@ -199,6 +225,13 @@ class NkaoudNavd:
     self.lane_current: int = 0
     self.lane_total: int = 0
     self.lane_conf: str = "unknown"
+    self.cross_track_m: float = 0.0
+    self.cross_track_counter: int = 0
+    self.missed_counter: int = 0
+    self._prev_step_idx: int = 0
+    self._missed_watch_until_t: float = 0.0
+    self._missed_watch_bearing: float | None = None
+    self._missed_watch_modifier: str = ""
     self._last_logged_desire: str = "none"
     self._last_logged_modifier: str = ""
 
@@ -293,6 +326,9 @@ class NkaoudNavd:
     # Advance step_idx to whichever step contains the closest segment.
     cumulative = self.route.cumulative_step_distance
     self.last_distance_along = distance_along_geometry(self.route.geometry, self.last_pos)
+    # Also record perpendicular distance to the route for cross-track reroute.
+    _idx, perp, _t = closest_segment_index(self.route.geometry, self.last_pos)
+    self.cross_track_m = perp
     # Find largest step whose cumulative start <= last_distance_along
     new_idx = 0
     for i, c in enumerate(cumulative):
@@ -300,6 +336,18 @@ class NkaoudNavd:
         new_idx = i
       else:
         break
+
+    # On step boundary, snapshot bearing if the step we just entered came
+    # from a turn maneuver. After MISS_OBSERVATION_S we'll compare against
+    # current bearing -- no significant change = we drove straight through
+    # the turn point = missed.
+    if new_idx != self._prev_step_idx and new_idx < len(self.route.steps):
+      entered_step = self.route.steps[new_idx]
+      if entered_step.maneuver_modifier in TURN_MANEUVER_MODIFIERS:
+        self._missed_watch_until_t = time.monotonic() + MISS_OBSERVATION_S
+        self._missed_watch_bearing = self.last_bearing
+        self._missed_watch_modifier = entered_step.maneuver_modifier
+    self._prev_step_idx = new_idx
     self.step_idx = new_idx
 
   def _maybe_reroute(self) -> None:
@@ -308,27 +356,65 @@ class NkaoudNavd:
     if self.fetcher.in_flight():
       return
     if time.monotonic() - self.last_route_fetch_t < MIN_REROUTE_INTERVAL_S:
+      # Still update counters so we don't false-trigger the instant the
+      # backoff expires.
+      self._update_cross_track_counter()
+      self._update_missed_counter()
       return
 
     geom = self.route.geometry
-    if self.last_bearing is None or self.last_v_ego < BEARING_MISALIGN_MIN_SPEED_MS:
-      self.bearing_misalign_counter = 0
-      return
-
-    route_bearing = route_bearing_at(geom, self.last_pos)
-    if route_bearing is None:
-      self.bearing_misalign_counter = 0
-      return
-
-    diff = abs(((self.last_bearing - route_bearing) + 540.0) % 360.0 - 180.0)
-    if diff > BEARING_MISALIGN_THRESHOLD_DEG:
-      self.bearing_misalign_counter += 1
+    if self.last_bearing is not None and self.last_v_ego >= BEARING_MISALIGN_MIN_SPEED_MS:
+      route_bearing = route_bearing_at(geom, self.last_pos)
+      if route_bearing is None:
+        self.bearing_misalign_counter = 0
+      else:
+        diff = _bearing_delta(self.last_bearing, route_bearing)
+        if diff > BEARING_MISALIGN_THRESHOLD_DEG:
+          self.bearing_misalign_counter += 1
+        else:
+          self.bearing_misalign_counter = 0
     else:
       self.bearing_misalign_counter = 0
 
+    self._update_cross_track_counter()
+    self._update_missed_counter()
+
     if self.bearing_misalign_counter > BEARING_MISALIGN_COUNTER_MIN:
+      cloudlog.info("nkaoud_navd: reroute trigger -- bearing misaligned")
       self.bearing_misalign_counter = 0
       self._try_fetch_initial()
+    elif self.cross_track_counter > CROSS_TRACK_COUNTER_MIN:
+      cloudlog.info(f"nkaoud_navd: reroute trigger -- cross-track {self.cross_track_m:.1f} m")
+      self.cross_track_counter = 0
+      self._try_fetch_initial()
+    elif self.missed_counter > MISS_COUNTER_MIN:
+      cloudlog.info(f"nkaoud_navd: reroute trigger -- missed {self._missed_watch_modifier} turn")
+      self.missed_counter = 0
+      self._missed_watch_until_t = 0.0
+      self._try_fetch_initial()
+
+  def _update_cross_track_counter(self) -> None:
+    if self.cross_track_m > CROSS_TRACK_THRESHOLD_M and self.last_v_ego >= BEARING_MISALIGN_MIN_SPEED_MS:
+      self.cross_track_counter += 1
+    else:
+      self.cross_track_counter = 0
+
+  def _update_missed_counter(self) -> None:
+    # Wait until the observation window closes, then judge by heading change.
+    if self._missed_watch_until_t <= 0.0:
+      return
+    if time.monotonic() < self._missed_watch_until_t:
+      return
+    pre = self._missed_watch_bearing
+    cur = self.last_bearing
+    self._missed_watch_until_t = 0.0
+    if pre is None or cur is None:
+      return
+    delta = _bearing_delta(cur, pre)
+    if delta < MISS_HEADING_CHANGE_DEG:
+      self.missed_counter += 1
+    else:
+      self.missed_counter = 0
 
   # ---- publishing ----
   def _publish(self) -> None:
@@ -348,9 +434,25 @@ class NkaoudNavd:
     nav.maneuverTargetSpeed = self._maneuver_target_speed()
     nav.distanceToManeuver = self._distance_to_maneuver()
     upcoming = self._upcoming_step()
+    cur_step = self._current_step()
     nav.maneuverType = upcoming.maneuver_type if upcoming is not None else ""
     nav.maneuverModifier = upcoming.maneuver_modifier if upcoming is not None else ""
     nav.recommendedDesire = self._recommended_desire()
+
+    # Phase 8 fields.
+    lane_keep_m, _ = _ranges_for(upcoming.maneuver_type if upcoming else "")
+    side = self._banner_active_side(cur_step, self._distance_to_maneuver()) if cur_step else ""
+    if side == "left":
+      nav.recommendedLaneSide = "left"
+    elif side == "right":
+      nav.recommendedLaneSide = "right"
+    else:
+      nav.recommendedLaneSide = "none"
+    nav.laneKeepDistance = float(lane_keep_m if side else 0.0)
+    nav.currentRoadClasses = ",".join(cur_step.road_classes) if cur_step else ""
+    nav.upcomingRoadClasses = ",".join(upcoming.road_classes) if upcoming else ""
+    nav.crossTrackDistance = float(self.cross_track_m)
+    nav.missedManeuverCount = int(self.missed_counter)
 
     # Log when the upcoming-maneuver modifier or our recommendation changes,
     # rate-limited to once per change so the swaglog isn't flooded.
@@ -465,16 +567,16 @@ class NkaoudNavd:
     if cur_step is None or upcoming is None:
       return NavDesire.none
     dist = self._distance_to_maneuver()
-    if dist <= 0.0 or dist > DESIRE_LANE_KEEP_RANGE_M:
+    lane_keep_m, turn_cue_m = _ranges_for(upcoming.maneuver_type)
+    if dist <= 0.0 or dist > lane_keep_m:
       return NavDesire.none
 
     # The UPCOMING maneuver -- the one at the start of the next step --
     # is what we want to react to. cur_step.maneuver_modifier was the
-    # action that started this step (already executed); reading from it
-    # was the original bug.
+    # action that started this step (already executed).
     modifier = upcoming.maneuver_modifier
     # Direct turn cue close to the maneuver.
-    if dist <= DESIRE_TURN_RANGE_M:
+    if dist <= turn_cue_m:
       if modifier in LEFT_TURN_MODIFIERS:
         return NavDesire.turnLeft
       if modifier in RIGHT_TURN_MODIFIERS:
@@ -548,7 +650,10 @@ class NkaoudNavd:
     if upcoming is None or upcoming.maneuver_modifier not in TURN_MANEUVER_MODIFIERS:
       return 0.0
     dist = self._distance_to_maneuver()
-    if dist <= 0.0 or dist > TURN_SLOWDOWN_RANGE_M:
+    # Slowdown range scales with maneuver type (highway exits start earlier).
+    _lane_keep_m, slowdown_range = _ranges_for(upcoming.maneuver_type)
+    slowdown_range = max(slowdown_range, TURN_SLOWDOWN_RANGE_M)
+    if dist <= 0.0 or dist > slowdown_range:
       return 0.0
     return TURN_SLOWDOWN_SPEED_MS
 

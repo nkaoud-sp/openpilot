@@ -53,6 +53,9 @@ class Step:
   maneuver_modifier: str
   banners: list[Banner]
   name: str = ""            # street name
+  # Road classes from intersections[0].classes ("motorway", "primary", "tunnel"...).
+  # Empty tuple if the step has no intersections (rare).
+  road_classes: tuple[str, ...] = ()
 
 
 @dataclass
@@ -112,6 +115,11 @@ def _parse_step(raw: dict[str, Any]) -> Step:
   raw_coords = (raw.get("geometry") or {}).get("coordinates") or []
   geom = [Coordinate.from_mapbox_tuple(tuple(c)) for c in raw_coords]
   maneuver = raw.get("maneuver") or {}
+  intersections = raw.get("intersections") or []
+  road_classes: tuple[str, ...] = ()
+  if intersections:
+    raw_classes = intersections[0].get("classes") or []
+    road_classes = tuple(str(c) for c in raw_classes)
   return Step(
     geometry=geom,
     distance=float(raw.get("distance") or 0.0),
@@ -120,6 +128,7 @@ def _parse_step(raw: dict[str, Any]) -> Step:
     maneuver_modifier=maneuver.get("modifier") or "",
     banners=_parse_banners(raw.get("bannerInstructions")),
     name=raw.get("name") or "",
+    road_classes=road_classes,
   )
 
 
