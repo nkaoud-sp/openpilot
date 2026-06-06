@@ -31,3 +31,9 @@ def preset_by_key(key: str) -> Destination | None:
     if d.key == key:
       return d
   return None
+
+
+# "Share" is not a static preset -- the coordinates come from an HTTP endpoint
+# configured via NkaoudNavShareEndpoint at the moment the user picks it. The
+# picker shows this label; navd handles the actual fetch.
+SHARE_LABEL = "Share (fetch from endpoint)"

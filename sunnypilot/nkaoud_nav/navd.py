@@ -33,6 +33,9 @@ from openpilot.sunnypilot.nkaoud_nav.geometry import (
 from openpilot.sunnypilot.nkaoud_nav.route_client import (
   Banner, LaneOption, RouteData, RouteFetchError, fetch_route,
 )
+from openpilot.sunnypilot.nkaoud_nav.share_client import (
+  ShareFetchError, fetch_share_destination,
+)
 from openpilot.sunnypilot.selfdrive.controls.lib.lane_position import LanePositionEstimator
 
 NavDesire = custom.NkaoudNavigationSP.NavDesire
@@ -100,6 +103,12 @@ AUTO_LANE_CHANGE_OFF = -1        # AutoLaneChangeTimer param value meaning "off"
 HIGHWAY_CLASSES = ("motorway", "motorway_link", "trunk")
 HIGHWAY_DEFAULT_MIN_SPEED_MS = 60.0 / 3.6      # ~60 km/h; below this we don't auto-position
 HIGHWAY_DEFAULT_MIN_DIST_M = 1500.0            # only target center when next maneuver is at least this far
+
+# Phase 11: "Share" destination -- HTTP fetch when the picker writes a new
+# NkaoudNavShareTrigger token. Retries on failure are bounded so a wrong
+# URL doesn't hammer the endpoint forever.
+SHARE_FETCH_RETRY_S = 15.0
+SHARE_FETCH_MAX_ATTEMPTS = 4
 
 
 def _ranges_for(maneuver_type: str) -> tuple[float, float]:
@@ -224,6 +233,52 @@ class RouteFetcher:
       return r, e
 
 
+class ShareFetcher:
+  """GET-based fetch for the 'Share' destination. Same shape as RouteFetcher
+  (one in-flight request, take_result returns (data, error))."""
+
+  def __init__(self) -> None:
+    self._thread: threading.Thread | None = None
+    self._result: dict | None = None
+    self._error: str | None = None
+    self._request_id: int = 0
+    self._lock = threading.Lock()
+
+  def in_flight(self) -> bool:
+    return self._thread is not None and self._thread.is_alive()
+
+  def submit(self, url: str) -> int:
+    with self._lock:
+      self._request_id += 1
+      rid = self._request_id
+      self._result = None
+      self._error = None
+    self._thread = threading.Thread(
+      target=self._run, args=(rid, url),
+      name="nkaoud_navd_share_fetch", daemon=True,
+    )
+    self._thread.start()
+    return rid
+
+  def _run(self, rid: int, url: str) -> None:
+    try:
+      result = fetch_share_destination(url)
+      with self._lock:
+        if rid == self._request_id:
+          self._result = result
+    except ShareFetchError as e:
+      with self._lock:
+        if rid == self._request_id:
+          self._error = str(e)
+
+  def take_result(self) -> tuple[dict | None, str | None]:
+    with self._lock:
+      r, e = self._result, self._error
+      self._result = None
+      self._error = None
+      return r, e
+
+
 class NkaoudNavd:
   def __init__(self) -> None:
     self.params = Params()
@@ -232,6 +287,10 @@ class NkaoudNavd:
     self.rk = Ratekeeper(5.0)
 
     self.fetcher = RouteFetcher()
+    self.share_fetcher = ShareFetcher()
+    self._last_share_trigger: str | None = None
+    self._share_next_retry_t: float = 0.0
+    self._share_attempts: int = 0
     self.route: RouteData | None = None
     self.destination: Coordinate | None = None
     self.step_idx: int = 0
@@ -284,6 +343,7 @@ class NkaoudNavd:
       self._last_lane_change_state = lcs
 
     self._maybe_drain_fetcher()
+    self._handle_share_trigger()
 
     new_dest = _read_destination(self.params)
     if not self._same_destination(new_dest):
@@ -311,6 +371,56 @@ class NkaoudNavd:
       return False
     return (abs(d.latitude - self.destination.latitude) < 1e-7
             and abs(d.longitude - self.destination.longitude) < 1e-7)
+
+  def _handle_share_trigger(self) -> None:
+    """The UI bumps NkaoudNavShareTrigger when the user taps the Share
+    preset. We pick that up here, GET the configured endpoint, and write
+    the result into NkaoudNavDestination so the normal route flow takes
+    over. On failure we retry SHARE_FETCH_MAX_ATTEMPTS times with a
+    SHARE_FETCH_RETRY_S backoff, then give up until the next trigger."""
+    trigger = (self.params.get("NkaoudNavShareTrigger") or "").strip()
+    if self._last_share_trigger is None:
+      # Seed at startup so a stale trigger from a previous boot doesn't fire.
+      self._last_share_trigger = trigger
+      return
+
+    new_trigger = trigger != self._last_share_trigger
+    if new_trigger:
+      self._last_share_trigger = trigger
+      self._share_attempts = 0
+      self._share_next_retry_t = 0.0
+      if not trigger:
+        return  # user cleared the trigger; nothing to do
+      cloudlog.info(f"nkaoud_navd: share trigger changed to {trigger!r}, fetching")
+
+    if self.share_fetcher.in_flight():
+      return
+    result, error = self.share_fetcher.take_result()
+    if result is not None:
+      cloudlog.info(f"nkaoud_navd: share fetch -> {result.get('place_name')!r} "
+                    f"({result.get('latitude'):.5f},{result.get('longitude'):.5f})")
+      self.params.put("NkaoudNavDestination", result)
+      self._share_attempts = 0
+      self._share_next_retry_t = 0.0
+      return
+    if error is not None:
+      self._share_attempts += 1
+      self._share_next_retry_t = time.monotonic() + SHARE_FETCH_RETRY_S
+      cloudlog.warning(f"nkaoud_navd: share fetch failed (attempt {self._share_attempts}): {error}")
+
+    if not trigger:
+      return
+    if self._share_attempts >= SHARE_FETCH_MAX_ATTEMPTS:
+      return
+    if time.monotonic() < self._share_next_retry_t:
+      return
+    url = (self.params.get("NkaoudNavShareEndpoint") or "").strip()
+    if not url:
+      if new_trigger:
+        cloudlog.warning("nkaoud_navd: NkaoudNavShareEndpoint is empty, cannot fetch")
+      self._share_attempts = SHARE_FETCH_MAX_ATTEMPTS  # short-circuit until URL is set
+      return
+    self.share_fetcher.submit(url)
 
   def _try_fetch_initial(self) -> None:
     if self.destination is None:

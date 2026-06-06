@@ -10,9 +10,11 @@ Only visible when NkaoudNavEnabled is set.
 """
 from __future__ import annotations
 
+import time
+
 import pyray as rl
 from openpilot.common.params import Params
-from openpilot.sunnypilot.nkaoud_nav.destinations import PRESETS
+from openpilot.sunnypilot.nkaoud_nav.destinations import PRESETS, SHARE_LABEL
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.lib.text_measure import measure_text_cached
@@ -50,6 +52,7 @@ class NavButton(Widget):
 
   def _open_picker(self) -> None:
     options = [d.label for d in PRESETS]
+    options.append(SHARE_LABEL)
     if self._has_destination:
       options.append(CLEAR_LABEL)
 
@@ -64,6 +67,13 @@ class NavButton(Widget):
     selection = self._picker_ref.selection
     if selection == CLEAR_LABEL:
       self._params.remove("NkaoudNavDestination")
+      return
+    if selection == SHARE_LABEL:
+      # Bump the trigger -- navd will fetch the configured endpoint and
+      # write the resulting destination back to NkaoudNavDestination.
+      # Using monotonic-ish ns means the token is always-fresh and always
+      # different from any previous selection.
+      self._params.put("NkaoudNavShareTrigger", str(time.time_ns()))
       return
     for preset in PRESETS:
       if preset.label == selection:

@@ -8,6 +8,7 @@ from openpilot.common.params import Params
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.nav_token_qr_dialog import NavTokenQrDialog
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr
+from openpilot.system.ui.sunnypilot.widgets.input_dialog import InputDialogSP
 from openpilot.system.ui.sunnypilot.widgets.list_view import toggle_item_sp, simple_button_item_sp, multiple_button_item_sp
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.network import NavButton
@@ -30,6 +31,11 @@ class NavSettingsLayout(Widget):
       button_text=lambda: self._token_button_label(),
       button_width=800,
       callback=lambda: self._open_token_input(),
+    )
+    self._share_endpoint_button = simple_button_item_sp(
+      button_text=lambda: self._share_endpoint_label(),
+      button_width=800,
+      callback=lambda: self._open_share_endpoint_input(),
     )
     self._clear_destination_button = simple_button_item_sp(
       button_text=lambda: tr("Clear Current Destination"),
@@ -78,6 +84,7 @@ class NavSettingsLayout(Widget):
 
     items = [
       self._token_button,
+      self._share_endpoint_button,
       self._clear_destination_button,
       self._show_polyline,
       self._polyline_style,
@@ -99,6 +106,24 @@ class NavSettingsLayout(Widget):
     # Pushes the QR dialog. The dialog starts a temporary HTTP server on
     # :8081 in its __init__ and stops it on cancel / token receipt.
     gui_app.push_widget(NavTokenQrDialog())
+
+  def _share_endpoint_label(self) -> str:
+    url = (self._params.get("NkaoudNavShareEndpoint") or "").strip()
+    if not url:
+      return tr("Set Share Endpoint URL")
+    # Show just the hostname so the whole URL doesn't crowd the row.
+    host = url.split("://", 1)[-1].split("/", 1)[0]
+    return tr("Share Endpoint (set, {})").format(host)
+
+  def _open_share_endpoint_input(self) -> None:
+    current = (self._params.get("NkaoudNavShareEndpoint") or "").strip()
+    dialog = InputDialogSP(
+      title="Share Endpoint URL",
+      sub_title='Returns JSON like {"latitude": 24.7, "longitude": 46.6, "place_name": "..."}',
+      current_text=current,
+      param="NkaoudNavShareEndpoint",
+    )
+    dialog.show()
 
   def _render(self, rect):
     self._back_button.set_position(self._rect.x, self._rect.y + 20)
