@@ -30,6 +30,8 @@ from urllib.parse import urlparse
 
 import requests
 
+from openpilot.common.swaglog import cloudlog
+
 
 # Same SQL the old fork used, with place_name folded in so we can label
 # the destination on the UI side. Coalesce so a missing column doesn't
@@ -78,9 +80,11 @@ def _fetch_neon(connection_string: str, timeout: float) -> Any:
   host = parsed.hostname
   if not host:
     raise ShareFetchError("Neon connection string is missing a hostname")
+  url = f"https://{host}/sql"
+  cloudlog.info(f"share_client: Neon POST {url}")
   try:
     resp = requests.post(
-      f"https://{host}/sql",
+      url,
       timeout=timeout,
       headers={
         "Neon-Connection-String": connection_string,
@@ -91,6 +95,7 @@ def _fetch_neon(connection_string: str, timeout: float) -> Any:
     )
   except requests.RequestException as e:
     raise ShareFetchError(f"network error: {e}") from e
+  cloudlog.info(f"share_client: Neon status={resp.status_code} body={resp.text[:300]!r}")
   if resp.status_code != 200:
     raise ShareFetchError(f"neon http {resp.status_code}: {resp.text[:200]}")
   try:

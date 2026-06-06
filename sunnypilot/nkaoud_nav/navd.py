@@ -134,6 +134,16 @@ def _read_token(params: Params) -> str:
   return (params.get("NkaoudNavMapboxToken") or "").strip()
 
 
+def _sanitize_url(url: str) -> str:
+  """Strip user:pass@ from a URL so we can put it in swaglog without leaking
+  credentials. Used only for logging."""
+  if "@" not in url:
+    return url
+  scheme, _, after = url.partition("://")
+  _creds, _, rest = after.partition("@")
+  return f"{scheme}://<creds>@{rest}" if scheme else f"<creds>@{rest}"
+
+
 # Drop-in token import: place the token in any of these files (one of which is
 # reachable via the copyparty web UI when EnableCopyparty is on) and navd will
 # read it, write it to the param, and delete the file. Avoids typing a long
@@ -391,14 +401,15 @@ class NkaoudNavd:
       self._share_next_retry_t = 0.0
       if not trigger:
         return  # user cleared the trigger; nothing to do
-      cloudlog.info(f"nkaoud_navd: share trigger changed to {trigger!r}, fetching")
+      cloudlog.info(f"nkaoud_navd: share trigger changed to {trigger!r}, will fetch")
 
     if self.share_fetcher.in_flight():
       return
     result, error = self.share_fetcher.take_result()
     if result is not None:
-      cloudlog.info(f"nkaoud_navd: share fetch -> {result.get('place_name')!r} "
-                    f"({result.get('latitude'):.5f},{result.get('longitude'):.5f})")
+      cloudlog.info(f"nkaoud_navd: share fetch OK -> {result.get('place_name')!r} "
+                    f"lat={result.get('latitude'):.5f} lon={result.get('longitude'):.5f}; "
+                    f"writing NkaoudNavDestination")
       self.params.put("NkaoudNavDestination", result)
       self._share_attempts = 0
       self._share_next_retry_t = 0.0
@@ -406,7 +417,7 @@ class NkaoudNavd:
     if error is not None:
       self._share_attempts += 1
       self._share_next_retry_t = time.monotonic() + SHARE_FETCH_RETRY_S
-      cloudlog.warning(f"nkaoud_navd: share fetch failed (attempt {self._share_attempts}): {error}")
+      cloudlog.warning(f"nkaoud_navd: share fetch FAILED (attempt {self._share_attempts}/{SHARE_FETCH_MAX_ATTEMPTS}): {error}")
 
     if not trigger:
       return
@@ -420,6 +431,7 @@ class NkaoudNavd:
         cloudlog.warning("nkaoud_navd: NkaoudNavShareEndpoint is empty, cannot fetch")
       self._share_attempts = SHARE_FETCH_MAX_ATTEMPTS  # short-circuit until URL is set
       return
+    cloudlog.info(f"nkaoud_navd: submitting share fetch ({_sanitize_url(url)})")
     self.share_fetcher.submit(url)
 
   def _try_fetch_initial(self) -> None:
