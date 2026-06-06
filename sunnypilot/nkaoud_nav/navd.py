@@ -406,12 +406,22 @@ class NkaoudNavd:
     if self.share_fetcher.in_flight():
       return
     result, error = self.share_fetcher.take_result()
+    if not trigger:
+      # User cleared the trigger after we'd submitted -- drop whatever
+      # came back so we don't re-instate the destination they just cleared.
+      if result is not None or error is not None:
+        cloudlog.info("nkaoud_navd: share fetch completed but trigger was cleared, discarding")
+      return
     if result is not None:
       cloudlog.info(f"nkaoud_navd: share fetch OK -> {result.get('place_name')!r} "
                     f"lat={result.get('latitude'):.5f} lon={result.get('longitude'):.5f}; "
                     f"writing NkaoudNavDestination")
       self.params.put("NkaoudNavDestination", result)
-      self._share_attempts = 0
+      # Mark this trigger as fully handled so we don't re-submit on every
+      # subsequent tick (which would overwrite a user-initiated "Clear
+      # destination" with the same coordinates). A fresh Share tap bumps
+      # NkaoudNavShareTrigger which resets attempts to 0 above.
+      self._share_attempts = SHARE_FETCH_MAX_ATTEMPTS
       self._share_next_retry_t = 0.0
       return
     if error is not None:

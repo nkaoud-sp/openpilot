@@ -66,7 +66,11 @@ class NavButton(Widget):
       return
     selection = self._picker_ref.selection
     if selection == CLEAR_LABEL:
+      # Also wipe the share trigger -- otherwise a pending or in-flight
+      # share fetch would reinstate NkaoudNavDestination on the next
+      # navd tick.
       self._params.remove("NkaoudNavDestination")
+      self._params.remove("NkaoudNavShareTrigger")
       return
     if selection == SHARE_LABEL:
       # Bump the trigger -- navd will fetch the configured endpoint and

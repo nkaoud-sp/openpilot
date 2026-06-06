@@ -41,7 +41,7 @@ class NavSettingsLayout(Widget):
     self._clear_destination_button = simple_button_item_sp(
       button_text=lambda: tr("Clear Current Destination"),
       button_width=800,
-      callback=lambda: self._params.remove("NkaoudNavDestination"),
+      callback=lambda: self._clear_destination(),
     )
     self._show_polyline = toggle_item_sp(
       title=lambda: tr("Show Route Polyline"),
@@ -123,6 +123,13 @@ class NavSettingsLayout(Widget):
     # shows an example JSON response so the user can sanity-check their
     # endpoint format.
     gui_app.push_widget(NavShareEndpointQrDialog())
+
+  def _clear_destination(self) -> None:
+    # Wipe both the destination AND the share trigger so a pending share
+    # fetch (or one that completes after the tap) doesn't re-instate the
+    # destination on the next navd tick.
+    self._params.remove("NkaoudNavDestination")
+    self._params.remove("NkaoudNavShareTrigger")
 
   def _render(self, rect):
     self._back_button.set_position(self._rect.x, self._rect.y + 20)
