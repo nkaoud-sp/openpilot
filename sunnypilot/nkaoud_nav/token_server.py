@@ -310,10 +310,10 @@ MAPBOX_TOKEN_SPEC = ParamWebFormSpec(
   status_unset="No token set yet.",
 )
 
-NEON_TEST_QUERY = (
-  "SELECT id, latitude, longitude, COALESCE(place_name, '') AS place_name "
-  "FROM destinations ORDER BY id DESC LIMIT 5"
-)
+# `SELECT *` so the test survives any table schema as long as the user
+# has at least latitude / longitude columns. The reshape below uses the
+# response's `fields` metadata to label each value with its column name.
+NEON_TEST_QUERY = "SELECT * FROM destinations ORDER BY id DESC LIMIT 5"
 
 
 def _neon_test(connection_string: str) -> dict:

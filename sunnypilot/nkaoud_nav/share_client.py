@@ -33,17 +33,16 @@ import requests
 from openpilot.common.swaglog import cloudlog
 
 
-# Same SQL the old fork used, with place_name folded in so we can label
-# the destination on the UI side. Coalesce so a missing column doesn't
-# explode the query.
-NEON_QUERY = """
-SELECT latitude, longitude, COALESCE(place_name, '') AS place_name
-FROM destinations
-ORDER BY id DESC
-LIMIT 1
-""".strip()
+# Pull everything from the row so we don't depend on the user having a
+# specific set of columns. We look up latitude / longitude / place_name
+# by name (via the Neon response's `fields` metadata) so the column order
+# in their CREATE TABLE doesn't matter and extra columns are ignored.
+NEON_QUERY = "SELECT * FROM destinations ORDER BY id DESC LIMIT 1"
 
 NEON_SCHEMES = ("postgres", "postgresql")
+
+# Column names we treat as the destination label, in priority order.
+NAME_COLUMN_CANDIDATES = ("place_name", "name", "label", "title")
 
 
 class ShareFetchError(RuntimeError):
@@ -60,13 +59,36 @@ def _extract(payload: Any) -> dict[str, Any] | None:
     if "latitude" in payload and "longitude" in payload:
       return payload
     rows = payload.get("rows")
+    fields = payload.get("fields") or []
     if isinstance(rows, list) and rows:
       row = rows[0]
-      if isinstance(row, list) and len(row) >= 2:
-        out = {"latitude": row[0], "longitude": row[1]}
-        if len(row) >= 3 and row[2]:
-          out["place_name"] = row[2]
-        return out
+      if isinstance(row, list):
+        # Neon-Array-Mode response. Use the response's `fields` metadata
+        # so we look up columns by NAME instead of by position; this works
+        # regardless of how the user ordered their CREATE TABLE.
+        col_idx = {f.get("name"): i for i, f in enumerate(fields) if isinstance(f, dict)}
+        if "latitude" in col_idx and "longitude" in col_idx:
+          out: dict[str, Any] = {
+            "latitude": row[col_idx["latitude"]],
+            "longitude": row[col_idx["longitude"]],
+          }
+          for cand in NAME_COLUMN_CANDIDATES:
+            if cand in col_idx and row[col_idx[cand]]:
+              out["place_name"] = row[col_idx[cand]]
+              break
+          return out
+        # If fields metadata is PRESENT but doesn't include latitude /
+        # longitude, the user's table really is missing them -- don't
+        # silently treat the first two values as coordinates.
+        if fields:
+          return None
+        # No fields metadata at all -- fall back to legacy positional
+        # shape ([lat, lon, name?]).
+        if len(row) >= 2:
+          out = {"latitude": row[0], "longitude": row[1]}
+          if len(row) >= 3 and row[2]:
+            out["place_name"] = row[2]
+          return out
       if isinstance(row, dict) and "latitude" in row and "longitude" in row:
         return row
     return None
