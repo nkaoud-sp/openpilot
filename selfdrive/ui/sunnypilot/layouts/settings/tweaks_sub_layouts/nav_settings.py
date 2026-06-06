@@ -5,10 +5,11 @@ from collections.abc import Callable
 
 import pyray as rl
 from openpilot.common.params import Params
-from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.nav_token_qr_dialog import NavTokenQrDialog
+from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.nav_token_qr_dialog import (
+  NavTokenQrDialog, NavShareEndpointQrDialog,
+)
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr
-from openpilot.system.ui.sunnypilot.widgets.input_dialog import InputDialogSP
 from openpilot.system.ui.sunnypilot.widgets.list_view import toggle_item_sp, simple_button_item_sp, multiple_button_item_sp
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.network import NavButton
@@ -116,14 +117,10 @@ class NavSettingsLayout(Widget):
     return tr("Share Endpoint (set, {})").format(host)
 
   def _open_share_endpoint_input(self) -> None:
-    current = (self._params.get("NkaoudNavShareEndpoint") or "").strip()
-    dialog = InputDialogSP(
-      title="Share Endpoint URL",
-      sub_title='Returns JSON like {"latitude": 24.7, "longitude": 46.6, "place_name": "..."}',
-      current_text=current,
-      param="NkaoudNavShareEndpoint",
-    )
-    dialog.show()
+    # Same QR/web-form workflow as the Mapbox token, but the form
+    # shows an example JSON response so the user can sanity-check their
+    # endpoint format.
+    gui_app.push_widget(NavShareEndpointQrDialog())
 
   def _render(self, rect):
     self._back_button.set_position(self._rect.x, self._rect.y + 20)

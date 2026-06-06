@@ -1,9 +1,10 @@
 """
-QR-code-based token entry dialog for nkaoud_nav.
+QR-code-based param-entry dialog for nkaoud_nav. Generic over which param
+gets set -- the spec (title, hint, example) lives in the ParamWebServer.
 
 Lifecycle:
-  show() -> TokenWebServer.start() + generate QR for http://<lan-ip>:8081/
-  user scans -> opens form on phone -> pastes token -> POSTs
+  show() -> server.start() + generate QR for http://<lan-ip>:8081/
+  user scans -> opens form on phone -> pastes value -> POSTs
   server sets a threading.Event
   dialog detects on the next frame, shows "Saved", stops the server, pops itself
   cancel button -> stops the server, pops itself
@@ -13,7 +14,9 @@ from __future__ import annotations
 import pyray as rl
 import qrcode
 
-from openpilot.sunnypilot.nkaoud_nav.token_server import TokenWebServer
+from openpilot.sunnypilot.nkaoud_nav.token_server import (
+  ParamWebServer, mapbox_token_server, share_endpoint_server,
+)
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.lib.text_measure import measure_text_cached
@@ -32,13 +35,21 @@ HINT_COLOR = rl.Color(150, 150, 150, 255)
 AUTO_CLOSE_FRAMES = 60         # how long to display the success state before popping
 
 
-class NavTokenQrDialog(Widget):
-  def __init__(self) -> None:
+class NavParamQrDialog(Widget):
+  """QR + spawn-on-demand web server for any nkaoud_nav param. Construct
+  with a fully-configured ParamWebServer (use the factories in
+  sunnypilot.nkaoud_nav.token_server). `title_text` and `hint_text` show
+  on the dialog itself (the web form's own title/example come from the
+  spec)."""
+
+  def __init__(self, server: ParamWebServer, title_text: str, hint_text: str) -> None:
     super().__init__()
-    self._server = TokenWebServer()
+    self._server = server
     self._server.start()
     self._url = self._server.url
     self._matrix = self._build_matrix(self._url)
+    self._title_text = title_text
+    self._hint_text = hint_text
     self._font_bold = gui_app.font(FontWeight.BOLD)
     self._font_medium = gui_app.font(FontWeight.MEDIUM)
     self._font_mono_size = 36
@@ -72,7 +83,7 @@ class NavTokenQrDialog(Widget):
 
   # ---- render ----
   def _render(self, rect: rl.Rectangle) -> None:
-    # Detect "token saved" once -- arm the close countdown.
+    # Detect "saved" once -- arm the close countdown.
     if self._success_frames_left == 0 and self._server.token_saved.is_set():
       self._success_frames_left = AUTO_CLOSE_FRAMES
 
@@ -85,8 +96,7 @@ class NavTokenQrDialog(Widget):
     y = dialog_rect.y + MARGIN
 
     # Title
-    title = tr("Set Mapbox Token")
-    rl.draw_text_ex(self._font_bold, title,
+    rl.draw_text_ex(self._font_bold, self._title_text,
                     rl.Vector2(content_x, y), self._title_size, 0, rl.WHITE)
     y += self._title_size + 24
 
@@ -98,8 +108,7 @@ class NavTokenQrDialog(Widget):
 
   def _render_qr_state(self, content_x: float, y: float, content_w: float,
                        dialog_rect: rl.Rectangle) -> None:
-    hint = tr("Scan with your phone, then paste your Mapbox token in the form.")
-    rl.draw_text_ex(self._font_medium, hint,
+    rl.draw_text_ex(self._font_medium, self._hint_text,
                     rl.Vector2(content_x, y), self._hint_size, 0, HINT_COLOR)
     y += self._hint_size + 24
 
@@ -127,7 +136,7 @@ class NavTokenQrDialog(Widget):
 
   def _render_success_state(self, content_x: float, y: float, content_w: float,
                             dialog_rect: rl.Rectangle) -> None:
-    msg = tr("Token saved. Closing...")
+    msg = tr("Saved. Closing...")
     text_size = measure_text_cached(self._font_bold, msg, 64)
     bottom = dialog_rect.y + dialog_rect.height
     rl.draw_text_ex(self._font_bold, msg,
@@ -163,3 +172,21 @@ class NavTokenQrDialog(Widget):
           int(cell + 1),
           QR_FG_COLOR,
         )
+
+
+# ---------- Preconfigured dialog factories ----------
+
+def NavTokenQrDialog() -> NavParamQrDialog:
+  return NavParamQrDialog(
+    server=mapbox_token_server(),
+    title_text=tr("Set Mapbox Token"),
+    hint_text=tr("Scan with your phone, then paste your Mapbox token in the form."),
+  )
+
+
+def NavShareEndpointQrDialog() -> NavParamQrDialog:
+  return NavParamQrDialog(
+    server=share_endpoint_server(),
+    title_text=tr("Set Share Endpoint URL"),
+    hint_text=tr("Scan with your phone, then paste the URL in the form. The page shows an example response."),
+  )

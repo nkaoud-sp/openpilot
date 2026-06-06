@@ -1,17 +1,24 @@
 """
-On-demand HTTP form for setting the Mapbox token from a phone/laptop browser.
+On-demand HTTP form for setting a nkaoud_nav param from a phone/laptop browser.
 
-The settings UI starts a TokenWebServer when the user opens the QR dialog
-and stops it when they save or cancel. No standalone process is registered;
-the server only exists while the dialog is up.
+The settings UI instantiates a ParamWebServer with the (param key, page
+title, label, example) it wants, starts the server when the QR dialog
+opens, and stops it when the user saves or cancels. No standalone process
+is registered; the server only exists while the dialog is up.
+
+Two preconfigured factories:
+  - mapbox_token_server() -- writes NkaoudNavMapboxToken
+  - share_endpoint_server() -- writes NkaoudNavShareEndpoint
 
 Threat model: LAN-only, no auth. Same as sunnypilot's copyparty. Don't
 expose to public Wi-Fi. The server only runs while the dialog is visible.
 """
 from __future__ import annotations
 
+import html
 import socket
 import threading
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
 
@@ -23,7 +30,7 @@ DEFAULT_PORT = 8081
 
 PAGE = """<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>nkaoud_nav: Mapbox token</title>
+<title>nkaoud_nav: %TITLE%</title>
 <style>
   body{font-family:system-ui,sans-serif;background:#111;color:#eee;margin:0;padding:24px;}
   h1{font-size:20px;margin:0 0 16px;}
@@ -36,11 +43,17 @@ PAGE = """<!doctype html>
   button{margin-top:12px;padding:14px 28px;border:0;border-radius:6px;background:#0086e9;
          color:#fff;font-size:16px;cursor:pointer;}
   button:active{background:#006bb8;}
-  .hint{color:#888;font-size:13px;margin-top:8px;}
+  .hint{color:#888;font-size:13px;margin-top:8px;line-height:1.45;}
+  .hint code{background:#1a1a1a;padding:1px 4px;border-radius:3px;color:#ddd;}
+  .example{margin-top:10px;padding:10px;background:#1a1a1a;border:1px solid #2a2a2a;
+           border-radius:6px;font-family:ui-monospace,monospace;font-size:12px;color:#ddd;
+           white-space:pre-wrap;word-break:break-all;}
+  .example .lbl{display:block;color:#888;font-family:system-ui,sans-serif;font-size:12px;
+                margin-bottom:4px;}
   .done{padding:16px;border-radius:6px;background:#163a26;border-left:4px solid #80d8a6;
         font-size:16px;margin-top:24px;}
 </style></head><body>
-<h1>nkaoud_nav &mdash; Mapbox token</h1>
+<h1>nkaoud_nav &mdash; %TITLE%</h1>
 %BODY%
 </body></html>
 """
@@ -48,24 +61,34 @@ PAGE = """<!doctype html>
 FORM_BODY = """
 <div class="status %CLASS%">%STATUS%</div>
 <form method="POST" action="/">
-  <textarea name="token" placeholder="pk.eyJhbGciOiJI..." autofocus></textarea>
-  <div class="hint">Public Mapbox tokens start with <code>pk.eyJ</code>.
-  Whitespace is trimmed. Empty submit clears the token.</div>
-  <button type="submit">Save token</button>
+  <textarea name="value" placeholder="%PLACEHOLDER%" autofocus></textarea>
+  <div class="hint">%HINT%</div>
+  %EXAMPLE_BLOCK%
+  <button type="submit">Save</button>
 </form>
 """
 
 DONE_BODY = """
-<div class="done">Token saved. You can close this tab. The setup dialog on
+<div class="done">Saved. You can close this tab. The setup dialog on
 the comma will close automatically.</div>
 """
 
 
-def get_local_ip() -> str:
-  """Best-effort: returns the device's outbound LAN IP without sending a packet.
+@dataclass(frozen=True)
+class ParamWebFormSpec:
+  """Everything the form needs to render + persist a single param."""
+  param_key: str
+  title: str                    # browser tab title and h1, e.g. "Mapbox token"
+  placeholder: str              # textarea placeholder
+  hint_html: str                # the "Public Mapbox tokens..." line; HTML allowed
+  example_label: str = ""       # optional caption above the example block
+  example_value: str = ""       # optional example string; rendered HTML-escaped
+  status_set_template: str = "Currently set (length {length}, ends in &hellip;{tail})."
+  status_unset: str = "Not set yet."
 
-  Falls back to 127.0.0.1 if no network is up.
-  """
+
+def get_local_ip() -> str:
+  """Best-effort: returns the device's outbound LAN IP without sending a packet."""
   s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
   try:
     s.connect(("8.8.8.8", 80))
@@ -76,39 +99,53 @@ def get_local_ip() -> str:
     s.close()
 
 
-def _render_form(message_html: str = "") -> bytes:
-  token = (Params().get("NkaoudNavMapboxToken") or "").strip()
-  if token:
-    tail = token[-4:] if len(token) >= 4 else token
+def _render_form(spec: ParamWebFormSpec, message_html: str = "") -> bytes:
+  current = (Params().get(spec.param_key) or "").strip()
+  if current:
+    tail = current[-4:] if len(current) >= 4 else current
     status_cls = "set"
-    status_txt = f"Token currently set (ends in &hellip;{tail}, length {len(token)})."
+    status_txt = spec.status_set_template.format(length=len(current), tail=html.escape(tail))
   else:
     status_cls = "unset"
-    status_txt = "No token set yet."
+    status_txt = spec.status_unset
+
+  if spec.example_value:
+    example_block = (
+      f'<div class="example"><span class="lbl">{html.escape(spec.example_label or "Example")}</span>'
+      f'{html.escape(spec.example_value)}</div>'
+    )
+  else:
+    example_block = ""
+
   body = (FORM_BODY
           .replace("%CLASS%", status_cls)
-          .replace("%STATUS%", status_txt))
+          .replace("%STATUS%", status_txt)
+          .replace("%PLACEHOLDER%", html.escape(spec.placeholder))
+          .replace("%HINT%", spec.hint_html)
+          .replace("%EXAMPLE_BLOCK%", example_block))
   if message_html:
     body = message_html + body
-  return PAGE.replace("%BODY%", body).encode("utf-8")
+  return PAGE.replace("%TITLE%", html.escape(spec.title)).replace("%BODY%", body).encode("utf-8")
 
 
-def _render_done() -> bytes:
-  return PAGE.replace("%BODY%", DONE_BODY).encode("utf-8")
+def _render_done(spec: ParamWebFormSpec) -> bytes:
+  return PAGE.replace("%TITLE%", html.escape(spec.title)).replace("%BODY%", DONE_BODY).encode("utf-8")
 
 
-class TokenWebServer:
-  """ThreadingHTTPServer that surfaces a 'token saved' Event."""
+class ParamWebServer:
+  """ThreadingHTTPServer that surfaces a 'saved' Event after a POST."""
 
-  def __init__(self, port: int = DEFAULT_PORT) -> None:
+  def __init__(self, spec: ParamWebFormSpec, port: int = DEFAULT_PORT) -> None:
+    self.spec = spec
     self.port = port
-    self.token_saved = threading.Event()
+    self.token_saved = threading.Event()   # kept name for backward compatibility with dialog
     self._server: ThreadingHTTPServer | None = None
     self._thread: threading.Thread | None = None
 
   def start(self) -> None:
     if self._server is not None:
       return
+    spec = self.spec
     saved_event = self.token_saved
 
     class _Handler(BaseHTTPRequestHandler):
@@ -127,7 +164,7 @@ class TokenWebServer:
         if self.path not in ("/", "/index.html"):
           self.send_error(404)
           return
-        self._send_html(_render_done() if saved_event.is_set() else _render_form())
+        self._send_html(_render_done(spec) if saved_event.is_set() else _render_form(spec))
 
       def do_POST(self):
         if self.path != "/":
@@ -136,21 +173,24 @@ class TokenWebServer:
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length > 0 else b""
         fields = parse_qs(body.decode("utf-8", errors="replace"))
-        token = (fields.get("token", [""])[0]).strip()
+        # Accept either "value" (current spec) or "token" (old form name) so
+        # an old cached page from a phone doesn't break.
+        value = (fields.get("value", fields.get("token", [""]))[0]).strip()
         params = Params()
-        if token:
-          params.put("NkaoudNavMapboxToken", token)
-          cloudlog.info(f"nkaoud_navd token_server: token updated via web form (len {len(token)})")
+        if value:
+          params.put(spec.param_key, value)
+          cloudlog.info(f"nkaoud_navd web form: {spec.param_key} updated (len {len(value)})")
         else:
-          params.remove("NkaoudNavMapboxToken")
-          cloudlog.info("nkaoud_navd token_server: token cleared via web form")
+          params.remove(spec.param_key)
+          cloudlog.info(f"nkaoud_navd web form: {spec.param_key} cleared")
         saved_event.set()
-        self._send_html(_render_done())
+        self._send_html(_render_done(spec))
 
     self._server = ThreadingHTTPServer(("0.0.0.0", self.port), _Handler)
-    self._thread = threading.Thread(target=self._server.serve_forever, name="nkaoud_token_ws", daemon=True)
+    self._thread = threading.Thread(target=self._server.serve_forever,
+                                    name=f"nkaoud_param_ws_{self.spec.param_key}", daemon=True)
     self._thread.start()
-    cloudlog.info(f"nkaoud_navd token_server: started on 0.0.0.0:{self.port}")
+    cloudlog.info(f"nkaoud_navd web form: started on 0.0.0.0:{self.port} for {spec.param_key}")
 
   def stop(self) -> None:
     if self._server is None:
@@ -162,8 +202,55 @@ class TokenWebServer:
       pass
     self._server = None
     self._thread = None
-    cloudlog.info("nkaoud_navd token_server: stopped")
+    cloudlog.info(f"nkaoud_navd web form: stopped ({self.spec.param_key})")
 
   @property
   def url(self) -> str:
     return f"http://{get_local_ip()}:{self.port}/"
+
+
+# ----- Preconfigured factories -----
+
+MAPBOX_TOKEN_SPEC = ParamWebFormSpec(
+  param_key="NkaoudNavMapboxToken",
+  title="Mapbox token",
+  placeholder="pk.eyJhbGciOiJI...",
+  hint_html=(
+    'Public Mapbox tokens start with <code>pk.eyJ</code>. '
+    'Whitespace is trimmed. Empty submit clears the token.'
+  ),
+  status_set_template="Token currently set (length {length}, ends in &hellip;{tail}).",
+  status_unset="No token set yet.",
+)
+
+SHARE_ENDPOINT_SPEC = ParamWebFormSpec(
+  param_key="NkaoudNavShareEndpoint",
+  title="Share endpoint URL",
+  placeholder="https://example.com/destination",
+  hint_html=(
+    'Full HTTP(S) URL. nkaoud_nav will <code>GET</code> this endpoint and read '
+    'the latitude/longitude from the JSON response. Empty submit clears the URL.'
+  ),
+  example_label="Expected JSON response (any of these shapes work)",
+  example_value=(
+    '{ "latitude": 24.7136, "longitude": 46.6753, "place_name": "King Fahd Rd" }\n\n'
+    'or a list:\n'
+    '[ { "latitude": 24.7136, "longitude": 46.6753 } ]\n\n'
+    'or Neon /sql-style:\n'
+    '{ "rows": [[24.7136, 46.6753]] }'
+  ),
+  status_set_template="URL currently set (length {length}, ends in &hellip;{tail}).",
+  status_unset="No URL set yet.",
+)
+
+
+def mapbox_token_server(port: int = DEFAULT_PORT) -> ParamWebServer:
+  return ParamWebServer(MAPBOX_TOKEN_SPEC, port=port)
+
+
+def share_endpoint_server(port: int = DEFAULT_PORT) -> ParamWebServer:
+  return ParamWebServer(SHARE_ENDPOINT_SPEC, port=port)
+
+
+# Back-compat alias so existing imports of TokenWebServer keep working.
+TokenWebServer = mapbox_token_server
