@@ -669,7 +669,7 @@ class NkaoudNavd:
       return NavDesire.none
     if self.last_v_ego < HIGHWAY_DEFAULT_MIN_SPEED_MS:
       return NavDesire.none
-    if self.lane_conf in ("unknown", "low") or self.lane_total <= 1 or self.lane_current <= 0:
+    if self.lane_conf == "unknown" or self.lane_total <= 1 or self.lane_current <= 0:
       return NavDesire.none
     target = math.ceil(self.lane_total / 2)
     # ceil(N/2) deliberately biases center-LEFT on even-lane roads:
@@ -728,11 +728,10 @@ class NkaoudNavd:
     return ""
 
   def _need_to_move(self, side: str, target_lane: int) -> bool:
-    """Whether we should move toward `side` to reach target_lane. Stays
-    conservative -- only triggers on a high-confidence lane read, never
-    on an unknown/low one (better to do nothing than nudge into the
-    wrong lane)."""
-    if self.lane_conf in ("unknown", "low") or self.lane_total <= 0:
+    """Whether we should move toward `side` to reach target_lane.
+    Confidence-tolerant for now -- accepts high / medium / low reads.
+    Only 'unknown' blocks (that's literally no lane data)."""
+    if self.lane_conf == "unknown" or self.lane_total <= 0:
       return False
     if self.lane_current <= 0:
       return False
