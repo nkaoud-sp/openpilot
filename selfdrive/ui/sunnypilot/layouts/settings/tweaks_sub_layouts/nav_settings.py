@@ -111,10 +111,12 @@ class NavSettingsLayout(Widget):
   def _share_endpoint_label(self) -> str:
     url = (self._params.get("NkaoudNavShareEndpoint") or "").strip()
     if not url:
-      return tr("Set Share Endpoint URL")
-    # Show just the hostname so the whole URL doesn't crowd the row.
-    host = url.split("://", 1)[-1].split("/", 1)[0]
-    return tr("Share Endpoint (set, {})").format(host)
+      return tr("Set Neon Connection String (for Share)")
+    # Show just the Neon host so credentials don't appear in the label.
+    after_scheme = url.split("://", 1)[-1]
+    after_creds = after_scheme.split("@", 1)[-1]
+    host = after_creds.split("/", 1)[0]
+    return tr("Neon Connection (set, {})").format(host)
 
   def _open_share_endpoint_input(self) -> None:
     # Same QR/web-form workflow as the Mapbox token, but the form

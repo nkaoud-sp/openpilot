@@ -187,6 +187,6 @@ def NavTokenQrDialog() -> NavParamQrDialog:
 def NavShareEndpointQrDialog() -> NavParamQrDialog:
   return NavParamQrDialog(
     server=share_endpoint_server(),
-    title_text=tr("Set Share Endpoint URL"),
-    hint_text=tr("Scan with your phone, then paste the URL in the form. The page shows an example response."),
+    title_text=tr("Set Neon Connection String"),
+    hint_text=tr("Scan with your phone, then paste your Neon connection string. The page shows the required table layout."),
   )

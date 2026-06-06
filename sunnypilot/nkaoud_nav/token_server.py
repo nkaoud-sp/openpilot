@@ -225,31 +225,37 @@ MAPBOX_TOKEN_SPEC = ParamWebFormSpec(
 
 SHARE_ENDPOINT_SPEC = ParamWebFormSpec(
   param_key="NkaoudNavShareEndpoint",
-  title="Share endpoint URL",
-  placeholder="https://example.com/destination  OR  postgresql://user:pass@host/db?sslmode=require",
+  title="Neon connection string",
+  placeholder="postgresql://USER:PASS@HOST/DB?sslmode=require&channel_binding=require",
   hint_html=(
-    'Either a full HTTP(S) URL nkaoud_nav will <code>GET</code>, or a '
-    '<code>postgresql://</code> connection string that nkaoud_nav will hit '
-    "via Neon's REST <code>/sql</code> endpoint with your credentials sent "
-    'as a request header. Whitespace trimmed; empty submit clears the URL.'
+    'Paste your Neon database connection string. When you tap '
+    '<code>Share</code> on the comma, nkaoud_nav hits Neon over its REST '
+    '<code>/sql</code> endpoint and reads the most recent row from your '
+    '<code>destinations</code> table. Whitespace trimmed; empty submit '
+    'clears the URL.'
   ),
-  example_label="Two ways to point this at a destination",
+  example_label="What to paste, and the table it expects",
   example_value=(
-    "Option A -- HTTP(S):\n"
-    "  https://yourservice.example/destination\n"
-    "  must return one of these JSON shapes:\n"
-    '    { "latitude": 24.7136, "longitude": 46.6753, "place_name": "King Fahd Rd" }\n'
-    '    [ { "latitude": 24.7136, "longitude": 46.6753 } ]\n'
-    '    { "rows": [[24.7136, 46.6753, "King Fahd Rd"]] }\n\n'
-    "Option B -- Neon connection string (matches old fork):\n"
-    "  postgresql://USER:PASS@HOST/DBNAME?sslmode=require&channel_binding=require\n"
-    "  needs a `destinations` table with columns:\n"
-    "    id (auto-incrementing), latitude, longitude, place_name (optional)\n"
-    "  the most-recent row is used (ORDER BY id DESC LIMIT 1).\n\n"
-    "Security: whatever you paste is stored in cleartext on the device."
+    "Connection string (one line, from your Neon dashboard):\n"
+    "  postgresql://neondb_owner:npg_XxXxXxXxX@ep-gentle-bonus-aqrtri2b\n"
+    "    -pooler.c-8.us-east-1.aws.neon.tech/neondb\n"
+    "    ?sslmode=require&channel_binding=require\n\n"
+    "Required `destinations` table:\n"
+    "  CREATE TABLE destinations (\n"
+    "    id          SERIAL PRIMARY KEY,\n"
+    "    latitude    DOUBLE PRECISION NOT NULL,\n"
+    "    longitude   DOUBLE PRECISION NOT NULL,\n"
+    "    place_name  TEXT   -- optional, shown on the maneuver banner\n"
+    "  );\n\n"
+    "To push a new destination, INSERT a row -- nkaoud_nav always reads\n"
+    "the most recent one:\n"
+    "  INSERT INTO destinations (latitude, longitude, place_name)\n"
+    "  VALUES (24.7136, 46.6753, 'King Fahd Rd');\n\n"
+    "Security: the connection string is stored in cleartext on the device.\n"
+    "Rotate the Neon password if the device ever leaves your control."
   ),
-  status_set_template="URL currently set (length {length}, ends in &hellip;{tail}).",
-  status_unset="No URL set yet.",
+  status_set_template="Connection string set (length {length}, ends in &hellip;{tail}).",
+  status_unset="No connection string set yet.",
 )
 
 
