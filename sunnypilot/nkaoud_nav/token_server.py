@@ -375,23 +375,23 @@ SHARE_ENDPOINT_SPEC = ParamWebFormSpec(
     '<code>Share</code> on the comma, nkaoud_nav uses the most recent row. '
     'Whitespace trimmed; empty submit clears the connection string.'
   ),
-  example_label="What to paste, and the table it expects",
+  example_label="What to paste, and what the test does",
   example_value=(
     "Connection string (one line, from your Neon dashboard):\n"
     "  postgresql://neondb_owner:npg_XxXxXxXxX@ep-gentle-bonus-aqrtri2b\n"
     "    -pooler.c-8.us-east-1.aws.neon.tech/neondb\n"
     "    ?sslmode=require&channel_binding=require\n\n"
-    "Required `destinations` table:\n"
-    "  CREATE TABLE destinations (\n"
-    "    id          SERIAL PRIMARY KEY,\n"
-    "    latitude    DOUBLE PRECISION NOT NULL,\n"
-    "    longitude   DOUBLE PRECISION NOT NULL,\n"
-    "    place_name  TEXT   -- optional, shown on the maneuver banner\n"
-    "  );\n\n"
-    "To push a new destination, INSERT a row -- nkaoud_nav always reads\n"
-    "the most recent one:\n"
-    "  INSERT INTO destinations (latitude, longitude, place_name)\n"
-    "  VALUES (24.7136, 46.6753, 'King Fahd Rd');\n\n"
+    "Tapping `Test connection` runs ONLY a SELECT (no CREATE, no INSERT):\n"
+    "  SELECT * FROM destinations ORDER BY id DESC LIMIT 5\n\n"
+    "Required columns in `destinations`:\n"
+    "  latitude   DOUBLE PRECISION\n"
+    "  longitude  DOUBLE PRECISION\n"
+    "  id         (any sortable column used for `ORDER BY id DESC`)\n\n"
+    "Optional label column -- first match wins, falls back to\n"
+    '"Shared destination" if none exist:\n'
+    "  place_name | name | label | title\n\n"
+    "Extra columns are ignored. nkaoud_nav reads the most recent row\n"
+    "every time you tap Share on the comma.\n\n"
     "Security: the connection string is stored in cleartext on the device.\n"
     "Rotate the Neon password if the device ever leaves your control."
   ),
