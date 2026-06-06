@@ -2,13 +2,16 @@
 On-demand HTTP form for setting a nkaoud_nav param from a phone/laptop browser.
 
 The settings UI instantiates a ParamWebServer with the (param key, page
-title, label, example) it wants, starts the server when the QR dialog
-opens, and stops it when the user saves or cancels. No standalone process
-is registered; the server only exists while the dialog is up.
+title, label, example, optional test handler) it wants, starts the server
+when the QR dialog opens, and stops it when the user saves or cancels.
+No standalone process is registered; the server only exists while the
+dialog is up.
 
 Two preconfigured factories:
   - mapbox_token_server() -- writes NkaoudNavMapboxToken
-  - share_endpoint_server() -- writes NkaoudNavShareEndpoint
+  - share_endpoint_server() -- writes NkaoudNavShareEndpoint; the spec
+    also wires in a test handler that hits Neon /sql and returns the
+    most recent rows so the user can confirm credentials + table.
 
 Threat model: LAN-only, no auth. Same as sunnypilot's copyparty. Don't
 expose to public Wi-Fi. The server only runs while the dialog is visible.
@@ -16,11 +19,15 @@ expose to public Wi-Fi. The server only runs while the dialog is visible.
 from __future__ import annotations
 
 import html
+import json
 import socket
 import threading
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlparse
+
+import requests
 
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
@@ -50,6 +57,14 @@ PAGE = """<!doctype html>
            white-space:pre-wrap;word-break:break-all;}
   .example .lbl{display:block;color:#888;font-family:system-ui,sans-serif;font-size:12px;
                 margin-bottom:4px;}
+  .actions{display:flex;gap:10px;flex-wrap:wrap;}
+  button.secondary{background:#2a2a2a;color:#eee;}
+  button.secondary:active{background:#444;}
+  .result{margin-top:14px;padding:12px;border-radius:6px;font-family:ui-monospace,monospace;
+          font-size:12px;white-space:pre-wrap;word-break:break-all;}
+  .result.busy{background:#222;color:#ddd;border-left:4px solid #888;}
+  .result.ok{background:#0f2a1a;color:#bee9c8;border-left:4px solid #80d8a6;}
+  .result.err{background:#2a0f0f;color:#ffb3b3;border-left:4px solid #c92231;}
   .done{padding:16px;border-radius:6px;background:#163a26;border-left:4px solid #80d8a6;
         font-size:16px;margin-top:24px;}
 </style></head><body>
@@ -60,18 +75,57 @@ PAGE = """<!doctype html>
 
 FORM_BODY = """
 <div class="status %CLASS%">%STATUS%</div>
-<form method="POST" action="/">
-  <textarea name="value" placeholder="%PLACEHOLDER%" autofocus></textarea>
+<form id="f" method="POST" action="/">
+  <textarea id="value" name="value" placeholder="%PLACEHOLDER%" autofocus></textarea>
   <div class="hint">%HINT%</div>
   %EXAMPLE_BLOCK%
-  <button type="submit">Save</button>
+  <div class="actions">
+    <button type="submit">Save</button>
+    %TEST_BUTTON%
+  </div>
 </form>
+<div id="result" class="result" hidden></div>
+<script>
+(function(){
+  const btn = document.getElementById('test-btn');
+  if(!btn) return;
+  const ta = document.getElementById('value');
+  const out = document.getElementById('result');
+  btn.addEventListener('click', async () => {
+    const val = ta.value.trim();
+    if(!val){ out.hidden = false; out.className = 'result err'; out.textContent = 'paste a connection string first'; return; }
+    out.hidden = false; out.className = 'result busy'; out.textContent = 'testing...';
+    try{
+      const r = await fetch('/test', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: 'value=' + encodeURIComponent(val) });
+      const j = await r.json();
+      if(j.ok){
+        out.className = 'result ok';
+        const body = (j.rows && j.rows.length) ? JSON.stringify(j.rows, null, 2) : '(query returned no rows -- table is empty?)';
+        out.textContent = (j.message || 'OK') + '\\n\\n' + body;
+      } else {
+        out.className = 'result err';
+        out.textContent = 'FAILED: ' + (j.error || 'unknown error');
+      }
+    }catch(e){
+      out.className = 'result err';
+      out.textContent = 'request failed: ' + e;
+    }
+  });
+})();
+</script>
 """
+
+TEST_BUTTON_HTML = '<button id="test-btn" type="button" class="secondary">Test connection</button>'
 
 DONE_BODY = """
 <div class="done">Saved. You can close this tab. The setup dialog on
 the comma will close automatically.</div>
 """
+
+
+# Test handler signature: takes the raw textarea value, returns a dict
+# {"ok": bool, "message"?: str, "rows"?: list, "error"?: str}.
+TestHandler = Callable[[str], dict]
 
 
 @dataclass(frozen=True)
@@ -85,6 +139,11 @@ class ParamWebFormSpec:
   example_value: str = ""       # optional example string; rendered HTML-escaped
   status_set_template: str = "Currently set (length {length}, ends in &hellip;{tail})."
   status_unset: str = "Not set yet."
+  # Optional in-form connection test. When set, the page renders a
+  # "Test connection" button next to Save; clicking it POSTs to /test
+  # which calls this handler with the current textarea value and renders
+  # the result inline. Save is unaffected.
+  test_handler: TestHandler | None = field(default=None, compare=False, repr=False)
 
 
 def get_local_ip() -> str:
@@ -109,6 +168,8 @@ def _render_form(spec: ParamWebFormSpec, message_html: str = "") -> bytes:
     status_cls = "unset"
     status_txt = spec.status_unset
 
+  test_button_html = TEST_BUTTON_HTML if spec.test_handler is not None else ""
+
   if spec.example_value:
     example_block = (
       f'<div class="example"><span class="lbl">{html.escape(spec.example_label or "Example")}</span>'
@@ -122,7 +183,8 @@ def _render_form(spec: ParamWebFormSpec, message_html: str = "") -> bytes:
           .replace("%STATUS%", status_txt)
           .replace("%PLACEHOLDER%", html.escape(spec.placeholder))
           .replace("%HINT%", spec.hint_html)
-          .replace("%EXAMPLE_BLOCK%", example_block))
+          .replace("%EXAMPLE_BLOCK%", example_block)
+          .replace("%TEST_BUTTON%", test_button_html))
   if message_html:
     body = message_html + body
   return PAGE.replace("%TITLE%", html.escape(spec.title)).replace("%BODY%", body).encode("utf-8")
@@ -152,13 +214,27 @@ class ParamWebServer:
       def log_message(self, fmt, *args):  # silence default access log
         pass
 
-      def _send_html(self, body: bytes, code: int = 200) -> None:
+      def _send(self, body: bytes, ctype: str, code: int = 200) -> None:
         self.send_response(code)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+      def _send_html(self, body: bytes, code: int = 200) -> None:
+        self._send(body, "text/html; charset=utf-8", code=code)
+
+      def _send_json(self, payload: dict, code: int = 200) -> None:
+        self._send(json.dumps(payload).encode("utf-8"), "application/json", code=code)
+
+      def _read_form_value(self) -> str:
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length) if length > 0 else b""
+        fields = parse_qs(body.decode("utf-8", errors="replace"))
+        # Accept either "value" (current spec) or "token" (old form name) so
+        # an old cached page from a phone doesn't break.
+        return (fields.get("value", fields.get("token", [""]))[0]).strip()
 
       def do_GET(self):
         if self.path not in ("/", "/index.html"):
@@ -167,15 +243,26 @@ class ParamWebServer:
         self._send_html(_render_done(spec) if saved_event.is_set() else _render_form(spec))
 
       def do_POST(self):
+        if self.path == "/test":
+          if spec.test_handler is None:
+            self._send_json({"ok": False, "error": "no test handler for this param"}, code=400)
+            return
+          value = self._read_form_value()
+          if not value:
+            self._send_json({"ok": False, "error": "empty value"})
+            return
+          try:
+            result = spec.test_handler(value)
+          except Exception as e:   # noqa: BLE001 -- surface anything the handler raised
+            result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+          ok = bool(result.get("ok"))
+          cloudlog.info(f"nkaoud_navd web form: /test {spec.param_key} ok={ok}")
+          self._send_json(result)
+          return
         if self.path != "/":
           self.send_error(404)
           return
-        length = int(self.headers.get("Content-Length") or 0)
-        body = self.rfile.read(length) if length > 0 else b""
-        fields = parse_qs(body.decode("utf-8", errors="replace"))
-        # Accept either "value" (current spec) or "token" (old form name) so
-        # an old cached page from a phone doesn't break.
-        value = (fields.get("value", fields.get("token", [""]))[0]).strip()
+        value = self._read_form_value()
         params = Params()
         if value:
           params.put(spec.param_key, value)
@@ -223,16 +310,70 @@ MAPBOX_TOKEN_SPEC = ParamWebFormSpec(
   status_unset="No token set yet.",
 )
 
+NEON_TEST_QUERY = (
+  "SELECT id, latitude, longitude, COALESCE(place_name, '') AS place_name "
+  "FROM destinations ORDER BY id DESC LIMIT 5"
+)
+
+
+def _neon_test(connection_string: str) -> dict:
+  """Hit Neon /sql with the supplied connection string and pull the 5 most
+  recent destinations. Used by the Share-endpoint form's Test button so the
+  user can verify credentials + table layout without leaving the page."""
+  parsed = urlparse(connection_string)
+  scheme = parsed.scheme.lower()
+  if scheme not in ("postgres", "postgresql"):
+    return {"ok": False, "error": f"expected postgresql://... (got scheme {scheme!r})"}
+  host = parsed.hostname
+  if not host:
+    return {"ok": False, "error": "connection string is missing a hostname"}
+  url = f"https://{host}/sql"
+  try:
+    resp = requests.post(
+      url,
+      timeout=8,
+      headers={
+        "Neon-Connection-String": connection_string,
+        "Neon-Raw-Text-Output": "true",
+        "Neon-Array-Mode": "true",
+      },
+      json={"query": NEON_TEST_QUERY, "params": []},
+    )
+  except requests.RequestException as e:
+    return {"ok": False, "error": f"network error: {e}"}
+  if resp.status_code != 200:
+    return {"ok": False, "error": f"neon http {resp.status_code}: {resp.text[:500]}"}
+  try:
+    body = resp.json()
+  except ValueError as e:
+    return {"ok": False, "error": f"neon response was not JSON: {e}"}
+  rows = body.get("rows") or []
+  fields = [f.get("name") for f in (body.get("fields") or []) if isinstance(f, dict)]
+  # Reshape into list-of-dicts when we have field names so the user
+  # sees columns labelled.
+  pretty: list = []
+  if fields and rows and isinstance(rows[0], list):
+    for r in rows:
+      pretty.append({fields[i]: r[i] for i in range(min(len(fields), len(r)))})
+  else:
+    pretty = rows
+  return {
+    "ok": True,
+    "message": f"Neon responded OK with {len(rows)} row(s) from `destinations`.",
+    "rows": pretty,
+  }
+
+
 SHARE_ENDPOINT_SPEC = ParamWebFormSpec(
   param_key="NkaoudNavShareEndpoint",
   title="Neon connection string",
   placeholder="postgresql://USER:PASS@HOST/DB?sslmode=require&channel_binding=require",
   hint_html=(
-    'Paste your Neon database connection string. When you tap '
-    '<code>Share</code> on the comma, nkaoud_nav hits Neon over its REST '
-    '<code>/sql</code> endpoint and reads the most recent row from your '
-    '<code>destinations</code> table. Whitespace trimmed; empty submit '
-    'clears the URL.'
+    'Paste your Neon database connection string, then use <code>Test '
+    'connection</code> to fetch the latest rows from your '
+    '<code>destinations</code> table before saving. When you tap '
+    '<code>Share</code> on the comma, nkaoud_nav uses the most recent row. '
+    'Whitespace trimmed; empty submit clears the connection string.'
   ),
   example_label="What to paste, and the table it expects",
   example_value=(
@@ -256,6 +397,7 @@ SHARE_ENDPOINT_SPEC = ParamWebFormSpec(
   ),
   status_set_template="Connection string set (length {length}, ends in &hellip;{tail}).",
   status_unset="No connection string set yet.",
+  test_handler=_neon_test,
 )
 
 
