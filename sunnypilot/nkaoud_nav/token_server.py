@@ -226,18 +226,27 @@ MAPBOX_TOKEN_SPEC = ParamWebFormSpec(
 SHARE_ENDPOINT_SPEC = ParamWebFormSpec(
   param_key="NkaoudNavShareEndpoint",
   title="Share endpoint URL",
-  placeholder="https://example.com/destination",
+  placeholder="https://example.com/destination  OR  postgresql://user:pass@host/db?sslmode=require",
   hint_html=(
-    'Full HTTP(S) URL. nkaoud_nav will <code>GET</code> this endpoint and read '
-    'the latitude/longitude from the JSON response. Empty submit clears the URL.'
+    'Either a full HTTP(S) URL nkaoud_nav will <code>GET</code>, or a '
+    '<code>postgresql://</code> connection string that nkaoud_nav will hit '
+    "via Neon's REST <code>/sql</code> endpoint with your credentials sent "
+    'as a request header. Whitespace trimmed; empty submit clears the URL.'
   ),
-  example_label="Expected JSON response (any of these shapes work)",
+  example_label="Two ways to point this at a destination",
   example_value=(
-    '{ "latitude": 24.7136, "longitude": 46.6753, "place_name": "King Fahd Rd" }\n\n'
-    'or a list:\n'
-    '[ { "latitude": 24.7136, "longitude": 46.6753 } ]\n\n'
-    'or Neon /sql-style:\n'
-    '{ "rows": [[24.7136, 46.6753]] }'
+    "Option A -- HTTP(S):\n"
+    "  https://yourservice.example/destination\n"
+    "  must return one of these JSON shapes:\n"
+    '    { "latitude": 24.7136, "longitude": 46.6753, "place_name": "King Fahd Rd" }\n'
+    '    [ { "latitude": 24.7136, "longitude": 46.6753 } ]\n'
+    '    { "rows": [[24.7136, 46.6753, "King Fahd Rd"]] }\n\n'
+    "Option B -- Neon connection string (matches old fork):\n"
+    "  postgresql://USER:PASS@HOST/DBNAME?sslmode=require&channel_binding=require\n"
+    "  needs a `destinations` table with columns:\n"
+    "    id (auto-incrementing), latitude, longitude, place_name (optional)\n"
+    "  the most-recent row is used (ORDER BY id DESC LIMIT 1).\n\n"
+    "Security: whatever you paste is stored in cleartext on the device."
   ),
   status_set_template="URL currently set (length {length}, ends in &hellip;{tail}).",
   status_unset="No URL set yet.",
