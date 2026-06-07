@@ -174,7 +174,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LaunchReadout", {PERSISTENT | BACKUP, BOOL, "0"}},          // on-screen launch-assist readout
     {"LanePositionIndicator", {PERSISTENT | BACKUP, BOOL, "0"}},  // on-screen lane-position indicator (squares + confidence border)
     {"VisualVehicleDetector", {PERSISTENT | BACKUP, BOOL, "0"}},       // standalone visual detector process for UI/debug validation
-    {"VisualVehicleDetectorReadout", {PERSISTENT | BACKUP, BOOL, "1"}}, // large on-road readout for detector status/debug
+    {"VisualVehicleDetectorReadout", {PERSISTENT | BACKUP, BOOL, "0"}}, // large on-road readout for detector status/debug
     {"VisualVehicleDetectorAllowOnnx", {PERSISTENT | BACKUP, BOOL, "0"}}, // CPU ONNX fallback for debug only; pkl preferred on comma3x
     {"VisualVehicleDetectorModelUrl", {PERSISTENT | BACKUP, STRING, "https://github.com/ultralytics/yolov5/releases/download/v7.0/yolov5n.onnx"}}, // default ONNX download URL for visual detector
     {"VisualVehicleDetectorDownloadTrigger", {PERSISTENT, STRING, ""}}, // one-shot UI trigger to download detector ONNX
