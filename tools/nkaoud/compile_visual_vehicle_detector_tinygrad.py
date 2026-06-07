@@ -104,15 +104,8 @@ def _call_runner(runner, input_name: str, x):
   raise RuntimeError(f"Unable to call tinygrad ONNX runner with known signatures: {last_err}")
 
 
-def main() -> None:
-  parser = argparse.ArgumentParser()
-  parser.add_argument("--onnx", default="selfdrive/modeld/models/visual_vehicle_detector.onnx")
-  parser.add_argument("--out", default="selfdrive/modeld/models/visual_vehicle_detector_tinygrad.pkl")
-  parser.add_argument("--metadata", default=None)
-  parser.add_argument("--imgsz", type=int, default=None, help="Image size for dynamic-shape ONNX models")
-  parser.add_argument("--warmup", type=int, default=2)
-  args = parser.parse_args()
-
+def compile_model(onnx: str, out: str, metadata: str | None = None,
+                  imgsz: int | None = None, warmup: int = 2) -> dict[str, object]:
   _set_default_dev()
 
   from tinygrad.tensor import Tensor  # pylint: disable=import-error
@@ -121,13 +114,13 @@ def main() -> None:
   except Exception:
     from tinygrad.jit import TinyJit  # type: ignore  # pylint: disable=import-error
 
-  onnx_path = Path(args.onnx)
-  out_path = Path(args.out)
-  meta_path = Path(args.metadata) if args.metadata else out_path.with_suffix(".json")
+  onnx_path = Path(onnx)
+  out_path = Path(out)
+  meta_path = Path(metadata) if metadata else out_path.with_suffix(".json")
   out_path.parent.mkdir(parents=True, exist_ok=True)
 
   runner, input_name, model_shape = _load_onnx_runner(onnx_path)
-  input_shape = _resolve_input_shape(model_shape, args.imgsz)
+  input_shape = _resolve_input_shape(model_shape, imgsz)
   print(f"model input {input_name}: {input_shape}")
 
   model_run = TinyJit(
@@ -136,11 +129,11 @@ def main() -> None:
   )
 
   dummy = Tensor(np.zeros(input_shape, dtype=np.float32)).realize()
-  for i in range(max(1, int(args.warmup))):
+  for i in range(max(1, int(warmup))):
     y = model_run(**{input_name: dummy})
     if hasattr(y, "realize"):
       y.realize()
-    print(f"warmup {i + 1}/{args.warmup} complete")
+    print(f"warmup {i + 1}/{warmup} complete")
 
   output_shape = tuple(int(dim) for dim in getattr(y, "shape", ()))
   if len(output_shape) not in (2, 3):
@@ -169,6 +162,19 @@ def main() -> None:
   print(f"wrote {out_path}")
   print(f"wrote {meta_path}")
   print("Copy/keep both the .pkl and .json next to each other on the comma device.")
+  return meta
+
+
+def main() -> None:
+  parser = argparse.ArgumentParser()
+  parser.add_argument("--onnx", default="selfdrive/modeld/models/visual_vehicle_detector.onnx")
+  parser.add_argument("--out", default="selfdrive/modeld/models/visual_vehicle_detector_tinygrad.pkl")
+  parser.add_argument("--metadata", default=None)
+  parser.add_argument("--imgsz", type=int, default=None, help="Image size for dynamic-shape ONNX models")
+  parser.add_argument("--warmup", type=int, default=2)
+  args = parser.parse_args()
+
+  compile_model(args.onnx, args.out, args.metadata, imgsz=args.imgsz, warmup=args.warmup)
 
 
 if __name__ == "__main__":
