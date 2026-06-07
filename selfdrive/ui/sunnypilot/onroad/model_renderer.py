@@ -9,6 +9,7 @@ from openpilot.selfdrive.ui.sunnypilot.onroad.follow_readout import FollowReadou
 from openpilot.selfdrive.ui.sunnypilot.onroad.jerk_readout import JerkReadout
 from openpilot.selfdrive.ui.sunnypilot.onroad.lane_position_indicator import LanePositionIndicator
 from openpilot.selfdrive.ui.sunnypilot.onroad.launch_readout import LaunchReadout
+from openpilot.selfdrive.ui.sunnypilot.onroad.visual_vehicle_readout import VisualVehicleReadout
 from openpilot.selfdrive.ui.sunnypilot.onroad.rainbow_path import RainbowPath
 
 
@@ -20,3 +21,4 @@ class ModelRendererSP:
     self.jerk_readout = JerkReadout()
     self.lane_position_indicator = LanePositionIndicator()
     self.launch_readout = LaunchReadout()
+    self.visual_vehicle_readout = VisualVehicleReadout()

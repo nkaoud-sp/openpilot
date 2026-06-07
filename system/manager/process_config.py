@@ -97,6 +97,14 @@ def mapd_ready(started: bool, params: Params, CP: car.CarParams) -> bool:
 def nkaoud_nav_enabled(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started and params.get_bool("NkaoudNavEnabled")
 
+
+def visual_vehicle_detector_enabled(started: bool, params: Params, CP: car.CarParams) -> bool:
+  return started and params.get_bool("VisualVehicleDetector")
+
+
+def visual_vehicle_model_manager_enabled(started: bool, params: Params, CP: car.CarParams) -> bool:
+  return (not started) and params.get_bool("VisualVehicleDetector")
+
 def uploader_ready(started: bool, params: Params, CP: car.CarParams) -> bool:
   if not params.get_bool("OnroadUploads"):
     return only_offroad(started, params, CP)
@@ -193,6 +201,8 @@ procs += [
   # inside the settings UI dialog (sunnypilot.nkaoud_nav.token_server) and only
   # runs while that dialog is visible, so it's not registered as a process.
   PythonProcess("nkaoud_navd", "sunnypilot.nkaoud_nav.navd", nkaoud_nav_enabled),
+  PythonProcess("visual_vehicle_detector", "sunnypilot.nkaoud_nav.adjacent_vehicle_detector", visual_vehicle_detector_enabled),
+  PythonProcess("visual_vehicle_model_manager", "sunnypilot.nkaoud_nav.visual_vehicle_model_manager", visual_vehicle_model_manager_enabled),
 ]
 
 if os.path.exists("./github_runner.sh"):

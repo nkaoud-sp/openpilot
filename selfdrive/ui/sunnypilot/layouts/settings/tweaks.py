@@ -12,6 +12,7 @@ from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.jerk_
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.launch_assist_settings import LaunchAssistSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.nav_settings import NavSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.park_assist_settings import ParkAssistSettingsLayout
+from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.visual_vehicle_settings import VisualVehicleSettingsLayout
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.sunnypilot.widgets.list_view import toggle_item_sp, simple_button_item_sp
 from openpilot.system.ui.widgets import Widget
@@ -26,6 +27,7 @@ class PanelType(IntEnum):
   LAUNCH = 4
   PARK = 5
   NAVIGATION = 6
+  VISUAL_VEHICLE = 7
 
 
 class TweaksLayout(Widget):
@@ -39,6 +41,7 @@ class TweaksLayout(Widget):
     self._launch_layout = LaunchAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._park_layout = ParkAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._navigation_layout = NavSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
+    self._visual_vehicle_layout = VisualVehicleSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
 
     items = self._initialize_items()
     self._scroller = Scroller(items, line_separator=True, spacing=0)
@@ -130,6 +133,20 @@ class TweaksLayout(Widget):
       param="LanePositionIndicator",
     )
 
+    # Standalone visual adjacent-vehicle detector. UI/debug only; no controls integration.
+    self._visual_vehicle_detector = toggle_item_sp(
+      title=lambda: tr("Visual Vehicle Detector (test)"),
+      description=lambda: tr("Run a standalone camera detector for nearby left/right vehicles and show a large " +
+                            "debug readout on the driving view. This is UI/debug only and does not control or " +
+                            "block lane changes."),
+      param="VisualVehicleDetector",
+    )
+    self._visual_vehicle_button = simple_button_item_sp(
+      button_text=lambda: tr("Manage Visual Detector Settings"),
+      button_width=800,
+      callback=lambda: self._set_current_panel(PanelType.VISUAL_VEHICLE),
+    )
+
     # Experimental Mapbox-based navigation. Polyline overlay + maneuver banner + optional
     # turn-slowdown. Master gate starts the nkaoud_navd process; submenu has the rest.
     self._navigation = toggle_item_sp(
@@ -157,6 +174,8 @@ class TweaksLayout(Widget):
       self._park_assist,
       self._park_assist_button,
       self._lane_position_indicator,
+      self._visual_vehicle_detector,
+      self._visual_vehicle_button,
       self._navigation,
       self._navigation_button,
     ]
@@ -175,6 +194,8 @@ class TweaksLayout(Widget):
       self._park_layout.render(rect)
     elif self._current_panel == PanelType.NAVIGATION:
       self._navigation_layout.render(rect)
+    elif self._current_panel == PanelType.VISUAL_VEHICLE:
+      self._visual_vehicle_layout.render(rect)
     else:
       self._scroller.render(rect)
 
@@ -196,6 +217,8 @@ class TweaksLayout(Widget):
       self._park_layout.show_event()
     elif panel == PanelType.NAVIGATION:
       self._navigation_layout.show_event()
+    elif panel == PanelType.VISUAL_VEHICLE:
+      self._visual_vehicle_layout.show_event()
 
   def _update_state(self):
     super()._update_state()
@@ -207,3 +230,4 @@ class TweaksLayout(Widget):
     self._launch_assist_button.action_item.set_enabled(self._launch_assist.action_item.get_state())
     self._park_assist_button.action_item.set_enabled(self._park_assist.action_item.get_state())
     self._navigation_button.action_item.set_enabled(self._navigation.action_item.get_state())
+    self._visual_vehicle_button.action_item.set_enabled(self._visual_vehicle_detector.action_item.get_state())
