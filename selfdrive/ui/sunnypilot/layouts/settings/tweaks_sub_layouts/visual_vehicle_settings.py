@@ -6,6 +6,7 @@ from __future__ import annotations
 from collections.abc import Callable
 import os
 import threading
+import time
 
 import pyray as rl
 from openpilot.system.ui.lib.multilang import tr
@@ -20,10 +21,33 @@ class VisualVehicleSettingsLayout(Widget):
     super().__init__()
     self._back_button = NavButton(tr("Back"))
     self._back_button.set_click_callback(back_btn_callback)
-    self._status = ""
+    self._status = self._load_status_message()
     self._lock = threading.Lock()
     self._worker: threading.Thread | None = None
     self._scroller = Scroller(self._initialize_items(), line_separator=True, spacing=0)
+
+  def _status_data(self) -> dict:
+    from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import read_status
+    return read_status()
+
+  def _load_status_message(self) -> str:
+    status = self._status_data()
+    return str(status.get("message", "")) if status else ""
+
+  def _idle_status_line(self) -> str:
+    status = self._status_data()
+    if status:
+      onnx = "yes" if status.get("onnx_exists") else "no"
+      pkl = "yes" if status.get("pkl_exists") else "no"
+      onnx_mb = status.get("onnx_size_mb", 0)
+      pkl_mb = status.get("pkl_size_mb", 0)
+      updated_at = float(status.get("updated_at", 0) or 0)
+      age_s = max(0, int(time.time() - updated_at)) if updated_at else 0
+      message = str(status.get("message", ""))
+      return tr("{} ONNX: {} ({} MB)  PKL: {} ({} MB)  Updated {}s ago").format(
+        message, onnx, onnx_mb, pkl, pkl_mb, age_s
+      )
+    return ""
 
   def _download_button_label(self) -> str:
     from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import ONNX_PATH
@@ -57,6 +81,9 @@ class VisualVehicleSettingsLayout(Widget):
       status = self._status
     if status:
       return status
+    idle = self._idle_status_line()
+    if idle:
+      return idle
     onnx = "yes" if os.path.exists(ONNX_PATH) else "no"
     pkl = "yes" if os.path.exists(PKL_PATH) else "no"
     return tr("Downloads the default tiny COCO vehicle detector ONNX into selfdrive/modeld/models. ONNX: {}  PKL: {}").format(onnx, pkl)
@@ -67,6 +94,9 @@ class VisualVehicleSettingsLayout(Widget):
       status = self._status
     if status:
       return status
+    idle = self._idle_status_line()
+    if idle:
+      return idle
     if os.path.exists(PKL_PATH):
       return tr("Tinygrad PKL is present. Tap to rebuild it on this device.")
     if os.path.exists(ONNX_PATH):
@@ -79,12 +109,10 @@ class VisualVehicleSettingsLayout(Widget):
 
   def _run_download(self) -> None:
     try:
-      from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import ensure_onnx, ONNX_PATH
+      from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import ensure_onnx
       self._set_status("Downloading ONNX...")
-      if ONNX_PATH.exists():
-        ONNX_PATH.unlink()
       ensure_onnx()
-      self._set_status("ONNX download complete.")
+      self._set_status(self._load_status_message())
     except Exception as e:
       self._set_status(f"error: download failed: {e}")
     finally:
@@ -99,7 +127,7 @@ class VisualVehicleSettingsLayout(Widget):
         return
       self._set_status("Compiling PKL...")
       compile_pkl()
-      self._set_status("PKL compile complete.")
+      self._set_status(self._load_status_message())
     except Exception as e:
       self._set_status(f"error: compile failed: {e}")
     finally:
@@ -179,6 +207,9 @@ class VisualVehicleSettingsLayout(Widget):
     self._scroller.render(content_rect)
 
   def show_event(self):
+    with self._lock:
+      if self._worker is None or not self._worker.is_alive():
+        self._status = self._load_status_message()
     self._scroller.show_event()
 
   def hide_event(self):
