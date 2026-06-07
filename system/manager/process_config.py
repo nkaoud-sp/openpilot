@@ -199,7 +199,6 @@ procs += [
   # runs while that dialog is visible, so it's not registered as a process.
   PythonProcess("nkaoud_navd", "sunnypilot.nkaoud_nav.navd", nkaoud_nav_enabled),
   PythonProcess("visual_vehicle_detector", "sunnypilot.nkaoud_nav.adjacent_vehicle_detector", visual_vehicle_detector_enabled),
-  PythonProcess("visual_vehicle_model_manager", "sunnypilot.nkaoud_nav.visual_vehicle_model_manager", only_offroad, restart_if_crash=True),
 ]
 
 if os.path.exists("./github_runner.sh"):

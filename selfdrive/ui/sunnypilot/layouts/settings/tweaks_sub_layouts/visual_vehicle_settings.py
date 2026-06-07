@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import json
+import threading
 import time
 
 import pyray as rl
@@ -20,6 +21,8 @@ class VisualVehicleSettingsLayout(Widget):
   def __init__(self, back_btn_callback: Callable):
     super().__init__()
     self._params = Params()
+    self._action_thread: threading.Thread | None = None
+    self._action_lock = threading.Lock()
     self._back_button = NavButton(tr("Back"))
     self._back_button.set_click_callback(back_btn_callback)
     self._scroller = Scroller(self._initialize_items(), line_separator=True, spacing=0)
@@ -50,23 +53,45 @@ class VisualVehicleSettingsLayout(Widget):
       msg, onnx, onnx_mb, pkl, pkl_mb, meta, age
     )
 
-  def _queue_action(self, trigger_param: str, message: str) -> None:
+  def _set_status(self, state: str, message: str) -> None:
     status = self._status()
     status.update({
-      "state": "queued",
+      "state": state,
       "message": message,
       "updated_at": time.time(),
     })
-    # Button callbacks run on the UI thread, so avoid blocking fsync-heavy param
-    # writes here. The offroad manager will pick these up on its next tick.
     self._params.put_nonblocking("VisualVehicleDetectorManagerStatus", json.dumps(status, separators=(",", ":")))
-    self._params.put_nonblocking(trigger_param, str(time.time_ns()))
+
+  def _run_action(self, action: str) -> None:
+    try:
+      from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_model_manager import VisualVehicleModelManager
+
+      manager = VisualVehicleModelManager()
+      if action == "download":
+        manager._download()
+      else:
+        manager._compile()
+    except Exception as e:
+      self._set_status("error", f"{action.capitalize()} failed before start: {e}")
+    finally:
+      with self._action_lock:
+        self._action_thread = None
+
+  def _queue_action(self, action: str, message: str) -> None:
+    with self._action_lock:
+      if self._action_thread is not None and self._action_thread.is_alive():
+        self._set_status("busy", "Another visual detector task is already running.")
+        return
+
+      self._set_status("queued", message)
+      self._action_thread = threading.Thread(target=self._run_action, args=(action,), daemon=True)
+      self._action_thread.start()
 
   def _trigger_download(self) -> None:
-    self._queue_action("VisualVehicleDetectorDownloadTrigger", "Download queued. Waiting for model manager...")
+    self._queue_action("download", "Download queued. Starting worker...")
 
   def _trigger_compile(self) -> None:
-    self._queue_action("VisualVehicleDetectorCompileTrigger", "Compile queued. Waiting for model manager...")
+    self._queue_action("compile", "Compile queued. Starting worker...")
 
   def _clear_status(self) -> None:
     self._params.remove("VisualVehicleDetectorManagerStatus")
