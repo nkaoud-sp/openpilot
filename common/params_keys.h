@@ -176,10 +176,6 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"VisualVehicleDetector", {PERSISTENT | BACKUP, BOOL, "0"}},       // standalone visual detector process for UI/debug validation
     {"VisualVehicleDetectorReadout", {PERSISTENT | BACKUP, BOOL, "0"}}, // large on-road readout for detector status/debug
     {"VisualVehicleDetectorAllowOnnx", {PERSISTENT | BACKUP, BOOL, "0"}}, // CPU ONNX fallback for debug only; pkl preferred on comma3x
-    {"VisualVehicleDetectorModelUrl", {PERSISTENT | BACKUP, STRING, "https://github.com/ultralytics/yolov5/releases/download/v7.0/yolov5n.onnx"}}, // default ONNX download URL for visual detector
-    {"VisualVehicleDetectorDownloadTrigger", {PERSISTENT, STRING, ""}}, // one-shot UI trigger to download detector ONNX
-    {"VisualVehicleDetectorCompileTrigger", {PERSISTENT, STRING, ""}}, // one-shot UI trigger to compile detector PKL
-    {"VisualVehicleDetectorManagerStatus", {PERSISTENT, JSON}}, // JSON status shown in Tweaks visual detector submenu
     {"VisualVehicleDetectorLogDebug", {PERSISTENT | BACKUP, BOOL, "0"}}, // extra detector cloudlog output
     {"ParkAssist", {PERSISTENT | BACKUP, BOOL, "0"}},             // closer standstill gap behind a stopped lead
     {"ParkDistance", {PERSISTENT | BACKUP, INT, "300"}},          // standstill gap (cm) when park assist active
