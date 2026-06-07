@@ -34,8 +34,10 @@ from openpilot.common.realtime import Ratekeeper, config_realtime_process
 from openpilot.common.swaglog import cloudlog
 
 STATE_PATH = Path("/tmp/nkaoud_visual_vehicle_detector.json")
-DEFAULT_PKL_PATH = "/data/openpilot/selfdrive/modeld/models/visual_vehicle_detector_tinygrad.pkl"
-DEFAULT_ONNX_PATH = "/data/openpilot/selfdrive/modeld/models/visual_vehicle_detector.onnx"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+MODEL_DIR = REPO_ROOT / "selfdrive/modeld/models"
+DEFAULT_PKL_PATH = str(MODEL_DIR / "visual_vehicle_detector_tinygrad.pkl")
+DEFAULT_ONNX_PATH = str(MODEL_DIR / "visual_vehicle_detector.onnx")
 
 # COCO class IDs from Ultralytics YOLO exports.
 VEHICLE_CLASS_IDS = {1, 2, 3, 5, 7}  # bicycle, car, motorcycle, bus, truck
