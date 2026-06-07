@@ -47,8 +47,6 @@ MODEL_URL_PARAM = "VisualVehicleDetectorModelUrl"
 class VisualVehicleModelManager:
   def __init__(self) -> None:
     self.params = Params()
-    self.last_download_trigger = self.params.get(DOWNLOAD_TRIGGER_PARAM) or ""
-    self.last_compile_trigger = self.params.get(COMPILE_TRIGGER_PARAM) or ""
 
   @staticmethod
   def _size_mb(path: Path) -> float:
@@ -196,13 +194,13 @@ class VisualVehicleModelManager:
     download_trigger = self.params.get(DOWNLOAD_TRIGGER_PARAM) or ""
     compile_trigger = self.params.get(COMPILE_TRIGGER_PARAM) or ""
 
-    if download_trigger and download_trigger != self.last_download_trigger:
-      self.last_download_trigger = download_trigger
+    if download_trigger:
+      self.params.remove(DOWNLOAD_TRIGGER_PARAM)
       self._download()
       return
 
-    if compile_trigger and compile_trigger != self.last_compile_trigger:
-      self.last_compile_trigger = compile_trigger
+    if compile_trigger:
+      self.params.remove(COMPILE_TRIGGER_PARAM)
       self._compile()
       return
 

@@ -50,11 +50,21 @@ class VisualVehicleSettingsLayout(Widget):
       msg, onnx, onnx_mb, pkl, pkl_mb, meta, age
     )
 
+  def _queue_action(self, trigger_param: str, message: str) -> None:
+    status = self._status()
+    status.update({
+      "state": "queued",
+      "message": message,
+      "updated_at": time.time(),
+    })
+    self._params.put("VisualVehicleDetectorManagerStatus", json.dumps(status, separators=(",", ":")))
+    self._params.put(trigger_param, str(time.time_ns()))
+
   def _trigger_download(self) -> None:
-    self._params.put("VisualVehicleDetectorDownloadTrigger", str(time.time()))
+    self._queue_action("VisualVehicleDetectorDownloadTrigger", "Download queued. Waiting for model manager...")
 
   def _trigger_compile(self) -> None:
-    self._params.put("VisualVehicleDetectorCompileTrigger", str(time.time()))
+    self._queue_action("VisualVehicleDetectorCompileTrigger", "Compile queued. Waiting for model manager...")
 
   def _clear_status(self) -> None:
     self._params.remove("VisualVehicleDetectorManagerStatus")
