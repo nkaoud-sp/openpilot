@@ -94,6 +94,7 @@ class VisualVehicleDetector:
     self.input_shape: tuple[int, int] = (320, 320)  # width, height
     self.left_flag = DebouncedFlag()
     self.right_flag = DebouncedFlag()
+    self.startup_debug: dict[str, Any] = {"reason": "not_started", "runtime": self.runtime}
 
   def _write_state(self, left: bool, right: bool, debug: dict[str, Any] | None = None) -> None:
     state = {
@@ -108,6 +109,19 @@ class VisualVehicleDetector:
       os.replace(tmp_path, STATE_PATH)
     except Exception:
       cloudlog.exception("visual vehicle detector failed to write state")
+
+  def _set_startup_debug(self, **debug: Any) -> None:
+    payload = {
+      "runtime": self.runtime,
+      "pkl_path": self.pkl_path,
+      "onnx_path": self.onnx_path,
+      "pkl_exists": os.path.exists(self.pkl_path),
+      "onnx_exists": os.path.exists(self.onnx_path),
+      "allow_onnx": self.params.get_bool("VisualVehicleDetectorAllowOnnx"),
+    }
+    payload.update(debug)
+    self.startup_debug = payload
+    self._write_state(False, False, payload)
 
   def _set_tinygrad_device_env(self) -> None:
     # Match openpilot's tinygrad modeld convention when possible.
@@ -138,13 +152,7 @@ class VisualVehicleDetector:
     elif allow_onnx and not os.path.exists(self.onnx_path):
       reason = "pkl_and_onnx_missing"
 
-    self._write_state(False, False, {
-      "reason": reason,
-      "runtime": self.runtime,
-      "pkl_path": self.pkl_path,
-      "onnx_path": self.onnx_path,
-      "allow_onnx": allow_onnx,
-    })
+    self._set_startup_debug(reason=reason, allow_onnx=allow_onnx)
     return False
 
   def _load_tinygrad_pkl(self) -> bool:
@@ -183,7 +191,7 @@ class VisualVehicleDetector:
       return True
     except Exception as e:
       self.runtime = "tinygrad_pkl_failed"
-      self._write_state(False, False, {"reason": "pkl_load_failed", "error": str(e), "pkl_path": self.pkl_path})
+      self._set_startup_debug(reason="pkl_load_failed", error=str(e))
       cloudlog.exception("visual vehicle detector failed to load tinygrad pkl")
       return False
 
@@ -202,7 +210,7 @@ class VisualVehicleDetector:
       return True
     except Exception as e:
       self.runtime = "onnx_failed"
-      self._write_state(False, False, {"reason": "onnx_load_failed", "error": str(e), "onnx_path": self.onnx_path})
+      self._set_startup_debug(reason="onnx_load_failed", error=str(e))
       cloudlog.exception("visual vehicle detector failed to initialize ONNX fallback")
       return False
 
@@ -212,7 +220,7 @@ class VisualVehicleDetector:
       self.cv2 = cv2
       return True
     except Exception as e:
-      self._write_state(False, False, {"reason": "missing_cv2", "error": str(e)})
+      self._set_startup_debug(reason="missing_cv2", error=str(e))
       cloudlog.warning("visual vehicle detector missing cv2: %s", e)
       return False
 
@@ -393,14 +401,9 @@ class VisualVehicleDetector:
     if not self._load_cv2() or not self._load_runtime():
       rk = Ratekeeper(1.0)
       while True:
-        # Keep visible fail-open heartbeat.
-        self._write_state(False, False, {
-          "reason": "inactive",
-          "runtime": self.runtime,
-          "pkl_path": self.pkl_path,
-          "onnx_path": self.onnx_path,
-          "allow_onnx": self.params.get_bool("VisualVehicleDetectorAllowOnnx"),
-        })
+        # Keep the real startup failure visible instead of overwriting it with
+        # a generic inactive heartbeat.
+        self._write_state(False, False, self.startup_debug)
         rk.keep_time()
 
     while True:
