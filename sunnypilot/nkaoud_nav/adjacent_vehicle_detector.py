@@ -78,8 +78,6 @@ class VisualVehicleDetector:
     self.log_debug = False
     self.runtime = "none"
 
-    self.cv2 = None
-
     # tinygrad pkl runtime fields
     self.Tensor = None
     self.pkl_model_run = None
@@ -214,37 +212,39 @@ class VisualVehicleDetector:
       cloudlog.exception("visual vehicle detector failed to initialize ONNX fallback")
       return False
 
-  def _load_cv2(self) -> bool:
-    try:
-      import cv2  # pylint: disable=import-error
-      self.cv2 = cv2
-      return True
-    except Exception as e:
-      self._set_startup_debug(reason="missing_cv2", error=str(e))
-      cloudlog.warning("visual vehicle detector missing cv2: %s", e)
-      return False
-
-  def _vipc_to_bgr(self, buf: VisionBuf) -> np.ndarray | None:
-    if self.cv2 is None:
-      return None
+  def _vipc_to_rgb(self, buf: VisionBuf) -> np.ndarray | None:
     try:
       width, height = int(buf.width), int(buf.height)
       data = np.asarray(buf.data, dtype=np.uint8).ravel()
       expected = width * height * 3 // 2
       if data.size < expected:
         return None
-      nv12 = data[:expected].reshape((height * 3 // 2, width))
-      return self.cv2.cvtColor(nv12, self.cv2.COLOR_YUV2BGR_NV12)
+      nv12 = data[:expected]
+      y = nv12[:width * height].reshape((height, width)).astype(np.int16)
+      uv = nv12[width * height:].reshape((height // 2, width)).astype(np.int16)
+      u = uv[:, 0::2].repeat(2, axis=0).repeat(2, axis=1)
+      v = uv[:, 1::2].repeat(2, axis=0).repeat(2, axis=1)
+
+      c = np.clip(y - 16, 0, None)
+      d = u - 128
+      e = v - 128
+
+      r = (298 * c + 409 * e + 128) >> 8
+      g = (298 * c - 100 * d - 208 * e + 128) >> 8
+      b = (298 * c + 516 * d + 128) >> 8
+      rgb = np.stack((r, g, b), axis=-1)
+      return np.clip(rgb, 0, 255).astype(np.uint8)
     except Exception:
       cloudlog.exception("visual vehicle detector failed frame conversion")
       return None
 
-  def _preprocess(self, bgr: np.ndarray) -> np.ndarray:
-    assert self.cv2 is not None
+  def _preprocess(self, rgb: np.ndarray) -> np.ndarray:
     w, h = self.input_shape
-    resized = self.cv2.resize(bgr, (w, h), interpolation=self.cv2.INTER_LINEAR)
-    rgb = self.cv2.cvtColor(resized, self.cv2.COLOR_BGR2RGB)
-    x = rgb.astype(np.float32) / 255.0
+    src_h, src_w = rgb.shape[:2]
+    x_idx = np.clip(np.round(np.linspace(0, src_w - 1, w)).astype(np.int32), 0, src_w - 1)
+    y_idx = np.clip(np.round(np.linspace(0, src_h - 1, h)).astype(np.int32), 0, src_h - 1)
+    resized = rgb[y_idx][:, x_idx]
+    x = resized.astype(np.float32) / 255.0
     x = np.transpose(x, (2, 0, 1))[None]
     return np.ascontiguousarray(x)
 
@@ -258,8 +258,8 @@ class VisualVehicleDetector:
       return out.contiguous().realize().uop.base.buffer.numpy()
     return np.asarray(out)
 
-  def _run_model(self, bgr: np.ndarray) -> list[Detection]:
-    inp = self._preprocess(bgr)
+  def _run_model(self, rgb: np.ndarray) -> list[Detection]:
+    inp = self._preprocess(rgb)
     if self.runtime == "tinygrad_pkl":
       if self.pkl_model_run is None or self.Tensor is None:
         return []
@@ -271,11 +271,11 @@ class VisualVehicleDetector:
         tensor = tensor.cast(self.pkl_input_dtype)
       output = self.pkl_model_run(**{self.pkl_input_name: tensor})
       arr = self._tensor_to_numpy(output)
-      return self._parse_yolo_output(arr, bgr.shape[1], bgr.shape[0])
+      return self._parse_yolo_output(arr, rgb.shape[1], rgb.shape[0])
 
     if self.runtime == "onnx_cpu" and self.onnx_session is not None:
       outputs = self.onnx_session.run(None, {self.onnx_input_name: inp})
-      return self._parse_yolo_output(outputs[0], bgr.shape[1], bgr.shape[0])
+      return self._parse_yolo_output(outputs[0], rgb.shape[1], rgb.shape[0])
 
     return []
 
@@ -366,14 +366,14 @@ class VisualVehicleDetector:
     return rx1 <= cx <= rx2 and ry1 <= bottom <= ry2
 
   def update(self, buf: VisionBuf) -> tuple[bool, bool, dict[str, Any]]:
-    bgr = self._vipc_to_bgr(buf)
-    if bgr is None:
+    rgb = self._vipc_to_rgb(buf)
+    if rgb is None:
       left = self.left_flag.update(False)
       right = self.right_flag.update(False)
       return left, right, {"reason": "frame_convert_failed", "runtime": self.runtime}
 
-    detections = self._run_model(bgr)
-    image_h, image_w = bgr.shape[:2]
+    detections = self._run_model(rgb)
+    image_h, image_w = rgb.shape[:2]
     raw_left = any(self._box_in_roi(det.xyxy, LEFT_ROI, image_w, image_h) for det in detections)
     raw_right = any(self._box_in_roi(det.xyxy, RIGHT_ROI, image_w, image_h) for det in detections)
     left = self.left_flag.update(raw_left)
@@ -398,7 +398,7 @@ class VisualVehicleDetector:
 
   def run(self) -> None:
     self.log_debug = self.params.get_bool("VisualVehicleDetectorLogDebug")
-    if not self._load_cv2() or not self._load_runtime():
+    if not self._load_runtime():
       rk = Ratekeeper(1.0)
       while True:
         # Keep the real startup failure visible instead of overwriting it with
