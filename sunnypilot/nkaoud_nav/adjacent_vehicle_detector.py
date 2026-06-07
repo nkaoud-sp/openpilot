@@ -292,12 +292,39 @@ class VisualVehicleDetector:
         detections.append(Detection((x1, y1, x2, y2), score, cls))
       return detections
 
-    # Case B: raw Ultralytics [cx, cy, w, h, class_scores...].
+    # Case B1: YOLOv5 raw output [cx, cy, w, h, objectness, class_scores...].
+    # The default download is yolov5n.onnx, so we must multiply objectness by
+    # the best class score. If we treat objectness as class 0, vehicle detection
+    # becomes wrong or unstable.
+    if arr.shape[1] == 85:
+      boxes = arr[:, :4]
+      obj = arr[:, 4]
+      class_scores = arr[:, 5:]
+      cls_ids = np.argmax(class_scores, axis=1)
+      cls_confs = class_scores[np.arange(class_scores.shape[0]), cls_ids]
+      confs = obj * cls_confs
+
+      for box, cls, score in zip(boxes, cls_ids, confs):
+        cls_i = int(cls)
+        score_f = float(score)
+        if score_f < self.confidence or cls_i not in VEHICLE_CLASS_IDS:
+          continue
+        cx, cy, bw, bh = [float(v) for v in box]
+        x1 = (cx - bw / 2.0) * sx
+        y1 = (cy - bh / 2.0) * sy
+        x2 = (cx + bw / 2.0) * sx
+        y2 = (cy + bh / 2.0) * sy
+        detections.append(Detection((x1, y1, x2, y2), score_f, cls_i))
+      return detections
+
+    # Case B2: YOLOv8 / YOLO11 raw output [cx, cy, w, h, class_scores...].
+    # Ultralytics v8/v11 exports commonly produce [1, 84, N] for COCO.
     if arr.shape[1] >= 4 + max(VEHICLE_CLASS_IDS) + 1:
       boxes = arr[:, :4]
       scores = arr[:, 4:]
       cls_ids = np.argmax(scores, axis=1)
       confs = scores[np.arange(scores.shape[0]), cls_ids]
+
       for box, cls, score in zip(boxes, cls_ids, confs):
         cls_i = int(cls)
         score_f = float(score)
@@ -310,6 +337,7 @@ class VisualVehicleDetector:
         y2 = (cy + bh / 2.0) * sy
         detections.append(Detection((x1, y1, x2, y2), score_f, cls_i))
     return detections
+  
 
   @staticmethod
   def _box_in_roi(box: tuple[float, float, float, float], roi: tuple[float, float, float, float], image_w: int, image_h: int) -> bool:
