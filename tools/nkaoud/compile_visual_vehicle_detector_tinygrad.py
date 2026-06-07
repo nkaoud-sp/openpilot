@@ -7,13 +7,12 @@ Run this on the target device/architecture when possible, especially for QCOM:
   cd /data/openpilot
   python3 tools/nkaoud/compile_visual_vehicle_detector_tinygrad.py \
     --onnx selfdrive/modeld/models/visual_vehicle_detector.onnx \
-    --out selfdrive/modeld/models/visual_vehicle_detector_tinygrad.pkl \
-    --imgsz 320
+    --out selfdrive/modeld/models/visual_vehicle_detector_tinygrad.pkl
 
 Expected source model:
-  - Ultralytics YOLOv8n/YOLO11n-style ONNX
+  - Ultralytics YOLOv5n/YOLOv8n/YOLO11n-style ONNX
   - input: [1, 3, H, W], RGB float32 0..1
-  - output: raw [1, 84, N] or NMSed [N, 6]
+  - output: YOLOv5 raw [1, N, 85], YOLOv8 raw [1, 84, N], or NMSed [N, 6]
 
 This helper is intentionally isolated from controls. The detector daemon simply
 loads the produced pkl if present and displays debug output in the UI.
@@ -26,7 +25,6 @@ import json
 import os
 import pickle
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 
@@ -41,28 +39,44 @@ def _set_default_dev() -> None:
     os.environ["DEV"] = "CPU"
 
 
-def _shape_dim(dim: Any, default: int) -> int:
-  value = getattr(dim, "dim_value", 0)
-  return int(value) if value else default
-
-
 def _load_onnx_runner(onnx_path: Path):
-  import onnx  # pylint: disable=import-error
-  model = onnx.load(str(onnx_path))
-  input_proto = model.graph.input[0]
-  input_name = input_proto.name
-  dims = input_proto.type.tensor_type.shape.dim
-  n = _shape_dim(dims[0], 1) if len(dims) > 0 else 1
-  c = _shape_dim(dims[1], 3) if len(dims) > 1 else 3
-  h = _shape_dim(dims[2], 320) if len(dims) > 2 else 320
-  w = _shape_dim(dims[3], 320) if len(dims) > 3 else 320
-
   try:
-    from tinygrad.frontend.onnx import OnnxRunner  # pylint: disable=import-error
+    from tinygrad.nn.onnx import OnnxRunner  # pylint: disable=import-error
   except Exception as e:
-    raise RuntimeError("tinygrad.frontend.onnx.OnnxRunner is not available in this tinygrad build") from e
+    raise RuntimeError("tinygrad.nn.onnx.OnnxRunner is not available in this tinygrad build") from e
 
-  return OnnxRunner(model), input_name, (n, c, h, w)
+  runner = OnnxRunner(onnx_path)
+  if len(runner.graph_inputs) != 1:
+    raise RuntimeError(f"Expected one ONNX input, found {list(runner.graph_inputs)}")
+
+  input_name, input_spec = next(iter(runner.graph_inputs.items()))
+  return runner, input_name, tuple(input_spec.shape)
+
+
+def _resolve_input_shape(model_shape: tuple, imgsz: int | None) -> tuple[int, int, int, int]:
+  if len(model_shape) != 4:
+    raise RuntimeError(f"Expected a 4D NCHW input, found {model_shape}")
+
+  resolved: list[int] = []
+  for index, dim in enumerate(model_shape):
+    if isinstance(dim, int) and dim > 0:
+      resolved.append(dim)
+    elif index == 0:
+      resolved.append(1)
+    elif index == 1:
+      resolved.append(3)
+    elif imgsz is not None:
+      resolved.append(imgsz)
+    else:
+      raise RuntimeError(f"Dynamic image shape {model_shape} requires --imgsz")
+
+  if resolved[0] != 1 or resolved[1] != 3:
+    raise RuntimeError(f"Expected input shape [1, 3, H, W], found {tuple(resolved)}")
+
+  if imgsz is not None and tuple(resolved[2:]) != (imgsz, imgsz):
+    print(f"model input is fixed at {resolved[3]}x{resolved[2]}; ignoring --imgsz {imgsz}")
+
+  return tuple(resolved)
 
 
 def _extract_first_output(out):
@@ -95,7 +109,7 @@ def main() -> None:
   parser.add_argument("--onnx", default="selfdrive/modeld/models/visual_vehicle_detector.onnx")
   parser.add_argument("--out", default="selfdrive/modeld/models/visual_vehicle_detector_tinygrad.pkl")
   parser.add_argument("--metadata", default=None)
-  parser.add_argument("--imgsz", type=int, default=320)
+  parser.add_argument("--imgsz", type=int, default=None, help="Image size for dynamic-shape ONNX models")
   parser.add_argument("--warmup", type=int, default=2)
   args = parser.parse_args()
 
@@ -112,13 +126,14 @@ def main() -> None:
   meta_path = Path(args.metadata) if args.metadata else out_path.with_suffix(".json")
   out_path.parent.mkdir(parents=True, exist_ok=True)
 
-  runner, input_name, input_shape = _load_onnx_runner(onnx_path)
-  # Override dynamic/unknown image dims with requested imgsz.
-  input_shape = (1, 3, int(args.imgsz), int(args.imgsz))
+  runner, input_name, model_shape = _load_onnx_runner(onnx_path)
+  input_shape = _resolve_input_shape(model_shape, args.imgsz)
+  print(f"model input {input_name}: {input_shape}")
 
-  @TinyJit
-  def model_run(**kwargs):
-    return _call_runner(runner, input_name, kwargs[input_name])
+  model_run = TinyJit(
+    lambda **kwargs: _call_runner(runner, input_name, kwargs[input_name]),
+    prune=True,
+  )
 
   dummy = Tensor(np.zeros(input_shape, dtype=np.float32)).realize()
   for i in range(max(1, int(args.warmup))):
@@ -127,14 +142,26 @@ def main() -> None:
       y.realize()
     print(f"warmup {i + 1}/{args.warmup} complete")
 
+  output_shape = tuple(int(dim) for dim in getattr(y, "shape", ()))
+  if len(output_shape) not in (2, 3):
+    raise RuntimeError(f"Unexpected detector output shape: {output_shape}")
+  print(f"model output: {output_shape}")
+
   with open(out_path, "wb") as f:
     pickle.dump(model_run, f)
+
+  with open(out_path, "rb") as f:
+    reloaded_model = pickle.load(f)
+  reloaded_output = reloaded_model(**{input_name: dummy})
+  if hasattr(reloaded_output, "realize"):
+    reloaded_output.realize()
 
   meta = {
     "source_onnx": str(onnx_path),
     "output_pkl": str(out_path),
     "input_name": input_name,
     "input_shape": list(input_shape),
+    "output_shape": list(output_shape),
     "dev": os.environ.get("DEV", ""),
     "format": "ultralytics_yolo_raw_or_nmsed",
   }

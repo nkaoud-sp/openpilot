@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -144,8 +143,7 @@ class VisualVehicleModelManager:
       except Exception:
         pass
 
-    imgsz = "320"
-    self._put_status("compiling", "Compiling ONNX to tinygrad PKL. Keep the device offroad.", imgsz=imgsz)
+    self._put_status("compiling", "Compiling ONNX to tinygrad PKL. Keep the device offroad.")
 
     cmd = [
       sys.executable,
@@ -153,7 +151,6 @@ class VisualVehicleModelManager:
       "--onnx", str(ONNX_PATH),
       "--out", str(tmp_pkl),
       "--metadata", str(tmp_meta),
-      "--imgsz", imgsz,
     ]
 
     try:
@@ -170,10 +167,19 @@ class VisualVehicleModelManager:
         raise RuntimeError("compile finished but did not create PKL")
 
       os.replace(tmp_pkl, PKL_PATH)
+      input_shape = None
       if tmp_meta.exists():
         os.replace(tmp_meta, META_PATH)
+        try:
+          input_shape = json.loads(META_PATH.read_text()).get("input_shape")
+        except Exception:
+          cloudlog.exception("visual vehicle model manager failed to read compile metadata")
 
-      self._put_status("compiled", "Tinygrad PKL compile complete.", output=output_tail)
+      size_text = ""
+      if isinstance(input_shape, list) and len(input_shape) >= 4:
+        size_text = f" ({input_shape[3]}x{input_shape[2]})"
+      self._put_status("compiled", f"Tinygrad PKL compile complete{size_text}.",
+                       output=output_tail, input_shape=input_shape)
     except Exception as e:
       self._put_status("error", f"Compile failed: {e}")
       cloudlog.exception("visual vehicle model compile failed")
