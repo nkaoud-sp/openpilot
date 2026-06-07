@@ -57,8 +57,10 @@ class VisualVehicleSettingsLayout(Widget):
       "message": message,
       "updated_at": time.time(),
     })
-    self._params.put("VisualVehicleDetectorManagerStatus", json.dumps(status, separators=(",", ":")))
-    self._params.put(trigger_param, str(time.time_ns()))
+    # Button callbacks run on the UI thread, so avoid blocking fsync-heavy param
+    # writes here. The offroad manager will pick these up on its next tick.
+    self._params.put_nonblocking("VisualVehicleDetectorManagerStatus", json.dumps(status, separators=(",", ":")))
+    self._params.put_nonblocking(trigger_param, str(time.time_ns()))
 
   def _trigger_download(self) -> None:
     self._queue_action("VisualVehicleDetectorDownloadTrigger", "Download queued. Waiting for model manager...")
