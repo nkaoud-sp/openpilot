@@ -75,7 +75,7 @@ class VisualVehicleDetector:
     self.onnx_path = os.getenv("NKAOUD_VISUAL_VEHICLE_ONNX", DEFAULT_ONNX_PATH)
     self.confidence = float(os.getenv("NKAOUD_VISUAL_VEHICLE_CONF", "0.35"))
     # Keep the debug detector well below camera/modeld cadence on comma3x.
-    self.detector_hz = max(1, min(5, int(os.getenv("NKAOUD_VISUAL_VEHICLE_HZ", "2"))))
+    self.detector_hz = max(1, min(5, int(os.getenv("NKAOUD_VISUAL_VEHICLE_HZ", "1"))))
     self.log_debug = False
     self.runtime = "none"
 
@@ -457,6 +457,10 @@ class VisualVehicleDetector:
 
 
 def main() -> None:
+  try:
+    os.nice(15)
+  except Exception:
+    pass
   VisualVehicleDetector().run()
 
 
