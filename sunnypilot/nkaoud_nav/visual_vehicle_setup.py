@@ -22,7 +22,8 @@ PKL_PATH = MODEL_DIR / "visual_vehicle_detector_tinygrad.pkl"
 META_PATH = MODEL_DIR / "visual_vehicle_detector_tinygrad.json"
 STATUS_PATH = MODEL_DIR / "visual_vehicle_detector_setup_status.json"
 
-DEFAULT_MODEL_URL = "https://github.com/ultralytics/yolov5/releases/download/v7.0/yolov5n.onnx"
+DEFAULT_MODEL_640_URL = "https://github.com/ultralytics/yolov5/releases/download/v7.0/yolov5n.onnx"
+DEFAULT_MODEL_320_URL = os.getenv("NKAOUD_VISUAL_VEHICLE_MODEL_320_URL", "").strip()
 
 LEGACY_ONNX_PATH = LEGACY_MODEL_DIR / ONNX_PATH.name
 LEGACY_PKL_PATH = LEGACY_MODEL_DIR / PKL_PATH.name
@@ -79,7 +80,7 @@ def migrate_legacy_artifacts() -> None:
       pass
 
 
-def ensure_onnx(url: str = DEFAULT_MODEL_URL) -> None:
+def ensure_onnx(url: str = DEFAULT_MODEL_640_URL) -> None:
   migrate_legacy_artifacts()
   MODEL_DIR.mkdir(parents=True, exist_ok=True)
   write_status("downloading", "Downloading ONNX...", url=url)
@@ -91,6 +92,17 @@ def ensure_onnx(url: str = DEFAULT_MODEL_URL) -> None:
   except Exception as e:
     write_status("error", f"download failed: {e}", url=url)
     raise
+
+
+def ensure_onnx_640() -> None:
+  ensure_onnx(DEFAULT_MODEL_640_URL)
+
+
+def ensure_onnx_320() -> None:
+  if not DEFAULT_MODEL_320_URL:
+    write_status("error", "No 320x320 ONNX URL configured. Export a 320 ONNX and place it at /data/visual_vehicle_detector/visual_vehicle_detector.onnx, then tap Compile PKL.")
+    raise RuntimeError("No 320x320 ONNX URL configured")
+  ensure_onnx(DEFAULT_MODEL_320_URL)
 
 
 def compile_pkl(imgsz: int | None = None, warmup: int = 2) -> None:
