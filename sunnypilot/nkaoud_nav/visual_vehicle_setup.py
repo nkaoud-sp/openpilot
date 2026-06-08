@@ -24,6 +24,7 @@ STATUS_PATH = MODEL_DIR / "visual_vehicle_detector_setup_status.json"
 
 DEFAULT_MODEL_640_URL = "https://github.com/ultralytics/yolov5/releases/download/v7.0/yolov5n.onnx"
 DEFAULT_MODEL_320_URL = "https://github.com/nkaoud-sp/resources/raw/refs/heads/main/yolov5n_320x320_v7.0.onnx"
+DEFAULT_MODEL_256_URL = "https://github.com/nkaoud-sp/resources/raw/refs/heads/main/yolov5n_256x256_v7.0.onnx"
 
 LEGACY_ONNX_PATH = LEGACY_MODEL_DIR / ONNX_PATH.name
 LEGACY_PKL_PATH = LEGACY_MODEL_DIR / PKL_PATH.name
@@ -103,6 +104,13 @@ def ensure_onnx_320() -> None:
     write_status("error", "No 320x320 ONNX URL configured. Export a 320 ONNX and place it at /data/visual_vehicle_detector/visual_vehicle_detector.onnx, then tap Compile PKL.")
     raise RuntimeError("No 320x320 ONNX URL configured")
   ensure_onnx(DEFAULT_MODEL_320_URL)
+
+
+def ensure_onnx_256() -> None:
+  if not DEFAULT_MODEL_256_URL:
+    write_status("error", "No 256x256 ONNX URL configured.")
+    raise RuntimeError("No 256x256 ONNX URL configured")
+  ensure_onnx(DEFAULT_MODEL_256_URL)
 
 
 def compile_pkl(imgsz: int | None = None, warmup: int = 2) -> None:

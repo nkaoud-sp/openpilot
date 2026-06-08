@@ -70,6 +70,15 @@ class VisualVehicleSettingsLayout(Widget):
       return tr("Retry 320 Download")
     return tr("Download 320 ONNX")
 
+  def _download_256_button_label(self) -> str:
+    with self._lock:
+      status = self._status
+    if status.startswith("Downloading"):
+      return tr("Downloading 256 ONNX...")
+    if status.startswith("error"):
+      return tr("Retry 256 Download")
+    return tr("Download 256 ONNX")
+
   def _compile_button_label(self) -> str:
     from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import ONNX_PATH, PKL_PATH
     with self._lock:
@@ -102,6 +111,12 @@ class VisualVehicleSettingsLayout(Widget):
     if DEFAULT_MODEL_320_URL:
       return tr("Downloads a hosted 320x320 ONNX export and replaces the current ONNX before compile.")
     return tr("No 320x320 download URL is configured yet. Export yolov5n at 320x320, host it, or manually place it at /data/visual_vehicle_detector/visual_vehicle_detector.onnx, then tap Compile PKL.")
+
+  def _download_256_description(self) -> str:
+    from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import DEFAULT_MODEL_256_URL
+    if DEFAULT_MODEL_256_URL:
+      return tr("Downloads a hosted 256x256 ONNX export and replaces the current ONNX before compile.")
+    return tr("No 256x256 download URL is configured yet.")
 
   def _compile_description(self) -> str:
     from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import ONNX_PATH, PKL_PATH
@@ -146,6 +161,18 @@ class VisualVehicleSettingsLayout(Widget):
       with self._lock:
         self._worker = None
 
+  def _run_download_256(self) -> None:
+    try:
+      from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import ensure_onnx_256
+      self._set_status("Downloading 256 ONNX...")
+      ensure_onnx_256()
+      self._set_status(self._load_status_message())
+    except Exception as e:
+      self._set_status(f"error: download failed: {e}")
+    finally:
+      with self._lock:
+        self._worker = None
+
   def _run_compile(self) -> None:
     try:
       from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import ONNX_PATH, compile_pkl
@@ -175,6 +202,9 @@ class VisualVehicleSettingsLayout(Widget):
   def _trigger_download_320(self) -> None:
     self._start_worker(self._run_download_320)
 
+  def _trigger_download_256(self) -> None:
+    self._start_worker(self._run_download_256)
+
   def _trigger_compile(self) -> None:
     self._start_worker(self._run_compile)
 
@@ -200,6 +230,18 @@ class VisualVehicleSettingsLayout(Widget):
         button_text=lambda: self._download_320_button_label(),
         button_width=800,
         callback=lambda: self._trigger_download_320(),
+      ),
+    )
+
+    self._download_model_256 = ListItemSP(
+      title=lambda: tr("Detector ONNX (256)"),
+      description=lambda: self._download_256_description(),
+      description_visible=True,
+      inline=False,
+      action_item=SimpleButtonActionSP(
+        button_text=lambda: self._download_256_button_label(),
+        button_width=800,
+        callback=lambda: self._trigger_download_256(),
       ),
     )
 
@@ -236,6 +278,7 @@ class VisualVehicleSettingsLayout(Widget):
     return [
       self._download_model,
       self._download_model_320,
+      self._download_model_256,
       self._compile_model,
       self._readout,
       self._allow_onnx,
