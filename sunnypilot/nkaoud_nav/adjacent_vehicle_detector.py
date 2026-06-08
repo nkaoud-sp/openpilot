@@ -32,12 +32,11 @@ from msgq.visionipc import VisionIpcClient, VisionStreamType, VisionBuf
 from openpilot.common.params import Params
 from openpilot.common.realtime import Ratekeeper
 from openpilot.common.swaglog import cloudlog
+from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import MODEL_DIR as ARTIFACT_DIR, migrate_legacy_artifacts
 
 STATE_PATH = Path("/tmp/nkaoud_visual_vehicle_detector.json")
-REPO_ROOT = Path(__file__).resolve().parents[2]
-MODEL_DIR = REPO_ROOT / "selfdrive/modeld/models"
-DEFAULT_PKL_PATH = str(MODEL_DIR / "visual_vehicle_detector_tinygrad.pkl")
-DEFAULT_ONNX_PATH = str(MODEL_DIR / "visual_vehicle_detector.onnx")
+DEFAULT_PKL_PATH = str(ARTIFACT_DIR / "visual_vehicle_detector_tinygrad.pkl")
+DEFAULT_ONNX_PATH = str(ARTIFACT_DIR / "visual_vehicle_detector.onnx")
 
 # COCO class IDs from Ultralytics YOLO exports.
 VEHICLE_CLASS_IDS = {1, 2, 3, 5, 7}  # bicycle, car, motorcycle, bus, truck
@@ -70,6 +69,7 @@ class DebouncedFlag:
 
 class VisualVehicleDetector:
   def __init__(self) -> None:
+    migrate_legacy_artifacts()
     self.params = Params()
     self.pkl_path = os.getenv("NKAOUD_VISUAL_VEHICLE_PKL", DEFAULT_PKL_PATH)
     self.onnx_path = os.getenv("NKAOUD_VISUAL_VEHICLE_ONNX", DEFAULT_ONNX_PATH)

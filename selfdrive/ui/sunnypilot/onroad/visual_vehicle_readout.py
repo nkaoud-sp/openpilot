@@ -64,6 +64,13 @@ class VisualVehicleReadout:
     stale = age > STALE_AFTER_S
     reason = str(debug.get("reason", "unknown"))
     runtime = str(debug.get("runtime", "--"))
+    input_shape = debug.get("input_shape", [])
+    if isinstance(input_shape, list) and len(input_shape) >= 4:
+      input_shape_text = f"{input_shape[3]}x{input_shape[2]}"
+    elif isinstance(input_shape, list) and len(input_shape) >= 2:
+      input_shape_text = f"{input_shape[-1]}x{input_shape[-2]}"
+    else:
+      input_shape_text = "--"
     left = bool(state.get("left", False))
     right = bool(state.get("right", False))
 
@@ -72,6 +79,7 @@ class VisualVehicleReadout:
       ("RIGHT", "VEHICLE" if right else "CLEAR", self._status_color(right, stale, reason)),
       ("STATUS", "STALE" if stale else reason.upper(), _AMBER if stale or reason != "ok" else _GREEN),
       ("RUNTIME", runtime.upper(), _GREEN if runtime == "tinygrad_pkl" else (_AMBER if runtime == "onnx_cpu" else _DIM)),
+      ("INPUT", input_shape_text, _WHITE),
       ("AGE", f"{age:.1f}s", _AMBER if stale else _WHITE),
       ("DETS", str(debug.get("detections", "--")), _WHITE),
       ("BEST", str(debug.get("best_conf", "--")), _WHITE),
