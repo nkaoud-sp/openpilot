@@ -95,6 +95,7 @@ class VisualVehicleDetector:
     self.left_flag = DebouncedFlag()
     self.right_flag = DebouncedFlag()
     self.startup_debug: dict[str, Any] = {"reason": "not_started", "runtime": self.runtime}
+    self.last_model_debug: dict[str, Any] = {}
 
   def _write_state(self, left: bool, right: bool, debug: dict[str, Any] | None = None) -> None:
     state = {
@@ -293,6 +294,7 @@ class VisualVehicleDetector:
 
   def _run_model(self, rgb: np.ndarray) -> list[Detection]:
     inp, prep = self._preprocess(rgb)
+    self.last_model_debug = {}
     if self.runtime == "tinygrad_pkl":
       if self.pkl_model_run is None or self.Tensor is None:
         return []
@@ -304,10 +306,12 @@ class VisualVehicleDetector:
         tensor = tensor.cast(self.pkl_input_dtype)
       output = self.pkl_model_run(**{self.pkl_input_name: tensor})
       arr = self._tensor_to_numpy(output)
+      self.last_model_debug["output_shape"] = list(np.asarray(arr).shape)
       return self._parse_yolo_output(arr, prep)
 
     if self.runtime == "onnx_cpu" and self.onnx_session is not None:
       outputs = self.onnx_session.run(None, {self.onnx_input_name: inp})
+      self.last_model_debug["output_shape"] = list(np.asarray(outputs[0]).shape)
       return self._parse_yolo_output(outputs[0], prep)
 
     return []
@@ -361,6 +365,12 @@ class VisualVehicleDetector:
       cls_ids = np.argmax(class_scores, axis=1)
       cls_confs = class_scores[np.arange(class_scores.shape[0]), cls_ids]
       confs = obj * cls_confs
+      self.last_model_debug.update({
+        "parser": "yolov5_raw",
+        "raw_best_obj": round(float(np.max(obj)), 5) if obj.size else 0.0,
+        "raw_best_cls": round(float(np.max(cls_confs)), 5) if cls_confs.size else 0.0,
+        "raw_best_conf": round(float(np.max(confs)), 5) if confs.size else 0.0,
+      })
 
       for box, cls, score in zip(boxes, cls_ids, confs):
         cls_i = int(cls)
@@ -379,6 +389,10 @@ class VisualVehicleDetector:
       scores = arr[:, 4:]
       cls_ids = np.argmax(scores, axis=1)
       confs = scores[np.arange(scores.shape[0]), cls_ids]
+      self.last_model_debug.update({
+        "parser": "yolov8_raw",
+        "raw_best_conf": round(float(np.max(confs)), 5) if confs.size else 0.0,
+      })
 
       for box, cls, score in zip(boxes, cls_ids, confs):
         cls_i = int(cls)
@@ -436,6 +450,7 @@ class VisualVehicleDetector:
       "best_conf": round(float(best_conf), 3),
       "hz": self.detector_hz,
     }
+    debug.update(self.last_model_debug)
     return left, right, debug
 
   def run(self) -> None:
