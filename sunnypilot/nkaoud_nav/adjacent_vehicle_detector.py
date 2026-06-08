@@ -86,6 +86,7 @@ class VisualVehicleDetector:
     self.pkl_input_name = "images"
     self.pkl_input_dtype = None
     self.pkl_input_device = None
+    self.expected_output_shape: tuple[int, ...] = ()
 
     # ONNX fallback runtime fields
     self.onnx_session = None
@@ -172,6 +173,9 @@ class VisualVehicleDetector:
         shape = meta.get("input_shape", [1, 3, 320, 320])
         if len(shape) >= 4:
           self.input_shape = (int(shape[3]), int(shape[2]))
+        out_shape = meta.get("output_shape", [])
+        if isinstance(out_shape, list) and out_shape:
+          self.expected_output_shape = tuple(int(v) for v in out_shape)
 
       captured = getattr(self.pkl_model_run, "captured", None)
       if captured is not None:
@@ -282,15 +286,23 @@ class VisualVehicleDetector:
     }
     return np.ascontiguousarray(x), prep
 
-  @staticmethod
-  def _tensor_to_numpy(out: Any) -> np.ndarray:
+  def _tensor_to_numpy(self, out: Any) -> np.ndarray:
     if isinstance(out, dict):
       out = next(iter(out.values()))
     if isinstance(out, (list, tuple)):
       out = out[0]
-    if hasattr(out, "contiguous"):
-      return out.contiguous().realize().uop.base.buffer.numpy()
-    return np.asarray(out)
+    if hasattr(out, "numpy"):
+      arr = out.realize().numpy() if hasattr(out, "realize") else out.numpy()
+    elif hasattr(out, "contiguous"):
+      arr = out.contiguous().realize().uop.base.buffer.numpy()
+    else:
+      arr = np.asarray(out)
+    arr = np.asarray(arr)
+    if arr.ndim == 1 and self.expected_output_shape:
+      expected_size = int(np.prod(self.expected_output_shape))
+      if arr.size == expected_size:
+        arr = arr.reshape(self.expected_output_shape)
+    return arr
 
   def _run_model(self, rgb: np.ndarray) -> list[Detection]:
     inp, prep = self._preprocess(rgb)
