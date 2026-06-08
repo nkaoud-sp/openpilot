@@ -218,12 +218,22 @@ class VisualVehicleDetector:
     try:
       width, height = int(buf.width), int(buf.height)
       data = np.asarray(buf.data, dtype=np.uint8).ravel()
-      stride, y_height, _, expected = get_nv12_info(width, height)
-      if data.size < expected:
+      stride, y_height, _, expected_padded = get_nv12_info(width, height)
+      expected_compact = width * height * 3 // 2
+      if data.size < expected_compact:
         return None
-      nv12 = data[:expected]
-      y = nv12[:stride * y_height].reshape((y_height, stride))[:height, :width].astype(np.int16)
-      uv = nv12[stride * y_height:].reshape((height // 2, stride))[:, :width].astype(np.int16)
+
+      if data.size >= expected_padded:
+        nv12 = data[:expected_padded]
+        y = nv12[:stride * y_height].reshape((y_height, stride))[:height, :width].astype(np.int16)
+        uv = nv12[stride * y_height:].reshape(-1, stride)[:height // 2, :width].astype(np.int16)
+      else:
+        # Some VisionIPC paths expose a compact NV12 view instead of the full
+        # padded Venus allocation. Fall back to the visible-frame layout.
+        nv12 = data[:expected_compact]
+        y = nv12[:width * height].reshape((height, width)).astype(np.int16)
+        uv = nv12[width * height:].reshape((height // 2, width)).astype(np.int16)
+
       u = uv[:, 0::2].repeat(2, axis=0).repeat(2, axis=1)
       v = uv[:, 1::2].repeat(2, axis=0).repeat(2, axis=1)
 
