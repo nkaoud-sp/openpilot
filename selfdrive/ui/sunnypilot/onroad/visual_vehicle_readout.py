@@ -86,9 +86,25 @@ class VisualVehicleReadout:
       ("SCORES", f"L{debug.get('left_score', '--')} / R{debug.get('right_score', '--')}", _WHITE),
       ("FRAME", str(debug.get("frame_id", "--")), _DIM),
     ]
-    self._render(rect, rows)
+    raw_rows = [
+      ("PARSER", str(debug.get("parser", "--")).upper(), _WHITE),
+      ("OUT", self._format_shape(debug.get("output_shape")), _WHITE),
+      ("OBJ", str(debug.get("raw_best_obj", "--")), _WHITE),
+      ("CLASS", str(debug.get("raw_best_cls", "--")), _WHITE),
+      ("RAWCONF", str(debug.get("raw_best_conf", "--")), _WHITE),
+      ("PKL", "YES" if debug.get("pkl_exists", True) else "NO", _WHITE),
+      ("ONNX", "YES" if debug.get("onnx_exists", True) else "NO", _WHITE),
+    ]
+    self._render_panel(rect, rows, "VISUAL VEHICLE DETECTOR", side="right")
+    self._render_panel(rect, raw_rows, "VISUAL RAW DEBUG", side="left")
 
-  def _render(self, rect: rl.Rectangle, rows):
+  @staticmethod
+  def _format_shape(shape) -> str:
+    if isinstance(shape, list) and shape:
+      return "x".join(str(v) for v in shape)
+    return "--"
+
+  def _render_panel(self, rect: rl.Rectangle, rows, title: str, side: str = "right"):
     a = self._alpha
     title_size = 34
     cap_size = 23
@@ -110,8 +126,11 @@ class VisualVehicleReadout:
     panel_w = pad + content_w + pad
     panel_h = pad + title_size + 16 + len(rows) * row_h + (len(rows) - 1) * row_gap + pad
 
-    x = rect.x + rect.width - panel_w - 36
     y = rect.y + 120
+    if side == "left":
+      x = rect.x + 36
+    else:
+      x = rect.x + rect.width - panel_w - 36
 
     rl.draw_rectangle_rounded(rl.Rectangle(x, y, panel_w, panel_h), 0.16, 10, fade(_BG))
     rl.draw_rectangle_rounded_lines_ex(rl.Rectangle(x, y, panel_w, panel_h), 0.16, 10, 3, fade(_DIM))
