@@ -33,6 +33,7 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import Ratekeeper
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import MODEL_DIR as ARTIFACT_DIR, migrate_legacy_artifacts
+from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
 
 STATE_PATH = Path("/tmp/nkaoud_visual_vehicle_detector.json")
 DEFAULT_PKL_PATH = str(ARTIFACT_DIR / "visual_vehicle_detector_tinygrad.pkl")
@@ -217,12 +218,12 @@ class VisualVehicleDetector:
     try:
       width, height = int(buf.width), int(buf.height)
       data = np.asarray(buf.data, dtype=np.uint8).ravel()
-      expected = width * height * 3 // 2
+      stride, y_height, _, expected = get_nv12_info(width, height)
       if data.size < expected:
         return None
       nv12 = data[:expected]
-      y = nv12[:width * height].reshape((height, width)).astype(np.int16)
-      uv = nv12[width * height:].reshape((height // 2, width)).astype(np.int16)
+      y = nv12[:stride * y_height].reshape((y_height, stride))[:height, :width].astype(np.int16)
+      uv = nv12[stride * y_height:].reshape((height // 2, stride))[:, :width].astype(np.int16)
       u = uv[:, 0::2].repeat(2, axis=0).repeat(2, axis=1)
       v = uv[:, 1::2].repeat(2, axis=0).repeat(2, axis=1)
 
@@ -239,15 +240,36 @@ class VisualVehicleDetector:
       cloudlog.exception("visual vehicle detector failed frame conversion")
       return None
 
-  def _preprocess(self, rgb: np.ndarray) -> np.ndarray:
+  @staticmethod
+  def _resize_nn(rgb: np.ndarray, out_w: int, out_h: int) -> np.ndarray:
+    src_h, src_w = rgb.shape[:2]
+    if src_h == out_h and src_w == out_w:
+      return rgb
+    x_idx = np.clip(np.round(np.linspace(0, src_w - 1, out_w)).astype(np.int32), 0, src_w - 1)
+    y_idx = np.clip(np.round(np.linspace(0, src_h - 1, out_h)).astype(np.int32), 0, src_h - 1)
+    return rgb[y_idx][:, x_idx]
+
+  def _preprocess(self, rgb: np.ndarray) -> tuple[np.ndarray, dict[str, float | int]]:
     w, h = self.input_shape
     src_h, src_w = rgb.shape[:2]
-    x_idx = np.clip(np.round(np.linspace(0, src_w - 1, w)).astype(np.int32), 0, src_w - 1)
-    y_idx = np.clip(np.round(np.linspace(0, src_h - 1, h)).astype(np.int32), 0, src_h - 1)
-    resized = rgb[y_idx][:, x_idx]
-    x = resized.astype(np.float32) / 255.0
+    scale = min(w / float(src_w), h / float(src_h))
+    new_w = max(1, int(round(src_w * scale)))
+    new_h = max(1, int(round(src_h * scale)))
+    resized = self._resize_nn(rgb, new_w, new_h)
+    canvas = np.full((h, w, 3), 114, dtype=np.uint8)
+    pad_x = (w - new_w) // 2
+    pad_y = (h - new_h) // 2
+    canvas[pad_y:pad_y + new_h, pad_x:pad_x + new_w] = resized
+    x = canvas.astype(np.float32) / 255.0
     x = np.transpose(x, (2, 0, 1))[None]
-    return np.ascontiguousarray(x)
+    prep = {
+      "scale": scale,
+      "pad_x": pad_x,
+      "pad_y": pad_y,
+      "src_w": src_w,
+      "src_h": src_h,
+    }
+    return np.ascontiguousarray(x), prep
 
   @staticmethod
   def _tensor_to_numpy(out: Any) -> np.ndarray:
@@ -260,7 +282,7 @@ class VisualVehicleDetector:
     return np.asarray(out)
 
   def _run_model(self, rgb: np.ndarray) -> list[Detection]:
-    inp = self._preprocess(rgb)
+    inp, prep = self._preprocess(rgb)
     if self.runtime == "tinygrad_pkl":
       if self.pkl_model_run is None or self.Tensor is None:
         return []
@@ -272,15 +294,33 @@ class VisualVehicleDetector:
         tensor = tensor.cast(self.pkl_input_dtype)
       output = self.pkl_model_run(**{self.pkl_input_name: tensor})
       arr = self._tensor_to_numpy(output)
-      return self._parse_yolo_output(arr, rgb.shape[1], rgb.shape[0])
+      return self._parse_yolo_output(arr, prep)
 
     if self.runtime == "onnx_cpu" and self.onnx_session is not None:
       outputs = self.onnx_session.run(None, {self.onnx_input_name: inp})
-      return self._parse_yolo_output(outputs[0], rgb.shape[1], rgb.shape[0])
+      return self._parse_yolo_output(outputs[0], prep)
 
     return []
 
-  def _parse_yolo_output(self, output: np.ndarray, image_w: int, image_h: int) -> list[Detection]:
+  def _map_box_to_source(self, box: tuple[float, float, float, float], prep: dict[str, float | int]) -> tuple[float, float, float, float]:
+    scale = float(prep["scale"])
+    pad_x = float(prep["pad_x"])
+    pad_y = float(prep["pad_y"])
+    src_w = float(prep["src_w"])
+    src_h = float(prep["src_h"])
+    x1, y1, x2, y2 = box
+    x1 = (x1 - pad_x) / scale
+    y1 = (y1 - pad_y) / scale
+    x2 = (x2 - pad_x) / scale
+    y2 = (y2 - pad_y) / scale
+    return (
+      float(np.clip(x1, 0.0, src_w - 1.0)),
+      float(np.clip(y1, 0.0, src_h - 1.0)),
+      float(np.clip(x2, 0.0, src_w - 1.0)),
+      float(np.clip(y2, 0.0, src_h - 1.0)),
+    )
+
+  def _parse_yolo_output(self, output: np.ndarray, prep: dict[str, float | int]) -> list[Detection]:
     arr = np.squeeze(np.asarray(output))
     if arr.ndim == 2 and arr.shape[0] < arr.shape[1] and arr.shape[0] >= 6:
       arr = arr.T
@@ -288,9 +328,6 @@ class VisualVehicleDetector:
     detections: list[Detection] = []
     if arr.ndim != 2:
       return detections
-
-    in_w, in_h = self.input_shape
-    sx, sy = image_w / float(in_w), image_h / float(in_h)
 
     # Case A: already NMSed [x1, y1, x2, y2, score, class].
     if arr.shape[1] == 6:
@@ -300,7 +337,7 @@ class VisualVehicleDetector:
         if score < self.confidence or cls not in VEHICLE_CLASS_IDS:
           continue
         x1, y1, x2, y2 = [float(v) for v in row[:4]]
-        detections.append(Detection((x1, y1, x2, y2), score, cls))
+        detections.append(Detection(self._map_box_to_source((x1, y1, x2, y2), prep), score, cls))
       return detections
 
     # Case B1: YOLOv5 raw output [cx, cy, w, h, objectness, class_scores...].
@@ -321,11 +358,8 @@ class VisualVehicleDetector:
         if score_f < self.confidence or cls_i not in VEHICLE_CLASS_IDS:
           continue
         cx, cy, bw, bh = [float(v) for v in box]
-        x1 = (cx - bw / 2.0) * sx
-        y1 = (cy - bh / 2.0) * sy
-        x2 = (cx + bw / 2.0) * sx
-        y2 = (cy + bh / 2.0) * sy
-        detections.append(Detection((x1, y1, x2, y2), score_f, cls_i))
+        mapped = self._map_box_to_source((cx - bw / 2.0, cy - bh / 2.0, cx + bw / 2.0, cy + bh / 2.0), prep)
+        detections.append(Detection(mapped, score_f, cls_i))
       return detections
 
     # Case B2: YOLOv8 / YOLO11 raw output [cx, cy, w, h, class_scores...].
@@ -342,11 +376,8 @@ class VisualVehicleDetector:
         if score_f < self.confidence or cls_i not in VEHICLE_CLASS_IDS:
           continue
         cx, cy, bw, bh = [float(v) for v in box]
-        x1 = (cx - bw / 2.0) * sx
-        y1 = (cy - bh / 2.0) * sy
-        x2 = (cx + bw / 2.0) * sx
-        y2 = (cy + bh / 2.0) * sy
-        detections.append(Detection((x1, y1, x2, y2), score_f, cls_i))
+        mapped = self._map_box_to_source((cx - bw / 2.0, cy - bh / 2.0, cx + bw / 2.0, cy + bh / 2.0), prep)
+        detections.append(Detection(mapped, score_f, cls_i))
     return detections
   
 
