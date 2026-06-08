@@ -30,7 +30,7 @@ import numpy as np
 
 from msgq.visionipc import VisionIpcClient, VisionStreamType, VisionBuf
 from openpilot.common.params import Params
-from openpilot.common.realtime import Ratekeeper, config_realtime_process
+from openpilot.common.realtime import Ratekeeper
 from openpilot.common.swaglog import cloudlog
 
 STATE_PATH = Path("/tmp/nkaoud_visual_vehicle_detector.json")
@@ -74,7 +74,8 @@ class VisualVehicleDetector:
     self.pkl_path = os.getenv("NKAOUD_VISUAL_VEHICLE_PKL", DEFAULT_PKL_PATH)
     self.onnx_path = os.getenv("NKAOUD_VISUAL_VEHICLE_ONNX", DEFAULT_ONNX_PATH)
     self.confidence = float(os.getenv("NKAOUD_VISUAL_VEHICLE_CONF", "0.35"))
-    self.detector_hz = max(1, min(10, int(os.getenv("NKAOUD_VISUAL_VEHICLE_HZ", "5"))))
+    # Keep the debug detector well below camera/modeld cadence on comma3x.
+    self.detector_hz = max(1, min(5, int(os.getenv("NKAOUD_VISUAL_VEHICLE_HZ", "2"))))
     self.log_debug = False
     self.runtime = "none"
 
@@ -417,7 +418,9 @@ class VisualVehicleDetector:
       self._write_state(False, False, {"reason": "waiting_for_camera", "runtime": self.runtime})
       time.sleep(0.2)
 
-    vipc_client = VisionIpcClient("camerad", stream, False)
+    # Always consume only the freshest frame; this detector should drop old
+    # frames instead of competing with modeld by trying to catch up.
+    vipc_client = VisionIpcClient("camerad", stream, True)
     while not vipc_client.connect(False):
       self._write_state(False, False, {"reason": "waiting_for_vipc", "runtime": self.runtime})
       time.sleep(0.1)
@@ -454,7 +457,6 @@ class VisualVehicleDetector:
 
 
 def main() -> None:
-  config_realtime_process(2, 5)
   VisualVehicleDetector().run()
 
 
