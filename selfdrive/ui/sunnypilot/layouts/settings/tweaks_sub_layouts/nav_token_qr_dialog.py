@@ -200,5 +200,5 @@ def VisualVehiclePreviewQrDialog() -> NavParamQrDialog:
   return NavParamQrDialog(
     server=visual_vehicle_preview_server(),
     title_text=tr("Detector Live Preview"),
-    hint_text=tr("Scan with your phone to view the exact 320x320 RGB tensor the detector sees. Refreshes every second."),
+    hint_text=tr("Scan with your phone to see the 320x320 RGB tensor side-by-side: BT.601 full range (production) vs limited range (old bug)."),
   )

@@ -22,7 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.nkaoud_nav.adjacent_vehicle_detector import (
-  PREVIEW_PNG_PATH, PREVIEW_REQUEST_PATH,
+  PREVIEW_PNG_PATH, PREVIEW_PNG_PATH_FULL, PREVIEW_PNG_PATH_LIMITED, PREVIEW_REQUEST_PATH,
 )
 from openpilot.sunnypilot.nkaoud_nav.token_server import get_local_ip
 
@@ -33,27 +33,44 @@ DEFAULT_PORT = 8082
 PAGE = b"""<!doctype html>
 <html><head><meta charset="utf-8"><title>Visual Vehicle Detector Preview</title>
 <style>
-  body { background:#111; color:#ddd; font-family:sans-serif; margin:0; padding:24px; text-align:center; }
-  h2 { margin:0 0 8px 0; }
-  p { margin:0 0 16px 0; color:#888; font-size:14px; }
-  img { max-width:95vw; max-height:75vh; background:#222; border:1px solid #333;
+  body { background:#111; color:#ddd; font-family:sans-serif; margin:0; padding:16px; }
+  h2 { margin:0 0 4px 0; text-align:center; }
+  p.lead { margin:0 0 16px 0; color:#888; font-size:14px; text-align:center; }
+  .row { display:flex; gap:16px; justify-content:center; flex-wrap:wrap; }
+  .col { display:flex; flex-direction:column; align-items:center; }
+  .label { margin-bottom:6px; font-family:monospace; font-size:14px; padding:4px 10px; border-radius:4px; }
+  .label.good { background:#1d3a23; color:#9bdca8; }
+  .label.bad  { background:#3a1d1d; color:#dc9b9b; }
+  img { width:46vw; max-width:520px; min-width:280px; background:#222; border:1px solid #333;
         image-rendering:pixelated; image-rendering:crisp-edges; }
-  #stamp { margin-top:8px; color:#666; font-size:12px; font-family:monospace; }
+  @media (max-width:700px) { img { width:92vw; max-width:none; } }
+  #stamp { margin-top:12px; color:#666; font-size:12px; font-family:monospace; text-align:center; }
 </style></head>
 <body>
   <h2>Visual Vehicle Detector Preview</h2>
-  <p>Letterboxed 320x320 RGB tensor the model sees. Should look like a normal road scene.</p>
-  <div><img id="p" src="/preview.png" alt="(no preview yet -- start the detector and drive offroad demo)"></div>
+  <p class="lead">Letterboxed 320x320 RGB tensor. Left = correct (full range), right = old buggy (limited range).</p>
+  <div class="row">
+    <div class="col">
+      <div class="label good">BT.601 full range &mdash; production</div>
+      <img id="pf" src="/preview_full.png" alt="(waiting...)">
+    </div>
+    <div class="col">
+      <div class="label bad">BT.601 limited range &mdash; old (for comparison)</div>
+      <img id="pl" src="/preview_limited.png" alt="(waiting...)">
+    </div>
+  </div>
   <div id="stamp">--</div>
   <script>
-    const img = document.getElementById('p');
+    const pf = document.getElementById('pf');
+    const pl = document.getElementById('pl');
     const stamp = document.getElementById('stamp');
     function tick() {
       const t = Date.now();
-      img.src = '/preview.png?t=' + t;
+      pf.src = '/preview_full.png?t=' + t;
+      pl.src = '/preview_limited.png?t=' + t;
       stamp.textContent = new Date().toLocaleTimeString();
     }
-    img.addEventListener('error', () => { stamp.textContent = 'waiting for detector...'; });
+    pf.addEventListener('error', () => { stamp.textContent = 'waiting for detector...'; });
     setInterval(tick, 1000);
   </script>
 </body></html>
@@ -97,9 +114,15 @@ class PreviewWebServer:
         if self.path in ("/", "/index.html"):
           self._send(PAGE, "text/html; charset=utf-8")
           return
-        if self.path.split("?", 1)[0] == "/preview.png":
+        route = self.path.split("?", 1)[0]
+        png_path = {
+          "/preview.png":          PREVIEW_PNG_PATH,
+          "/preview_full.png":     PREVIEW_PNG_PATH_FULL,
+          "/preview_limited.png":  PREVIEW_PNG_PATH_LIMITED,
+        }.get(route)
+        if png_path is not None:
           try:
-            with open(PREVIEW_PNG_PATH, "rb") as f:
+            with open(png_path, "rb") as f:
               data = f.read()
           except FileNotFoundError:
             self.send_error(404, "preview not yet written")

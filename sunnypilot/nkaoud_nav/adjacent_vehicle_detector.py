@@ -39,7 +39,9 @@ STATE_PATH = Path("/tmp/nkaoud_visual_vehicle_detector.json")
 # Live preview: the UI dialog/web server touches the request file while open,
 # the detector writes the latest letterboxed RGB tensor to the PNG path.
 PREVIEW_REQUEST_PATH = "/tmp/nkaoud_vvd_preview.request"
-PREVIEW_PNG_PATH = "/tmp/nkaoud_vvd_preview.png"
+PREVIEW_PNG_PATH = "/tmp/nkaoud_vvd_preview.png"               # production (full range)
+PREVIEW_PNG_PATH_FULL = "/tmp/nkaoud_vvd_preview_full.png"
+PREVIEW_PNG_PATH_LIMITED = "/tmp/nkaoud_vvd_preview_limited.png"
 DEFAULT_PKL_PATH = str(ARTIFACT_DIR / "visual_vehicle_detector_tinygrad.pkl")
 DEFAULT_ONNX_PATH = str(ARTIFACT_DIR / "visual_vehicle_detector.onnx")
 
@@ -224,7 +226,8 @@ class VisualVehicleDetector:
       cloudlog.exception("visual vehicle detector failed to initialize ONNX fallback")
       return False
 
-  def _vipc_to_rgb(self, buf: VisionBuf) -> np.ndarray | None:
+  def _vipc_to_yuv_planes(self, buf: VisionBuf) -> tuple[np.ndarray, np.ndarray] | None:
+    """Returns (y, uv) as int16 arrays from the NV12 VisionIPC buffer, or None."""
     try:
       width, height = int(buf.width), int(buf.height)
       data = np.asarray(buf.data, dtype=np.uint8).ravel()
@@ -232,7 +235,6 @@ class VisualVehicleDetector:
       expected_compact = width * height * 3 // 2
       if data.size < expected_compact:
         return None
-
       if data.size >= expected_padded:
         nv12 = data[:expected_padded]
         y = nv12[:stride * y_height].reshape((y_height, stride))[:height, :width].astype(np.int16)
@@ -243,23 +245,38 @@ class VisualVehicleDetector:
         nv12 = data[:expected_compact]
         y = nv12[:width * height].reshape((height, width)).astype(np.int16)
         uv = nv12[width * height:].reshape((height // 2, width)).astype(np.int16)
+      return y, uv
+    except Exception:
+      cloudlog.exception("visual vehicle detector failed frame plane extraction")
+      return None
 
-      u = uv[:, 0::2].repeat(2, axis=0).repeat(2, axis=1)
-      v = uv[:, 1::2].repeat(2, axis=0).repeat(2, axis=1)
-
-      # camerad emits NV12 as BT.601 full range (see spectra.cc CAM_COLOR_SPACE_BT601_FULL):
-      # Y spans 0..255 with no 16/235 head/footroom, so do NOT subtract 16 or apply the
-      # 1.164 limited-range Y gain. Coefficients below are BT.601 full-range fixed-point ×256.
-      d = u - 128
-      e = v - 128
-
+  @staticmethod
+  def _yuv_to_rgb(y: np.ndarray, uv: np.ndarray, full_range: bool) -> np.ndarray:
+    u = uv[:, 0::2].repeat(2, axis=0).repeat(2, axis=1)
+    v = uv[:, 1::2].repeat(2, axis=0).repeat(2, axis=1)
+    d = u - 128
+    e = v - 128
+    if full_range:
+      # BT.601 full range (camerad emits CAM_COLOR_SPACE_BT601_FULL; see spectra.cc).
       r = (256 * y + 359 * e + 128) >> 8
       g = (256 * y -  88 * d - 183 * e + 128) >> 8
       b = (256 * y + 454 * d + 128) >> 8
-      rgb = np.stack((r, g, b), axis=-1)
-      return np.clip(rgb, 0, 255).astype(np.uint8)
+    else:
+      # BT.601 limited range (Y in 16..235): used here only for visual comparison.
+      c = np.clip(y - 16, 0, None)
+      r = (298 * c + 409 * e + 128) >> 8
+      g = (298 * c - 100 * d - 208 * e + 128) >> 8
+      b = (298 * c + 516 * d + 128) >> 8
+    return np.clip(np.stack((r, g, b), axis=-1), 0, 255).astype(np.uint8)
+
+  def _vipc_to_rgb(self, buf: VisionBuf, full_range: bool = True) -> np.ndarray | None:
+    planes = self._vipc_to_yuv_planes(buf)
+    if planes is None:
+      return None
+    try:
+      return self._yuv_to_rgb(*planes, full_range=full_range)
     except Exception:
-      cloudlog.exception("visual vehicle detector failed frame conversion")
+      cloudlog.exception("visual vehicle detector failed YUV->RGB conversion")
       return None
 
   @staticmethod
@@ -271,7 +288,17 @@ class VisualVehicleDetector:
     y_idx = np.clip(np.round(np.linspace(0, src_h - 1, out_h)).astype(np.int32), 0, src_h - 1)
     return rgb[y_idx][:, x_idx]
 
-  def _preprocess(self, rgb: np.ndarray) -> tuple[np.ndarray, dict[str, float | int]]:
+  def _write_preview_pair(self, rgb_full: np.ndarray, rgb_limited: np.ndarray) -> None:
+    from PIL import Image
+    canvas_full, *_ = self._letterbox(rgb_full)
+    canvas_limited, *_ = self._letterbox(rgb_limited)
+    Image.fromarray(canvas_full, "RGB").save(PREVIEW_PNG_PATH_FULL)
+    Image.fromarray(canvas_limited, "RGB").save(PREVIEW_PNG_PATH_LIMITED)
+    # Keep the legacy single-image path pointing at the production (full-range)
+    # view so any older client still works.
+    Image.fromarray(canvas_full, "RGB").save(PREVIEW_PNG_PATH)
+
+  def _letterbox(self, rgb: np.ndarray) -> tuple[np.ndarray, int, int, float]:
     w, h = self.input_shape
     src_h, src_w = rgb.shape[:2]
     scale = min(w / float(src_w), h / float(src_h))
@@ -282,6 +309,11 @@ class VisualVehicleDetector:
     pad_x = (w - new_w) // 2
     pad_y = (h - new_h) // 2
     canvas[pad_y:pad_y + new_h, pad_x:pad_x + new_w] = resized
+    return canvas, pad_x, pad_y, scale
+
+  def _preprocess(self, rgb: np.ndarray) -> tuple[np.ndarray, dict[str, float | int]]:
+    src_h, src_w = rgb.shape[:2]
+    canvas, pad_x, pad_y, scale = self._letterbox(rgb)
     # Optional one-shot dump (env-controlled).
     dump = os.getenv("NKAOUD_VISUAL_VEHICLE_DUMP_PREPROC", "")
     if dump and not self._preproc_dumped:
@@ -293,15 +325,6 @@ class VisualVehicleDetector:
       except Exception:
         cloudlog.exception("visual vehicle detector preproc dump failed")
         self._preproc_dumped = True
-    # Live preview for the web portal: only write while the preview server
-    # is up (sentinel file is touched on server start, removed on stop).
-    # /tmp is tmpfs on comma so the per-frame write costs no flash wear.
-    if os.path.exists(PREVIEW_REQUEST_PATH):
-      try:
-        from PIL import Image
-        Image.fromarray(canvas, "RGB").save(PREVIEW_PNG_PATH)
-      except Exception:
-        cloudlog.exception("visual vehicle detector live preview write failed")
     x = canvas.astype(np.float32) / 255.0
     x = np.transpose(x, (2, 0, 1))[None]
     prep = {
@@ -497,11 +520,27 @@ class VisualVehicleDetector:
     return rx1 <= cx <= rx2 and ry1 <= bottom <= ry2
 
   def update(self, buf: VisionBuf) -> tuple[bool, bool, dict[str, Any]]:
-    rgb = self._vipc_to_rgb(buf)
-    if rgb is None:
+    planes = self._vipc_to_yuv_planes(buf)
+    if planes is None:
       left = self.left_flag.update(False)
       right = self.right_flag.update(False)
       return left, right, {"reason": "frame_convert_failed", "runtime": self.runtime}
+    try:
+      rgb = self._yuv_to_rgb(*planes, full_range=True)
+    except Exception:
+      cloudlog.exception("visual vehicle detector failed YUV->RGB conversion")
+      left = self.left_flag.update(False)
+      right = self.right_flag.update(False)
+      return left, right, {"reason": "frame_convert_failed", "runtime": self.runtime}
+
+    # Live preview: write both BT.601 conversions so the user can A/B them.
+    # Only active while the dialog/web server holds the request sentinel.
+    if os.path.exists(PREVIEW_REQUEST_PATH):
+      try:
+        rgb_limited = self._yuv_to_rgb(*planes, full_range=False)
+        self._write_preview_pair(rgb, rgb_limited)
+      except Exception:
+        cloudlog.exception("visual vehicle detector live preview write failed")
 
     detections = self._run_model(rgb)
     image_h, image_w = rgb.shape[:2]
