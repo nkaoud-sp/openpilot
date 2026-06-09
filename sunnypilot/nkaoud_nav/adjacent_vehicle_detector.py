@@ -33,7 +33,6 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import Ratekeeper
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import MODEL_DIR as ARTIFACT_DIR, migrate_legacy_artifacts
-from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
 
 STATE_PATH = Path("/tmp/nkaoud_visual_vehicle_detector.json")
 # Live preview: the UI dialog/web server touches the request file while open,
@@ -226,36 +225,41 @@ class VisualVehicleDetector:
       cloudlog.exception("visual vehicle detector failed to initialize ONNX fallback")
       return False
 
-  def _vipc_to_yuv_planes(self, buf: VisionBuf) -> tuple[np.ndarray, np.ndarray] | None:
-    """Returns (y, uv) as int16 arrays from the NV12 VisionIPC buffer, or None."""
+  def _vipc_to_yuv_planes(self, buf: VisionBuf) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """Returns (y, u, v) as int16 arrays from the NV12 VisionIPC buffer, or None.
+    y is full-resolution (height, width); u and v are quarter-resolution
+    (height/2, width/2). Uses the buffer's own uv_offset/stride to avoid
+    guessing Venus padding layout. Mirrors system/camerad/snapshot.py."""
     try:
       width, height = int(buf.width), int(buf.height)
-      data = np.asarray(buf.data, dtype=np.uint8).ravel()
-      stride, y_height, _, expected_padded = get_nv12_info(width, height)
-      expected_compact = width * height * 3 // 2
-      if data.size < expected_compact:
+      stride = int(buf.stride)
+      uv_offset = int(buf.uv_offset)
+      data = np.asarray(buf.data, dtype=np.uint8)
+      if data.size < uv_offset + stride * (height // 2):
         return None
-      if data.size >= expected_padded:
-        nv12 = data[:expected_padded]
-        y = nv12[:stride * y_height].reshape((y_height, stride))[:height, :width].astype(np.int16)
-        uv = nv12[stride * y_height:].reshape(-1, stride)[:height // 2, :width].astype(np.int16)
-      else:
-        # Some VisionIPC paths expose a compact NV12 view instead of the full
-        # padded Venus allocation. Fall back to the visible-frame layout.
-        nv12 = data[:expected_compact]
-        y = nv12[:width * height].reshape((height, width)).astype(np.int16)
-        uv = nv12[width * height:].reshape((height // 2, width)).astype(np.int16)
-      return y, uv
+
+      y = data[:uv_offset].reshape((-1, stride))[:height, :width].astype(np.int16)
+      uv = data[uv_offset:]
+      # UV is interleaved as U,V,U,V,... across the byte stream, with the same
+      # stride as Y (each pair of luma columns shares one chroma pair).
+      u = uv[0::2].reshape((-1, stride // 2))[:height // 2, :width // 2].astype(np.int16)
+      v = uv[1::2].reshape((-1, stride // 2))[:height // 2, :width // 2].astype(np.int16)
+      return y, u, v
     except Exception:
       cloudlog.exception("visual vehicle detector failed frame plane extraction")
       return None
 
   @staticmethod
-  def _yuv_to_rgb(y: np.ndarray, uv: np.ndarray, full_range: bool) -> np.ndarray:
-    u = uv[:, 0::2].repeat(2, axis=0).repeat(2, axis=1)
-    v = uv[:, 1::2].repeat(2, axis=0).repeat(2, axis=1)
-    d = u - 128
-    e = v - 128
+  def _yuv_to_rgb(y: np.ndarray, u: np.ndarray, v: np.ndarray, full_range: bool) -> np.ndarray:
+    # u, v are quarter-resolution; upsample to match y.
+    u_full = u.repeat(2, axis=0).repeat(2, axis=1)
+    v_full = v.repeat(2, axis=0).repeat(2, axis=1)
+    # Trim to y's shape in case y has an odd dimension.
+    h, w = y.shape[:2]
+    u_full = u_full[:h, :w]
+    v_full = v_full[:h, :w]
+    d = u_full - 128
+    e = v_full - 128
     if full_range:
       # BT.601 full range (camerad emits CAM_COLOR_SPACE_BT601_FULL; see spectra.cc).
       r = (256 * y + 359 * e + 128) >> 8
