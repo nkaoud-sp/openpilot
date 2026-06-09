@@ -103,6 +103,7 @@ class VisualVehicleDetector:
     self.startup_debug: dict[str, Any] = {"reason": "not_started", "runtime": self.runtime}
     self.last_model_debug: dict[str, Any] = {}
     self._preproc_dumped = False
+    self._logged_buf_geometry = False
 
   def _write_state(self, left: bool, right: bool, debug: dict[str, Any] | None = None) -> None:
     state = {
@@ -228,22 +229,42 @@ class VisualVehicleDetector:
   def _vipc_to_yuv_planes(self, buf: VisionBuf) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
     """Returns (y, u, v) as int16 arrays from the NV12 VisionIPC buffer, or None.
     y is full-resolution (height, width); u and v are quarter-resolution
-    (height/2, width/2). Uses the buffer's own uv_offset/stride to avoid
-    guessing Venus padding layout. Mirrors system/camerad/snapshot.py."""
+    (height/2, width/2). Mirrors system/camerad/snapshot.py exactly to avoid
+    any shape/dtype surprises from buf.data."""
     try:
-      width, height = int(buf.width), int(buf.height)
+      width = int(buf.width)
+      height = int(buf.height)
       stride = int(buf.stride)
       uv_offset = int(buf.uv_offset)
-      data = np.asarray(buf.data, dtype=np.uint8)
-      if data.size < uv_offset + stride * (height // 2):
-        return None
+      # uv_height calculation copied from snapshot.py.
+      uv_height = ((height // 2) + 15) // 16 * 16
+      uv_plane_size = stride * uv_height
 
-      y = data[:uv_offset].reshape((-1, stride))[:height, :width].astype(np.int16)
-      uv = data[uv_offset:]
-      # UV is interleaved as U,V,U,V,... across the byte stream, with the same
-      # stride as Y (each pair of luma columns shares one chroma pair).
-      u = uv[0::2].reshape((-1, stride // 2))[:height // 2, :width // 2].astype(np.int16)
-      v = uv[1::2].reshape((-1, stride // 2))[:height // 2, :width // 2].astype(np.int16)
+      # One-time debug log so we can verify the buffer layout values reported
+      # by VisionBuf rather than guessing -- if the splatter persists, these
+      # numbers are the first thing to check.
+      if not self._logged_buf_geometry:
+        try:
+          dlen = len(buf.data)
+        except Exception:
+          dlen = -1
+        cloudlog.warning(
+          "visual vehicle detector NV12 buf geometry: "
+          "width=%d height=%d stride=%d uv_offset=%d uv_height=%d "
+          "uv_plane_size=%d data_len=%d",
+          width, height, stride, uv_offset, uv_height, uv_plane_size, dlen,
+        )
+        self._logged_buf_geometry = True
+
+      # Slice buf.data as a memoryview FIRST, then wrap with np.array. This is
+      # what snapshot.py does and it sidesteps any shape buf.data might carry.
+      y = np.array(buf.data[:uv_offset], dtype=np.uint8) \
+            .reshape((-1, stride))[:height, :width].astype(np.int16)
+      uv_data = buf.data[uv_offset:uv_offset + uv_plane_size]
+      u = np.array(uv_data[::2], dtype=np.uint8) \
+            .reshape((-1, stride // 2))[:height // 2, :width // 2].astype(np.int16)
+      v = np.array(uv_data[1::2], dtype=np.uint8) \
+            .reshape((-1, stride // 2))[:height // 2, :width // 2].astype(np.int16)
       return y, u, v
     except Exception:
       cloudlog.exception("visual vehicle detector failed frame plane extraction")
