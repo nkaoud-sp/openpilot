@@ -126,11 +126,12 @@ class VisualVehicleReadout:
     panel_w = pad + content_w + pad
     panel_h = pad + title_size + 16 + len(rows) * row_h + (len(rows) - 1) * row_gap + pad
 
-    y = rect.y + 120
     if side == "left":
       x = rect.x + 36
+      y = rect.y + (rect.height - panel_h) / 2
     else:
       x = rect.x + rect.width - panel_w - 36
+      y = rect.y + 120
 
     rl.draw_rectangle_rounded(rl.Rectangle(x, y, panel_w, panel_h), 0.16, 10, fade(_BG))
     rl.draw_rectangle_rounded_lines_ex(rl.Rectangle(x, y, panel_w, panel_h), 0.16, 10, 3, fade(_DIM))
