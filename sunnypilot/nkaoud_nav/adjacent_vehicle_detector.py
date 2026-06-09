@@ -242,13 +242,15 @@ class VisualVehicleDetector:
       u = uv[:, 0::2].repeat(2, axis=0).repeat(2, axis=1)
       v = uv[:, 1::2].repeat(2, axis=0).repeat(2, axis=1)
 
-      c = np.clip(y - 16, 0, None)
+      # camerad emits NV12 as BT.601 full range (see spectra.cc CAM_COLOR_SPACE_BT601_FULL):
+      # Y spans 0..255 with no 16/235 head/footroom, so do NOT subtract 16 or apply the
+      # 1.164 limited-range Y gain. Coefficients below are BT.601 full-range fixed-point ×256.
       d = u - 128
       e = v - 128
 
-      r = (298 * c + 409 * e + 128) >> 8
-      g = (298 * c - 100 * d - 208 * e + 128) >> 8
-      b = (298 * c + 516 * d + 128) >> 8
+      r = (256 * y + 359 * e + 128) >> 8
+      g = (256 * y -  88 * d - 183 * e + 128) >> 8
+      b = (256 * y + 454 * d + 128) >> 8
       rgb = np.stack((r, g, b), axis=-1)
       return np.clip(rgb, 0, 255).astype(np.uint8)
     except Exception:
@@ -275,6 +277,15 @@ class VisualVehicleDetector:
     pad_x = (w - new_w) // 2
     pad_y = (h - new_h) // 2
     canvas[pad_y:pad_y + new_h, pad_x:pad_x + new_w] = resized
+    # Opt-in dump of the exact letterboxed RGB tensor the model sees, so the
+    # NV12->RGB conversion and letterbox can be eyeballed on device.
+    dump = os.getenv("NKAOUD_VISUAL_VEHICLE_DUMP_PREPROC", "")
+    if dump:
+      try:
+        from PIL import Image
+        Image.fromarray(canvas, "RGB").save(dump)
+      except Exception:
+        cloudlog.exception("visual vehicle detector preproc dump failed")
     x = canvas.astype(np.float32) / 255.0
     x = np.transpose(x, (2, 0, 1))[None]
     prep = {
