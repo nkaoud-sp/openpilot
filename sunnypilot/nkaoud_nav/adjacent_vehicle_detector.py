@@ -97,6 +97,7 @@ class VisualVehicleDetector:
     self.right_flag = DebouncedFlag()
     self.startup_debug: dict[str, Any] = {"reason": "not_started", "runtime": self.runtime}
     self.last_model_debug: dict[str, Any] = {}
+    self._preproc_dumped = False
 
   def _write_state(self, left: bool, right: bool, debug: dict[str, Any] | None = None) -> None:
     state = {
@@ -277,15 +278,18 @@ class VisualVehicleDetector:
     pad_x = (w - new_w) // 2
     pad_y = (h - new_h) // 2
     canvas[pad_y:pad_y + new_h, pad_x:pad_x + new_w] = resized
-    # Opt-in dump of the exact letterboxed RGB tensor the model sees, so the
-    # NV12->RGB conversion and letterbox can be eyeballed on device.
+    # Opt-in one-shot dump of the exact letterboxed RGB tensor the model sees,
+    # so the NV12->RGB conversion and letterbox can be eyeballed on device.
     dump = os.getenv("NKAOUD_VISUAL_VEHICLE_DUMP_PREPROC", "")
-    if dump:
+    if dump and not self._preproc_dumped:
       try:
         from PIL import Image
         Image.fromarray(canvas, "RGB").save(dump)
+        self._preproc_dumped = True
+        cloudlog.warning("visual vehicle detector wrote preproc dump to %s", dump)
       except Exception:
         cloudlog.exception("visual vehicle detector preproc dump failed")
+        self._preproc_dumped = True  # don't keep retrying on every frame
     x = canvas.astype(np.float32) / 255.0
     x = np.transpose(x, (2, 0, 1))[None]
     prep = {
