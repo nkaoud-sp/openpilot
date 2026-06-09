@@ -44,6 +44,11 @@ PREVIEW_PNG_PATH_LIMITED = "/tmp/nkaoud_vvd_preview_limited.png"
 PREVIEW_RAW_Y_PATH = "/tmp/nkaoud_vvd_raw_y.png"
 PREVIEW_RAW_U_PATH = "/tmp/nkaoud_vvd_raw_u.png"
 PREVIEW_RAW_V_PATH = "/tmp/nkaoud_vvd_raw_v.png"
+# Extra detector previews used by the cropped-inference path.
+# These are only written while PREVIEW_REQUEST_PATH exists.
+PREVIEW_FULL_FRAME_CROP_PATH = "/tmp/nkaoud_vvd_preview_full_frame_crop.png"
+PREVIEW_DETECTOR_CROP_PATH = "/tmp/nkaoud_vvd_preview_detector_crop.png"
+PREVIEW_MODEL_INPUT_PATH = "/tmp/nkaoud_vvd_preview_model_input.png"
 BUF_GEOMETRY_PATH = "/tmp/nkaoud_vvd_buf_geometry.json"
 DEFAULT_PKL_PATH = str(ARTIFACT_DIR / "visual_vehicle_detector_tinygrad.pkl")
 DEFAULT_ONNX_PATH = str(ARTIFACT_DIR / "visual_vehicle_detector.onnx")
@@ -51,9 +56,28 @@ DEFAULT_ONNX_PATH = str(ARTIFACT_DIR / "visual_vehicle_detector.onnx")
 # COCO class IDs from Ultralytics YOLO exports.
 VEHICLE_CLASS_IDS = {1, 2, 3, 5, 7}  # bicycle, car, motorcycle, bus, truck
 
-# Normalized side-lane ROIs: x1, y1, x2, y2.
-LEFT_ROI = (0.00, 0.35, 0.42, 1.00)
-RIGHT_ROI = (0.58, 0.35, 1.00, 1.00)
+# Detector crop and ROI layout.
+#
+# We crop this fixed 928x416 region from the original wide-road RGB frame:
+#   x=854..1782, y=425..841  (Python slicing: end coordinate is exclusive)
+# Then YOLO runs only on that cropped image. The compiled model should be
+# 480x224, matching this wide crop closely.
+#
+# ROI sizes below are expressed in the 480x224 model coordinate system:
+#   - left ROI:  x=0..32,    y=0..224
+#   - right ROI: x=32..480,  y=0..224
+# They are converted to normalized coordinates so the same ROI logic works
+# after YOLO boxes are mapped back into the 928x416 crop coordinates.
+DETECT_CROP_X = 854
+DETECT_CROP_Y = 425
+DETECT_CROP_W = 928
+DETECT_CROP_H = 416
+ROI_MODEL_W = 480
+ROI_MODEL_H = 224
+
+# Normalized crop ROIs: x1, y1, x2, y2.
+LEFT_ROI = (0.0 / ROI_MODEL_W, 0.0 / ROI_MODEL_H, 32.0 / ROI_MODEL_W, 224.0 / ROI_MODEL_H)
+RIGHT_ROI = (32.0 / ROI_MODEL_W, 0.0 / ROI_MODEL_H, 480.0 / ROI_MODEL_W, 224.0 / ROI_MODEL_H)
 
 
 @dataclass
@@ -362,6 +386,82 @@ class VisualVehicleDetector:
     Image.fromarray(u8, "L").save(PREVIEW_RAW_U_PATH)
     Image.fromarray(v8, "L").save(PREVIEW_RAW_V_PATH)
 
+  @staticmethod
+  def _draw_text(draw: Any, xy: tuple[int, int], text: str, fill: tuple[int, int, int]) -> None:
+    # PIL text drawing should never break the detector loop due to font/encoding issues.
+    try:
+      draw.text(xy, text, fill=fill)
+    except Exception:
+      pass
+
+  def _write_detector_previews(self, rgb_full: np.ndarray, detector_rgb: np.ndarray,
+                               crop_debug: dict[str, int | str], detections: list[Detection]) -> None:
+    """Write both views needed for debugging cropped inference:
+
+    1. Full camera frame with the fixed 928x416 detector crop rectangle drawn.
+    2. Raw detector crop with the left/right ROI split drawn in crop coordinates.
+    3. Exact model input image after letterbox/resize, with ROI and detection boxes.
+
+    This is intentionally separate from _write_preview_pair(), which still writes
+    the full-frame color-conversion A/B preview for YUV debugging.
+    """
+    from PIL import Image, ImageDraw
+
+    # 1) Full frame + crop rectangle: confirms we are cutting the intended area
+    # from the original wide-road frame.
+    full_img = Image.fromarray(rgb_full, "RGB")
+    full_draw = ImageDraw.Draw(full_img)
+    crop_x = int(crop_debug.get("crop_x", 0))
+    crop_y = int(crop_debug.get("crop_y", 0))
+    crop_w = int(crop_debug.get("crop_w", detector_rgb.shape[1]))
+    crop_h = int(crop_debug.get("crop_h", detector_rgb.shape[0]))
+    full_rect = (crop_x, crop_y, crop_x + crop_w - 1, crop_y + crop_h - 1)
+    full_draw.rectangle(full_rect, outline=(255, 255, 0), width=4)
+    self._draw_text(full_draw, (crop_x + 6, crop_y + 6), "detector crop 928x416", (255, 255, 0))
+    full_img.save(PREVIEW_FULL_FRAME_CROP_PATH)
+
+    # 2) Raw detector crop + ROI split in crop coordinates: confirms the left/right
+    # classification zones after detections are mapped back to the crop.
+    crop_img = Image.fromarray(detector_rgb, "RGB")
+    crop_draw = ImageDraw.Draw(crop_img)
+    cw, ch = crop_img.size
+    left_x2 = int(round(LEFT_ROI[2] * cw))
+    crop_draw.rectangle((0, 0, max(0, left_x2 - 1), ch - 1), outline=(255, 0, 0), width=3)
+    crop_draw.rectangle((left_x2, 0, cw - 1, ch - 1), outline=(0, 128, 255), width=3)
+    crop_draw.line((left_x2, 0, left_x2, ch - 1), fill=(255, 255, 0), width=2)
+    self._draw_text(crop_draw, (4, 4), "LEFT ROI", (255, 0, 0))
+    self._draw_text(crop_draw, (left_x2 + 6, 4), "RIGHT ROI", (0, 128, 255))
+
+    for det in detections:
+      x1, y1, x2, y2 = det.xyxy
+      rect = (int(round(x1)), int(round(y1)), int(round(x2)), int(round(y2)))
+      crop_draw.rectangle(rect, outline=(0, 255, 0), width=2)
+      self._draw_text(crop_draw, (rect[0], max(0, rect[1] - 12)), f"{det.class_id}:{det.confidence:.2f}", (0, 255, 0))
+    crop_img.save(PREVIEW_DETECTOR_CROP_PATH)
+
+    # 3) Exact tensor image going to YOLO after letterbox/resize. This should be
+    # 480x224 when the compiled PKL metadata reports input_shape [1,3,224,480].
+    canvas, pad_x, pad_y, scale = self._letterbox(detector_rgb)
+    model_img = Image.fromarray(canvas, "RGB")
+    model_draw = ImageDraw.Draw(model_img)
+    mw, mh = model_img.size
+    lx2 = int(round(LEFT_ROI[2] * mw))
+    model_draw.rectangle((0, 0, max(0, lx2 - 1), mh - 1), outline=(255, 0, 0), width=2)
+    model_draw.rectangle((lx2, 0, mw - 1, mh - 1), outline=(0, 128, 255), width=2)
+    model_draw.line((lx2, 0, lx2, mh - 1), fill=(255, 255, 0), width=1)
+    self._draw_text(model_draw, (3, 3), "LEFT", (255, 0, 0))
+    self._draw_text(model_draw, (lx2 + 4, 3), "RIGHT", (0, 128, 255))
+
+    for det in detections:
+      x1, y1, x2, y2 = det.xyxy
+      mx1 = int(round(x1 * scale + pad_x))
+      my1 = int(round(y1 * scale + pad_y))
+      mx2 = int(round(x2 * scale + pad_x))
+      my2 = int(round(y2 * scale + pad_y))
+      model_draw.rectangle((mx1, my1, mx2, my2), outline=(0, 255, 0), width=2)
+      self._draw_text(model_draw, (mx1, max(0, my1 - 12)), f"{det.class_id}:{det.confidence:.2f}", (0, 255, 0))
+    model_img.save(PREVIEW_MODEL_INPUT_PATH)
+
   def _letterbox(self, rgb: np.ndarray) -> tuple[np.ndarray, int, int, float]:
     w, h = self.input_shape
     src_h, src_w = rgb.shape[:2]
@@ -567,6 +667,60 @@ class VisualVehicleDetector:
     return detections
   
 
+  def _crop_detector_region(self, rgb: np.ndarray) -> tuple[np.ndarray, dict[str, int | str]]:
+    """Crop the fixed detector region from the original RGB camera frame.
+
+    Defaults:
+      - x/y: 854,425
+      - width/height: 928x416
+      - region: x=854..1782, y=425..841
+
+    You can still tune the crop without editing code by setting:
+      NKAOUD_VISUAL_VEHICLE_CROP_X
+      NKAOUD_VISUAL_VEHICLE_CROP_Y
+    """
+    image_h, image_w = rgb.shape[:2]
+
+    crop_w = min(DETECT_CROP_W, image_w)
+    crop_h = min(DETECT_CROP_H, image_h)
+
+    default_x = DETECT_CROP_X
+    default_y = DETECT_CROP_Y
+
+    def _get_int_env(name: str, default: int) -> int:
+      raw = os.getenv(name, "")
+      if raw == "":
+        return default
+      try:
+        return int(raw)
+      except Exception:
+        cloudlog.warning("visual vehicle detector invalid %s=%r; using %d", name, raw, default)
+        return default
+
+    crop_x = _get_int_env("NKAOUD_VISUAL_VEHICLE_CROP_X", default_x)
+    crop_y = _get_int_env("NKAOUD_VISUAL_VEHICLE_CROP_Y", default_y)
+
+    crop_x = max(0, min(crop_x, image_w - crop_w))
+    crop_y = max(0, min(crop_y, image_h - crop_h))
+
+    crop = rgb[crop_y:crop_y + crop_h, crop_x:crop_x + crop_w]
+    debug = {
+      "crop_mode": "fixed_928x416",
+      "crop_x": int(crop_x),
+      "crop_y": int(crop_y),
+      "crop_w": int(crop_w),
+      "crop_h": int(crop_h),
+      "crop_x2_exclusive": int(crop_x + crop_w),
+      "crop_y2_exclusive": int(crop_y + crop_h),
+      "frame_w": int(image_w),
+      "frame_h": int(image_h),
+      "roi_model_w": int(ROI_MODEL_W),
+      "roi_model_h": int(ROI_MODEL_H),
+      "left_roi_model_px": "x=0..32,y=0..224",
+      "right_roi_model_px": "x=32..480,y=0..224",
+    }
+    return crop, debug
+
   @staticmethod
   def _box_in_roi(box: tuple[float, float, float, float], roi: tuple[float, float, float, float], image_w: int, image_h: int) -> bool:
     x1, y1, x2, y2 = box
@@ -597,20 +751,28 @@ class VisualVehicleDetector:
       right = self.right_flag.update(False)
       return left, right, {"reason": "frame_convert_failed", "runtime": self.runtime}
 
-    # Live preview: write both BT.601 conversions so the user can A/B them,
-    # plus the raw Y/U/V planes as grayscale so we can spot stride or row
-    # alignment issues that the composited RGB hides. Only active while the
-    # dialog/web server holds the request sentinel.
+    # Run YOLO on the fixed crop only, not on the full camera frame.
+    detector_rgb, crop_debug = self._crop_detector_region(rgb)
+    detections = self._run_model(detector_rgb)
+    image_h, image_w = detector_rgb.shape[:2]
+
+    # Live preview: keep the original full-frame color-conversion previews and
+    # add cropped-inference previews. Only active while the dialog/web server
+    # holds the request sentinel.
     if os.path.exists(PREVIEW_REQUEST_PATH):
       try:
         rgb_limited = self._yuv_to_rgb(*planes, full_range=False)
         self._write_preview_pair(rgb, rgb_limited)
         self._write_raw_planes(*planes)
+        self._write_detector_previews(rgb, detector_rgb, crop_debug, detections)
       except Exception:
         cloudlog.exception("visual vehicle detector live preview write failed")
 
-    detections = self._run_model(rgb)
-    image_h, image_w = rgb.shape[:2]
+    # LEFT_ROI and RIGHT_ROI are normalized from the intended 480x224 model
+    # layout, then applied to the crop coordinates that _run_model returns.
+    # Current layout:
+    #   left:  x=0..32   of model input
+    #   right: x=32..480 of model input
     raw_left = any(self._box_in_roi(det.xyxy, LEFT_ROI, image_w, image_h) for det in detections)
     raw_right = any(self._box_in_roi(det.xyxy, RIGHT_ROI, image_w, image_h) for det in detections)
     left = self.left_flag.update(raw_left)
@@ -623,6 +785,14 @@ class VisualVehicleDetector:
       "pkl_path": self.pkl_path,
       "onnx_path": self.onnx_path,
       "input_shape": list(self.input_shape),
+      "crop": crop_debug,
+      "preview_paths": {
+        "full_frame_crop": PREVIEW_FULL_FRAME_CROP_PATH,
+        "detector_crop": PREVIEW_DETECTOR_CROP_PATH,
+        "model_input": PREVIEW_MODEL_INPUT_PATH,
+      },
+      "left_roi_norm": [round(float(v), 5) for v in LEFT_ROI],
+      "right_roi_norm": [round(float(v), 5) for v in RIGHT_ROI],
       "raw_left": raw_left,
       "raw_right": raw_right,
       "left_score": self.left_flag.score,
