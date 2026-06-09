@@ -22,7 +22,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.nkaoud_nav.adjacent_vehicle_detector import (
-  PREVIEW_PNG_PATH, PREVIEW_PNG_PATH_FULL, PREVIEW_PNG_PATH_LIMITED, PREVIEW_REQUEST_PATH,
+  BUF_GEOMETRY_PATH, PREVIEW_PNG_PATH, PREVIEW_PNG_PATH_FULL,
+  PREVIEW_PNG_PATH_LIMITED, PREVIEW_REQUEST_PATH,
 )
 from openpilot.sunnypilot.nkaoud_nav.token_server import get_local_ip
 
@@ -60,18 +61,44 @@ PAGE = b"""<!doctype html>
     </div>
   </div>
   <div id="stamp">--</div>
+  <pre id="geom" style="margin:16px auto; max-width:900px; background:#1a1a1a; color:#9ec; padding:12px;
+       border:1px solid #333; font-size:13px; text-align:left; white-space:pre-wrap; word-break:break-all;">
+loading buffer geometry...</pre>
   <script>
     const pf = document.getElementById('pf');
     const pl = document.getElementById('pl');
     const stamp = document.getElementById('stamp');
+    const geom = document.getElementById('geom');
     function tick() {
       const t = Date.now();
       pf.src = '/preview_full.png?t=' + t;
       pl.src = '/preview_limited.png?t=' + t;
       stamp.textContent = new Date().toLocaleTimeString();
     }
+    function refreshGeom() {
+      fetch('/geometry.json?t=' + Date.now()).then(r => r.ok ? r.json() : null).then(j => {
+        if (!j) { geom.textContent = 'geometry not yet written -- waiting for a frame...'; return; }
+        const lines = [
+          'NV12 buffer geometry (from VisionBuf):',
+          '  width            = ' + j.width,
+          '  height           = ' + j.height,
+          '  stride           = ' + j.stride + '  (Y row pitch in bytes)',
+          '  uv_offset        = ' + j.uv_offset + '  (UV plane start)',
+          '  uv_height        = ' + j.uv_height + '  (UV plane rows)',
+          '  uv_plane_size    = ' + j.uv_plane_size,
+          '  data_len         = ' + j.data_len,
+          '  y_plane (h*s)    = ' + (j.stride * j.height),
+          '  y_plane (32-al)  = ' + (j.stride * ((Math.floor((j.height + 31) / 32)) * 32)),
+          '  uv_offset == y_plane?         ' + (j.uv_offset_matches_y_plane ? 'YES' : 'no'),
+          '  uv_offset == y_plane(32-al)?  ' + (j.uv_offset_matches_y_plane_aligned ? 'YES' : 'no'),
+        ];
+        geom.textContent = lines.join('\\n');
+      }).catch(() => { geom.textContent = 'geometry fetch failed'; });
+    }
     pf.addEventListener('error', () => { stamp.textContent = 'waiting for detector...'; });
     setInterval(tick, 1000);
+    setInterval(refreshGeom, 2000);
+    refreshGeom();
   </script>
 </body></html>
 """
@@ -131,6 +158,18 @@ class PreviewWebServer:
             self.send_error(500, f"preview read failed: {e}")
             return
           self._send(data, "image/png")
+          return
+        if route == "/geometry.json":
+          try:
+            with open(BUF_GEOMETRY_PATH, "rb") as f:
+              data = f.read()
+          except FileNotFoundError:
+            self.send_error(404, "geometry not yet written")
+            return
+          except OSError as e:
+            self.send_error(500, f"geometry read failed: {e}")
+            return
+          self._send(data, "application/json")
           return
         self.send_error(404)
 

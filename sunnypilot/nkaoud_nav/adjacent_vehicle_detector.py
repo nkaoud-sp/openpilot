@@ -41,6 +41,7 @@ PREVIEW_REQUEST_PATH = "/tmp/nkaoud_vvd_preview.request"
 PREVIEW_PNG_PATH = "/tmp/nkaoud_vvd_preview.png"               # production (full range)
 PREVIEW_PNG_PATH_FULL = "/tmp/nkaoud_vvd_preview_full.png"
 PREVIEW_PNG_PATH_LIMITED = "/tmp/nkaoud_vvd_preview_limited.png"
+BUF_GEOMETRY_PATH = "/tmp/nkaoud_vvd_buf_geometry.json"
 DEFAULT_PKL_PATH = str(ARTIFACT_DIR / "visual_vehicle_detector_tinygrad.pkl")
 DEFAULT_ONNX_PATH = str(ARTIFACT_DIR / "visual_vehicle_detector.onnx")
 
@@ -254,6 +255,20 @@ class VisualVehicleDetector:
           "uv_plane_size=%d data_len=%d",
           width, height, stride, uv_offset, uv_height, uv_plane_size, dlen,
         )
+        # Also persist for the web preview page so the user can read these
+        # values without SSH access.
+        try:
+          import json as _json
+          with open(BUF_GEOMETRY_PATH, "w") as f:
+            _json.dump({
+              "width": width, "height": height, "stride": stride,
+              "uv_offset": uv_offset, "uv_height": uv_height,
+              "uv_plane_size": uv_plane_size, "data_len": dlen,
+              "uv_offset_matches_y_plane": uv_offset == stride * height,
+              "uv_offset_matches_y_plane_aligned": uv_offset == stride * (((height + 31) // 32) * 32),
+            }, f)
+        except OSError:
+          cloudlog.exception("visual vehicle detector failed to write geometry json")
         self._logged_buf_geometry = True
 
       # Slice buf.data as a memoryview FIRST, then wrap with np.array. This is
