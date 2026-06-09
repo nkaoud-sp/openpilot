@@ -23,6 +23,7 @@ META_PATH = MODEL_DIR / "visual_vehicle_detector_tinygrad.json"
 STATUS_PATH = MODEL_DIR / "visual_vehicle_detector_setup_status.json"
 
 DEFAULT_MODEL_640_URL = "https://github.com/ultralytics/yolov5/releases/download/v7.0/yolov5n.onnx"
+DEFAULT_MODEL_480_URL = "https://github.com/nkaoud-sp/resources/raw/refs/heads/main/yolov5n_480x480_v7.0.onnx"
 DEFAULT_MODEL_320_URL = "https://github.com/nkaoud-sp/resources/raw/refs/heads/main/yolov5n_320x320_v7.0.onnx"
 DEFAULT_MODEL_256_URL = "https://github.com/nkaoud-sp/resources/raw/refs/heads/main/yolov5n_256x256_v7.0.onnx"
 
@@ -97,6 +98,13 @@ def ensure_onnx(url: str = DEFAULT_MODEL_640_URL) -> None:
 
 def ensure_onnx_640() -> None:
   ensure_onnx(DEFAULT_MODEL_640_URL)
+
+
+def ensure_onnx_480() -> None:
+  if not DEFAULT_MODEL_480_URL:
+    write_status("error", "No 480x480 ONNX URL configured. Export a 480 ONNX and place it at /data/visual_vehicle_detector/visual_vehicle_detector.onnx, then tap Compile PKL.")
+    raise RuntimeError("No 480x480 ONNX URL configured")
+  ensure_onnx(DEFAULT_MODEL_480_URL)
 
 
 def ensure_onnx_320() -> None:
