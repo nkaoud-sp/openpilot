@@ -75,6 +75,15 @@ class VisualVehicleSettingsLayout(Widget):
       return tr("Retry 480 Download")
     return tr("Download 480 ONNX")
 
+  def _download_480x224_button_label(self) -> str:
+    with self._lock:
+      status = self._status
+    if status.startswith("Downloading"):
+      return tr("Downloading 480x224 ONNX...")
+    if status.startswith("error"):
+      return tr("Retry 480x224 Download")
+    return tr("Download 480x224 ONNX")
+
   def _download_320_button_label(self) -> str:
     with self._lock:
       status = self._status
@@ -126,6 +135,12 @@ class VisualVehicleSettingsLayout(Widget):
       return tr("Downloads a hosted 480x480 ONNX export and replaces the current ONNX before compile.")
     return tr("No 480x480 download URL is configured yet.")
 
+  def _download_480x224_description(self) -> str:
+    from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import DEFAULT_MODEL_480X224_URL
+    if DEFAULT_MODEL_480X224_URL:
+      return tr("Downloads a hosted 480x224 ONNX export and replaces the current ONNX before compile.")
+    return tr("No 480x224 download URL is configured yet.")
+
   def _download_320_description(self) -> str:
     from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import DEFAULT_MODEL_320_URL
     if DEFAULT_MODEL_320_URL:
@@ -174,6 +189,18 @@ class VisualVehicleSettingsLayout(Widget):
       from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import ensure_onnx_480
       self._set_status("Downloading 480 ONNX...")
       ensure_onnx_480()
+      self._set_status(self._load_status_message())
+    except Exception as e:
+      self._set_status(f"error: download failed: {e}")
+    finally:
+      with self._lock:
+        self._worker = None
+
+  def _run_download_480x224(self) -> None:
+    try:
+      from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import ensure_onnx_480x224
+      self._set_status("Downloading 480x224 ONNX...")
+      ensure_onnx_480x224()
       self._set_status(self._load_status_message())
     except Exception as e:
       self._set_status(f"error: download failed: {e}")
@@ -234,6 +261,9 @@ class VisualVehicleSettingsLayout(Widget):
   def _trigger_download_480(self) -> None:
     self._start_worker(self._run_download_480)
 
+  def _trigger_download_480x224(self) -> None:
+    self._start_worker(self._run_download_480x224)
+
   def _trigger_download_320(self) -> None:
     self._start_worker(self._run_download_320)
 
@@ -265,6 +295,18 @@ class VisualVehicleSettingsLayout(Widget):
         button_text=lambda: self._download_480_button_label(),
         button_width=800,
         callback=lambda: self._trigger_download_480(),
+      ),
+    )
+
+    self._download_model_480x224 = ListItemSP(
+      title=lambda: tr("Detector ONNX (480x224)"),
+      description=lambda: self._download_480x224_description(),
+      description_visible=True,
+      inline=False,
+      action_item=SimpleButtonActionSP(
+        button_text=lambda: self._download_480x224_button_label(),
+        button_width=800,
+        callback=lambda: self._trigger_download_480x224(),
       ),
     )
 
@@ -338,6 +380,7 @@ class VisualVehicleSettingsLayout(Widget):
     return [
       self._download_model,
       self._download_model_480,
+      self._download_model_480x224,
       self._download_model_320,
       self._download_model_256,
       self._compile_model,
