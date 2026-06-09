@@ -328,6 +328,23 @@ class VisualVehicleDetector:
 
     return []
 
+  def _set_best_raw_debug(self, cls_i: int, score_f: float, mapped: tuple[float, float, float, float],
+                          image_w: int, image_h: int) -> None:
+    raw_vehicle = cls_i in VEHICLE_CLASS_IDS
+    raw_left_roi = self._box_in_roi(mapped, LEFT_ROI, image_w, image_h)
+    raw_right_roi = self._box_in_roi(mapped, RIGHT_ROI, image_w, image_h)
+    x1, y1, x2, y2 = mapped
+    self.last_model_debug.update({
+      "raw_best_class_id": cls_i,
+      "raw_best_conf": round(score_f, 5),
+      "raw_best_box": [round(x1, 1), round(y1, 1), round(x2, 1), round(y2, 1)],
+      "raw_best_vehicle": raw_vehicle,
+      "raw_best_left_roi": raw_left_roi,
+      "raw_best_right_roi": raw_right_roi,
+      "raw_best_center_x": round((x1 + x2) * 0.5 / max(1.0, image_w), 5),
+      "raw_best_center_y": round((y1 + y2) * 0.5 / max(1.0, image_h), 5),
+    })
+
   def _map_box_to_source(self, box: tuple[float, float, float, float], prep: dict[str, float | int]) -> tuple[float, float, float, float]:
     scale = float(prep["scale"])
     pad_x = float(prep["pad_x"])
@@ -354,9 +371,16 @@ class VisualVehicleDetector:
     detections: list[Detection] = []
     if arr.ndim != 2:
       return detections
+    image_w = int(prep["src_w"])
+    image_h = int(prep["src_h"])
 
     # Case A: already NMSed [x1, y1, x2, y2, score, class].
     if arr.shape[1] == 6:
+      if arr.shape[0]:
+        best_idx = int(np.argmax(arr[:, 4]))
+        best_row = arr[best_idx]
+        best_box = self._map_box_to_source(tuple(float(v) for v in best_row[:4]), prep)
+        self._set_best_raw_debug(int(best_row[5]), float(best_row[4]), best_box, image_w, image_h)
       for row in arr:
         score = float(row[4])
         cls = int(row[5])
@@ -383,6 +407,12 @@ class VisualVehicleDetector:
         "raw_best_cls": round(float(np.max(cls_confs)), 5) if cls_confs.size else 0.0,
         "raw_best_conf": round(float(np.max(confs)), 5) if confs.size else 0.0,
       })
+      if confs.size:
+        best_idx = int(np.argmax(confs))
+        best_cls_i = int(cls_ids[best_idx])
+        cx, cy, bw, bh = [float(v) for v in boxes[best_idx]]
+        best_mapped = self._map_box_to_source((cx - bw / 2.0, cy - bh / 2.0, cx + bw / 2.0, cy + bh / 2.0), prep)
+        self._set_best_raw_debug(best_cls_i, float(confs[best_idx]), best_mapped, image_w, image_h)
 
       for box, cls, score in zip(boxes, cls_ids, confs):
         cls_i = int(cls)
@@ -405,6 +435,12 @@ class VisualVehicleDetector:
         "parser": "yolov8_raw",
         "raw_best_conf": round(float(np.max(confs)), 5) if confs.size else 0.0,
       })
+      if confs.size:
+        best_idx = int(np.argmax(confs))
+        best_cls_i = int(cls_ids[best_idx])
+        cx, cy, bw, bh = [float(v) for v in boxes[best_idx]]
+        best_mapped = self._map_box_to_source((cx - bw / 2.0, cy - bh / 2.0, cx + bw / 2.0, cy + bh / 2.0), prep)
+        self._set_best_raw_debug(best_cls_i, float(confs[best_idx]), best_mapped, image_w, image_h)
 
       for box, cls, score in zip(boxes, cls_ids, confs):
         cls_i = int(cls)

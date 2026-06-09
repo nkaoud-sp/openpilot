@@ -92,17 +92,42 @@ class VisualVehicleReadout:
       ("OBJ", str(debug.get("raw_best_obj", "--")), _WHITE),
       ("CLASS", str(debug.get("raw_best_cls", "--")), _WHITE),
       ("RAWCONF", str(debug.get("raw_best_conf", "--")), _WHITE),
+      ("BESTCLS", str(debug.get("raw_best_class_id", "--")), _WHITE),
+      ("VEH?", "YES" if debug.get("raw_best_vehicle") else "NO", _WHITE),
+      ("ROI", f"L{'Y' if debug.get('raw_best_left_roi') else 'N'}/R{'Y' if debug.get('raw_best_right_roi') else 'N'}", _WHITE),
+      ("BOX", self._format_box(debug.get("raw_best_box")), _WHITE),
       ("PKL", "YES" if debug.get("pkl_exists", True) else "NO", _WHITE),
       ("ONNX", "YES" if debug.get("onnx_exists", True) else "NO", _WHITE),
     ]
     self._render_panel(rect, rows, "VISUAL VEHICLE DETECTOR", side="right")
     self._render_panel(rect, raw_rows, "VISUAL RAW DEBUG", side="left")
+    self._render_marker(rect, debug)
 
   @staticmethod
   def _format_shape(shape) -> str:
     if isinstance(shape, list) and shape:
       return "x".join(str(v) for v in shape)
     return "--"
+
+  @staticmethod
+  def _format_box(box) -> str:
+    if isinstance(box, list) and len(box) == 4:
+      return f"{int(box[0])},{int(box[1])},{int(box[2])},{int(box[3])}"
+    return "--"
+
+  def _render_marker(self, rect: rl.Rectangle, debug: dict):
+    cx = debug.get("raw_best_center_x")
+    cy = debug.get("raw_best_center_y")
+    if not isinstance(cx, (int, float)) or not isinstance(cy, (int, float)):
+      return
+
+    x = rect.x + float(cx) * rect.width
+    y = rect.y + float(cy) * rect.height
+    color = _GREEN if debug.get("raw_best_vehicle") else _AMBER
+    color = rl.Color(color.r, color.g, color.b, int(color.a * self._alpha))
+    rl.draw_circle_lines(int(x), int(y), 18, color)
+    rl.draw_line(int(x) - 8, int(y), int(x) + 8, int(y), color)
+    rl.draw_line(int(x), int(y) - 8, int(x), int(y) + 8, color)
 
   def _render_panel(self, rect: rl.Rectangle, rows, title: str, side: str = "right"):
     a = self._alpha
@@ -116,7 +141,6 @@ class VisualVehicleReadout:
     def fade(c: rl.Color) -> rl.Color:
       return rl.Color(c.r, c.g, c.b, int(c.a * a))
 
-    title = "VISUAL VEHICLE DETECTOR"
     title_w = measure_text_cached(self._title_font, title, title_size, 0).x
     cap_w = max(measure_text_cached(self._cap_font, cap, cap_size, 0).x for cap, _, _ in rows)
     val_w = max(measure_text_cached(self._val_font, val, val_size, 0).x for _, val, _ in rows)
