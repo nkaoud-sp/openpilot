@@ -23,7 +23,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.nkaoud_nav.adjacent_vehicle_detector import (
   BUF_GEOMETRY_PATH, PREVIEW_PNG_PATH, PREVIEW_PNG_PATH_FULL,
-  PREVIEW_PNG_PATH_LIMITED, PREVIEW_REQUEST_PATH,
+  PREVIEW_PNG_PATH_LIMITED, PREVIEW_RAW_U_PATH, PREVIEW_RAW_V_PATH,
+  PREVIEW_RAW_Y_PATH, PREVIEW_REQUEST_PATH,
 )
 from openpilot.sunnypilot.nkaoud_nav.token_server import get_local_ip
 
@@ -60,6 +61,22 @@ PAGE = b"""<!doctype html>
       <img id="pl" src="/preview_limited.png" alt="(waiting...)">
     </div>
   </div>
+  <h3 style="text-align:center; margin:24px 0 4px 0;">Raw planes (grayscale)</h3>
+  <p class="lead">Y is luma. U bright = blue-ish, dark = yellow-ish. V bright = red-ish, dark = cyan-ish. Watch for shearing, doubled rows, or speckle in flat regions -- those are stride / alignment bugs.</p>
+  <div class="row">
+    <div class="col">
+      <div class="label good">Y (luma, full-res)</div>
+      <img id="ry" src="/raw_y.png" alt="(waiting...)">
+    </div>
+    <div class="col">
+      <div class="label good">U (chroma, quarter-res)</div>
+      <img id="ru" src="/raw_u.png" alt="(waiting...)">
+    </div>
+    <div class="col">
+      <div class="label good">V (chroma, quarter-res)</div>
+      <img id="rv" src="/raw_v.png" alt="(waiting...)">
+    </div>
+  </div>
   <div id="stamp">--</div>
   <pre id="geom" style="margin:16px auto; max-width:900px; background:#1a1a1a; color:#9ec; padding:12px;
        border:1px solid #333; font-size:13px; text-align:left; white-space:pre-wrap; word-break:break-all;">
@@ -69,10 +86,16 @@ loading buffer geometry...</pre>
     const pl = document.getElementById('pl');
     const stamp = document.getElementById('stamp');
     const geom = document.getElementById('geom');
+    const ry = document.getElementById('ry');
+    const ru = document.getElementById('ru');
+    const rv = document.getElementById('rv');
     function tick() {
       const t = Date.now();
       pf.src = '/preview_full.png?t=' + t;
       pl.src = '/preview_limited.png?t=' + t;
+      ry.src = '/raw_y.png?t=' + t;
+      ru.src = '/raw_u.png?t=' + t;
+      rv.src = '/raw_v.png?t=' + t;
       stamp.textContent = new Date().toLocaleTimeString();
     }
     function refreshGeom() {
@@ -146,6 +169,9 @@ class PreviewWebServer:
           "/preview.png":          PREVIEW_PNG_PATH,
           "/preview_full.png":     PREVIEW_PNG_PATH_FULL,
           "/preview_limited.png":  PREVIEW_PNG_PATH_LIMITED,
+          "/raw_y.png":            PREVIEW_RAW_Y_PATH,
+          "/raw_u.png":            PREVIEW_RAW_U_PATH,
+          "/raw_v.png":            PREVIEW_RAW_V_PATH,
         }.get(route)
         if png_path is not None:
           try:

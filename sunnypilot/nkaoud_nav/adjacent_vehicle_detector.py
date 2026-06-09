@@ -41,6 +41,9 @@ PREVIEW_REQUEST_PATH = "/tmp/nkaoud_vvd_preview.request"
 PREVIEW_PNG_PATH = "/tmp/nkaoud_vvd_preview.png"               # production (full range)
 PREVIEW_PNG_PATH_FULL = "/tmp/nkaoud_vvd_preview_full.png"
 PREVIEW_PNG_PATH_LIMITED = "/tmp/nkaoud_vvd_preview_limited.png"
+PREVIEW_RAW_Y_PATH = "/tmp/nkaoud_vvd_raw_y.png"
+PREVIEW_RAW_U_PATH = "/tmp/nkaoud_vvd_raw_u.png"
+PREVIEW_RAW_V_PATH = "/tmp/nkaoud_vvd_raw_v.png"
 BUF_GEOMETRY_PATH = "/tmp/nkaoud_vvd_buf_geometry.json"
 DEFAULT_PKL_PATH = str(ARTIFACT_DIR / "visual_vehicle_detector_tinygrad.pkl")
 DEFAULT_ONNX_PATH = str(ARTIFACT_DIR / "visual_vehicle_detector.onnx")
@@ -344,6 +347,17 @@ class VisualVehicleDetector:
     # view so any older client still works.
     Image.fromarray(canvas_full, "RGB").save(PREVIEW_PNG_PATH)
 
+  def _write_raw_planes(self, y: np.ndarray, u: np.ndarray, v: np.ndarray) -> None:
+    """Dump Y, U, V as grayscale PNGs for visual diagnosis of stride / row
+    alignment / range issues that aren't visible in the composited RGB."""
+    from PIL import Image
+    y8 = np.clip(y, 0, 255).astype(np.uint8)
+    u8 = np.clip(u, 0, 255).astype(np.uint8)
+    v8 = np.clip(v, 0, 255).astype(np.uint8)
+    Image.fromarray(y8, "L").save(PREVIEW_RAW_Y_PATH)
+    Image.fromarray(u8, "L").save(PREVIEW_RAW_U_PATH)
+    Image.fromarray(v8, "L").save(PREVIEW_RAW_V_PATH)
+
   def _letterbox(self, rgb: np.ndarray) -> tuple[np.ndarray, int, int, float]:
     w, h = self.input_shape
     src_h, src_w = rgb.shape[:2]
@@ -579,12 +593,15 @@ class VisualVehicleDetector:
       right = self.right_flag.update(False)
       return left, right, {"reason": "frame_convert_failed", "runtime": self.runtime}
 
-    # Live preview: write both BT.601 conversions so the user can A/B them.
-    # Only active while the dialog/web server holds the request sentinel.
+    # Live preview: write both BT.601 conversions so the user can A/B them,
+    # plus the raw Y/U/V planes as grayscale so we can spot stride or row
+    # alignment issues that the composited RGB hides. Only active while the
+    # dialog/web server holds the request sentinel.
     if os.path.exists(PREVIEW_REQUEST_PATH):
       try:
         rgb_limited = self._yuv_to_rgb(*planes, full_range=False)
         self._write_preview_pair(rgb, rgb_limited)
+        self._write_raw_planes(*planes)
       except Exception:
         cloudlog.exception("visual vehicle detector live preview write failed")
 
