@@ -9,11 +9,16 @@ import threading
 import time
 
 import pyray as rl
+from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.sunnypilot.widgets.list_view import toggle_item_sp, ListItemSP, SimpleButtonActionSP
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.network import NavButton
 from openpilot.system.ui.widgets.scroller_tici import Scroller
+
+from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.nav_token_qr_dialog import (
+  VisualVehiclePreviewQrDialog,
+)
 
 
 class VisualVehicleSettingsLayout(Widget):
@@ -275,6 +280,19 @@ class VisualVehicleSettingsLayout(Widget):
                             "off for normal driving tests."),
       param="VisualVehicleDetectorLogDebug",
     )
+    self._live_preview = ListItemSP(
+      title=lambda: tr("Live Preview"),
+      description=lambda: tr("Shows a QR + URL for a phone browser view of the exact 320x320 RGB tensor the "
+                             "detector sees, so you can sanity-check the NV12->RGB conversion and letterbox. "
+                             "The preview is written only while this dialog is open."),
+      description_visible=True,
+      inline=False,
+      action_item=SimpleButtonActionSP(
+        button_text=lambda: tr("Open Detector Preview"),
+        button_width=800,
+        callback=lambda: gui_app.push_widget(VisualVehiclePreviewQrDialog()),
+      ),
+    )
     return [
       self._download_model,
       self._download_model_320,
@@ -283,6 +301,7 @@ class VisualVehicleSettingsLayout(Widget):
       self._readout,
       self._allow_onnx,
       self._debug_log,
+      self._live_preview,
     ]
 
   def _render(self, rect):

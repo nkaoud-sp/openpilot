@@ -17,6 +17,7 @@ import qrcode
 from openpilot.sunnypilot.nkaoud_nav.token_server import (
   ParamWebServer, mapbox_token_server, share_endpoint_server,
 )
+from openpilot.sunnypilot.nkaoud_nav.preview_server import visual_vehicle_preview_server
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.lib.text_measure import measure_text_cached
@@ -189,4 +190,15 @@ def NavShareEndpointQrDialog() -> NavParamQrDialog:
     server=share_endpoint_server(),
     title_text=tr("Set Neon Connection String"),
     hint_text=tr("Scan with your phone, then paste your Neon connection string. The page shows the required table layout."),
+  )
+
+
+def VisualVehiclePreviewQrDialog() -> NavParamQrDialog:
+  # Reuses NavParamQrDialog: the preview server is duck-typed compatible
+  # with ParamWebServer (start/stop/url/token_saved). token_saved is never
+  # set, so the dialog stays on QR view until the user taps Cancel.
+  return NavParamQrDialog(
+    server=visual_vehicle_preview_server(),
+    title_text=tr("Detector Live Preview"),
+    hint_text=tr("Scan with your phone to view the exact 320x320 RGB tensor the detector sees. Refreshes every second."),
   )

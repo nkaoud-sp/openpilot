@@ -36,6 +36,10 @@ from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import MODEL_DIR as AR
 from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
 
 STATE_PATH = Path("/tmp/nkaoud_visual_vehicle_detector.json")
+# Live preview: the UI dialog/web server touches the request file while open,
+# the detector writes the latest letterboxed RGB tensor to the PNG path.
+PREVIEW_REQUEST_PATH = "/tmp/nkaoud_vvd_preview.request"
+PREVIEW_PNG_PATH = "/tmp/nkaoud_vvd_preview.png"
 DEFAULT_PKL_PATH = str(ARTIFACT_DIR / "visual_vehicle_detector_tinygrad.pkl")
 DEFAULT_ONNX_PATH = str(ARTIFACT_DIR / "visual_vehicle_detector.onnx")
 
@@ -278,8 +282,7 @@ class VisualVehicleDetector:
     pad_x = (w - new_w) // 2
     pad_y = (h - new_h) // 2
     canvas[pad_y:pad_y + new_h, pad_x:pad_x + new_w] = resized
-    # Opt-in one-shot dump of the exact letterboxed RGB tensor the model sees,
-    # so the NV12->RGB conversion and letterbox can be eyeballed on device.
+    # Optional one-shot dump (env-controlled).
     dump = os.getenv("NKAOUD_VISUAL_VEHICLE_DUMP_PREPROC", "")
     if dump and not self._preproc_dumped:
       try:
@@ -289,7 +292,16 @@ class VisualVehicleDetector:
         cloudlog.warning("visual vehicle detector wrote preproc dump to %s", dump)
       except Exception:
         cloudlog.exception("visual vehicle detector preproc dump failed")
-        self._preproc_dumped = True  # don't keep retrying on every frame
+        self._preproc_dumped = True
+    # Live preview for the web portal: only write while the preview server
+    # is up (sentinel file is touched on server start, removed on stop).
+    # /tmp is tmpfs on comma so the per-frame write costs no flash wear.
+    if os.path.exists(PREVIEW_REQUEST_PATH):
+      try:
+        from PIL import Image
+        Image.fromarray(canvas, "RGB").save(PREVIEW_PNG_PATH)
+      except Exception:
+        cloudlog.exception("visual vehicle detector live preview write failed")
     x = canvas.astype(np.float32) / 255.0
     x = np.transpose(x, (2, 0, 1))[None]
     prep = {
