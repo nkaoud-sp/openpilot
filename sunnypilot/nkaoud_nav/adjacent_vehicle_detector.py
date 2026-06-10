@@ -927,6 +927,15 @@ class VisualVehicleDetector:
       return False
     return rx1 <= cx <= rx2 and ry1 <= bottom <= ry2
 
+  def _orient(self, rgb: np.ndarray) -> np.ndarray:
+    # The driver camera is mirrored vs. the world (selfie view). Un-mirror it so
+    # image-right == world-right, matching the road/wide cameras. Done here, on
+    # the full RGB frame, so the crop, ROI, detections and previews all operate
+    # on the corrected image.
+    if self.camera == "driver":
+      return np.ascontiguousarray(rgb[:, ::-1])
+    return rgb
+
   def update(self, buf: VisionBuf) -> tuple[bool, bool, dict[str, Any]]:
     self._refresh_tuning()
     planes = self._vipc_to_yuv_planes(buf)
@@ -935,7 +944,7 @@ class VisualVehicleDetector:
       right = self.right_flag.update(False)
       return left, right, {"reason": "frame_convert_failed", "runtime": self.runtime}
     try:
-      rgb = self._yuv_to_rgb(*planes, full_range=True)
+      rgb = self._orient(self._yuv_to_rgb(*planes, full_range=True))
     except Exception:
       cloudlog.exception("visual vehicle detector failed YUV->RGB conversion")
       left = self.left_flag.update(False)
@@ -952,7 +961,7 @@ class VisualVehicleDetector:
     # holds the request sentinel.
     if os.path.exists(PREVIEW_REQUEST_PATH):
       try:
-        rgb_limited = self._yuv_to_rgb(*planes, full_range=False)
+        rgb_limited = self._orient(self._yuv_to_rgb(*planes, full_range=False))
         self._write_preview_pair(rgb, rgb_limited)
         self._write_raw_planes(*planes)
         self._write_detector_previews(rgb, detector_rgb, crop_debug, detections)
