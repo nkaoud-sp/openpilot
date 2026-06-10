@@ -116,8 +116,23 @@ DEFAULT_HZ = float(max(1, min(5, int(_env_float("NKAOUD_VISUAL_VEHICLE_HZ", 1.0)
 
 # Live tuning: a small JSON the web portal writes and the detector re-reads
 # (mtime-gated) every frame, so ROI/gate/confidence can be adjusted on-road
-# without a restart. Persisted under /data so it survives reboots.
+# without a restart. Persisted under /data so it survives reboots. The file is
+# keyed by camera ("road"/"wide"/"driver") since each has its own FOV/geometry.
 TUNING_PATH = str(ARTIFACT_DIR / "vvd_tuning.json")
+
+# Selectable camera sources (index matches the VisualVehicleDetectorCamera param
+# and the UI selector order).
+CAMERAS = ["road", "wide", "driver"]
+CAMERA_PARAM = "VisualVehicleDetectorCamera"
+
+
+def active_camera(params: Params | None = None) -> str:
+  p = params if params is not None else Params()
+  try:
+    idx = int(p.get(CAMERA_PARAM, return_default=True) or 0)
+  except (TypeError, ValueError):
+    idx = 0
+  return CAMERAS[idx] if 0 <= idx < len(CAMERAS) else CAMERAS[0]
 
 # key -> (min, max) clamp range. Crop values are pixels; _crop_detector_region
 # clamps them again to the actual frame size.
@@ -154,25 +169,34 @@ TUNING_DEFAULTS: dict[str, float] = {
 }
 
 
-def load_tuning() -> dict[str, float]:
-  """Current tuning values, defaults filled in for any missing/invalid keys."""
-  values = dict(TUNING_DEFAULTS)
+def _load_all_tuning() -> dict[str, Any]:
   try:
     data = json.loads(Path(TUNING_PATH).read_text())
+    return data if isinstance(data, dict) else {}
   except Exception:
-    return values
-  for key in TUNING_KEYS:
-    if key in data:
-      try:
-        values[key] = float(data[key])
-      except (TypeError, ValueError):
-        continue
+    return {}
+
+
+def load_tuning(camera: str | None = None) -> dict[str, float]:
+  """Tuning values for `camera` (or the active one), defaults filled in."""
+  cam = camera or active_camera()
+  values = dict(TUNING_DEFAULTS)
+  data = _load_all_tuning().get(cam, {})
+  if isinstance(data, dict):
+    for key in TUNING_KEYS:
+      if key in data:
+        try:
+          values[key] = float(data[key])
+        except (TypeError, ValueError):
+          continue
   return values
 
 
-def save_tuning(updates: dict[str, Any]) -> dict[str, float]:
-  """Merge `updates` into the current tuning, clamp to valid ranges, persist."""
-  values = load_tuning()
+def save_tuning(updates: dict[str, Any], camera: str | None = None) -> dict[str, float]:
+  """Merge `updates` into `camera`'s tuning, clamp to valid ranges, persist."""
+  cam = camera or active_camera()
+  all_data = _load_all_tuning()
+  values = load_tuning(cam)
   for key, raw in updates.items():
     if key not in TUNING_KEYS:
       continue
@@ -181,10 +205,11 @@ def save_tuning(updates: dict[str, Any]) -> dict[str, float]:
       values[key] = min(hi, max(lo, float(raw)))
     except (TypeError, ValueError):
       continue
+  all_data[cam] = values
   try:
     path = Path(TUNING_PATH)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(values, separators=(",", ":")))
+    path.write_text(json.dumps(all_data, separators=(",", ":")))
   except OSError:
     cloudlog.exception("visual vehicle detector failed to write tuning file")
   return values
@@ -254,19 +279,22 @@ class VisualVehicleDetector:
     self.crop_y = DEFAULT_CROP_Y
     self.crop_w = DEFAULT_CROP_W
     self.crop_h = DEFAULT_CROP_H
+    self.camera = active_camera(self.params)
     self._tuning_mtime = -1.0
     self._refresh_tuning()
 
   def _refresh_tuning(self) -> None:
-    """Re-read the tuning file if it changed; cheap stat() per frame."""
+    """Re-read tuning for the active camera if file or selection changed."""
+    cam = active_camera(self.params)
     try:
       mtime = os.path.getmtime(TUNING_PATH)
     except OSError:
-      return  # no tuning file yet: keep env/defaults
-    if mtime == self._tuning_mtime:
+      mtime = -1.0
+    if cam == self.camera and mtime == self._tuning_mtime:
       return
+    self.camera = cam
     self._tuning_mtime = mtime
-    t = load_tuning()
+    t = load_tuning(cam)
     self.right_roi = (t["right_x1"], t["right_y1"], t["right_x2"], t["right_y2"])
     self.min_box_w_frac = t["min_box_w"]
     self.min_box_h_frac = t["min_box_h"]
@@ -959,6 +987,14 @@ class VisualVehicleDetector:
     debug.update(self.last_model_debug)
     return left, right, debug
 
+  @staticmethod
+  def _stream_for(camera: str) -> Any:
+    return {
+      "road": VisionStreamType.VISION_STREAM_ROAD,
+      "wide": VisionStreamType.VISION_STREAM_WIDE_ROAD,
+      "driver": VisionStreamType.VISION_STREAM_DRIVER,
+    }.get(camera, VisionStreamType.VISION_STREAM_ROAD)
+
   def run(self) -> None:
     self.log_debug = self.params.get_bool("VisualVehicleDetectorLogDebug")
     if not self._load_runtime():
@@ -969,30 +1005,38 @@ class VisualVehicleDetector:
         self._write_state(False, False, self.startup_debug)
         rk.keep_time()
 
-    while True:
-      streams = VisionIpcClient.available_streams("camerad", block=False)
-      if VisionStreamType.VISION_STREAM_WIDE_ROAD in streams:
-        stream = VisionStreamType.VISION_STREAM_WIDE_ROAD
-        break
-      if VisionStreamType.VISION_STREAM_ROAD in streams:
-        stream = VisionStreamType.VISION_STREAM_ROAD
-        break
-      self._write_state(False, False, {"reason": "waiting_for_camera", "runtime": self.runtime})
-      time.sleep(0.2)
-
     # Always consume only the freshest frame; this detector should drop old
     # frames instead of competing with modeld by trying to catch up.
-    vipc_client = VisionIpcClient("camerad", stream, True)
-    while not vipc_client.connect(False):
-      self._write_state(False, False, {"reason": "waiting_for_vipc", "runtime": self.runtime})
-      time.sleep(0.1)
-
-    cloudlog.warning("visual vehicle detector connected stream=%s size=%sx%s runtime=%s",
-                     stream, vipc_client.width, vipc_client.height, self.runtime)
+    vipc_client = None
+    stream = None
+    connected_camera = None
     rk = Ratekeeper(float(self.detector_hz))
     current_hz = self.detector_hz
     last_frame_id = -1
     while True:
+      # (Re)connect when the selected camera changes or we are not connected.
+      desired_camera = active_camera(self.params)
+      if vipc_client is None or desired_camera != connected_camera:
+        stream = self._stream_for(desired_camera)
+        if stream not in VisionIpcClient.available_streams("camerad", block=False):
+          self._write_state(False, False, {"reason": "camera_unavailable", "camera": desired_camera,
+                                            "runtime": self.runtime})
+          time.sleep(0.2)
+          continue
+        vipc_client = VisionIpcClient("camerad", stream, True)
+        if not vipc_client.connect(False):
+          vipc_client = None
+          self._write_state(False, False, {"reason": "waiting_for_vipc", "camera": desired_camera,
+                                            "runtime": self.runtime})
+          time.sleep(0.1)
+          continue
+        connected_camera = desired_camera
+        last_frame_id = -1
+        self.left_flag = DebouncedFlag()
+        self.right_flag = DebouncedFlag()
+        cloudlog.warning("visual vehicle detector connected camera=%s stream=%s size=%sx%s runtime=%s",
+                         desired_camera, stream, vipc_client.width, vipc_client.height, self.runtime)
+
       new_log_debug = self.params.get_bool("VisualVehicleDetectorLogDebug")
       if new_log_debug != self.log_debug:
         self.log_debug = new_log_debug
@@ -1004,7 +1048,8 @@ class VisualVehicleDetector:
 
       buf = vipc_client.recv()
       if buf is None:
-        self._write_state(False, False, {"reason": "no_frame", "runtime": self.runtime})
+        self._write_state(False, False, {"reason": "no_frame", "camera": connected_camera,
+                                          "runtime": self.runtime})
         rk.keep_time()
         continue
       if vipc_client.frame_id == last_frame_id:
@@ -1015,6 +1060,7 @@ class VisualVehicleDetector:
         left, right, debug = self.update(buf)
         debug["frame_id"] = int(vipc_client.frame_id)
         debug["stream"] = str(stream)
+        debug["camera"] = connected_camera
         self._write_state(left, right, debug)
         if self.log_debug:
           cloudlog.info("visual_vehicle_detector left=%s right=%s debug=%s", left, right, debug)

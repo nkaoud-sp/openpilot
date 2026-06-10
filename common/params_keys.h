@@ -177,6 +177,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"VisualVehicleDetectorReadout", {PERSISTENT | BACKUP, BOOL, "0"}}, // large on-road readout for detector status/debug
     {"VisualVehicleDetectorAllowOnnx", {PERSISTENT | BACKUP, BOOL, "0"}}, // CPU ONNX fallback for debug only; pkl preferred on comma3x
     {"VisualVehicleDetectorLogDebug", {PERSISTENT | BACKUP, BOOL, "0"}}, // extra detector cloudlog output
+    {"VisualVehicleDetectorCamera", {PERSISTENT | BACKUP, INT, "0"}}, // detector source: 0=road 1=wide 2=driver
     {"ParkAssist", {PERSISTENT | BACKUP, BOOL, "0"}},             // closer standstill gap behind a stopped lead
     {"ParkDistance", {PERSISTENT | BACKUP, INT, "300"}},          // standstill gap (cm) when park assist active
     {"ParkAssistMode", {PERSISTENT | BACKUP, INT, "0"}},          // 0 = from full stop, 1 = any low-speed following

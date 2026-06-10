@@ -11,7 +11,9 @@ import time
 import pyray as rl
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr
-from openpilot.system.ui.sunnypilot.widgets.list_view import toggle_item_sp, ListItemSP, SimpleButtonActionSP
+from openpilot.system.ui.sunnypilot.widgets.list_view import (
+  multiple_button_item_sp, toggle_item_sp, ListItemSP, SimpleButtonActionSP,
+)
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.network import NavButton
 from openpilot.system.ui.widgets.scroller_tici import Scroller
@@ -349,6 +351,14 @@ class VisualVehicleSettingsLayout(Widget):
       ),
     )
 
+    self._camera_source = multiple_button_item_sp(
+      title=lambda: tr("Camera Source"),
+      description=lambda: tr("Which camera the detector runs on. Each camera keeps its own crop / ROI / gate "
+                             "profile, and the tuning portals edit whichever camera is selected here. "
+                             "Road = normal forward, Wide = wide angle, Driver = cabin / driver-monitoring."),
+      buttons=[lambda: tr("Road"), lambda: tr("Wide"), lambda: tr("Driver")],
+      param="VisualVehicleDetectorCamera",
+    )
     self._readout = toggle_item_sp(
       title=lambda: tr("Show Detector Readout"),
       description=lambda: tr("Draw a large on-road debug panel with left/right vehicle status, stale state, "
@@ -426,6 +436,7 @@ class VisualVehicleSettingsLayout(Widget):
       self._download_model_320,
       self._download_model_256,
       self._compile_model,
+      self._camera_source,
       self._readout,
       self._allow_onnx,
       self._debug_log,

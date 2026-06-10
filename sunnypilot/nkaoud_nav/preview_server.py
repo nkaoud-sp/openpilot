@@ -28,7 +28,7 @@ from openpilot.sunnypilot.nkaoud_nav.adjacent_vehicle_detector import (
   PREVIEW_MODEL_INPUT_PATH, PREVIEW_PNG_PATH, PREVIEW_PNG_PATH_FULL,
   PREVIEW_PNG_PATH_LIMITED, PREVIEW_RAW_U_PATH, PREVIEW_RAW_V_PATH,
   PREVIEW_RAW_Y_PATH, PREVIEW_REQUEST_PATH, TUNING_DEFAULTS, TUNING_KEYS,
-  load_tuning, save_tuning,
+  active_camera, load_tuning, save_tuning,
 )
 from openpilot.sunnypilot.nkaoud_nav.token_server import get_local_ip
 
@@ -369,7 +369,9 @@ CROP_KEYS = ["crop_x", "crop_y", "crop_w", "crop_h", "hz"]
 
 
 def _tuning_json() -> bytes:
-  return json.dumps(load_tuning()).encode()
+  # "_camera" lets the portal show which camera profile it is editing; apply()
+  # ignores keys that aren't sliders.
+  return json.dumps({**load_tuning(), "_camera": active_camera()}).encode()
 
 
 def _tuning_post(route: str, body: bytes) -> tuple[int, str, bytes]:
@@ -454,6 +456,7 @@ _PAGE_TEMPLATE = """<!doctype html>
 <body>
   <h2>__TITLE__</h2>
   <p class="lead">__LEAD__</p>
+  <p class="lead">Camera profile: <b id="cam" style="color:#9bdca8;">--</b> (set the camera under Vision Detection settings)</p>
   <div class="imgs">__IMAGES_HTML__</div>
   <div class="controls" id="controls"></div>
   <div class="btns"><button id="reset">Reset to defaults</button></div>
@@ -483,6 +486,7 @@ _PAGE_TEMPLATE = """<!doctype html>
       });
     });
     function apply(state) {
+      if (state._camera) document.getElementById('cam').textContent = state._camera;
       SLIDERS.forEach(s => {
         if (state[s.key] === undefined) return;
         els[s.key].inp.value = state[s.key];
@@ -495,7 +499,15 @@ _PAGE_TEMPLATE = """<!doctype html>
         .then(r => r.ok ? r.json() : null).then(j => { if (j) apply(j); }).catch(() => {});
     }
     document.getElementById('reset').addEventListener('click', () => post(DEFAULTS));
-    fetch('/tuning.json').then(r => r.json()).then(apply).catch(() => {});
+    let curCam = null;
+    fetch('/tuning.json').then(r => r.json()).then(state => { curCam = state._camera; apply(state); }).catch(() => {});
+    // Reload sliders only when the selected camera changes (avoids overwriting
+    // a slider mid-drag while still tracking external camera switches).
+    setInterval(() => {
+      fetch('/tuning.json').then(r => r.json()).then(state => {
+        if (state._camera && state._camera !== curCam) { curCam = state._camera; apply(state); }
+      }).catch(() => {});
+    }, 1500);
     const imgEls = IMAGES.map(im => document.getElementById(im.id));
     const stamp = document.getElementById('stamp');
     if (imgEls[0]) imgEls[0].addEventListener('error', () => { stamp.textContent = 'waiting for detector...'; });
