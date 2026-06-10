@@ -307,15 +307,13 @@ class VisualVehicleDetector:
       y = np.array(buf.data[:uv_offset], dtype=np.uint8) \
             .reshape((-1, stride))[:height, :width].astype(np.int32)
       uv_data = buf.data[uv_offset:uv_offset + uv_plane_size]
-      # The Spectra/BPS chroma output is actually NV21 (V,U interleaved) on
-      # the wide road camera even though spectra.cc configures CAM_FORMAT_NV12
-      # -- see the "TODO: why is this 21 in the dump? should be 12" comment
-      # at spectra.cc:656. Bytes at even indices are V, odd indices are U.
-      # snapshot.py has the same bug but happens to be used only on near-gray
-      # dashboards where U~=V~=128 so the swap is invisible.
-      v = np.array(uv_data[::2], dtype=np.uint8) \
+      # Standard NV12 chroma interleave: even bytes are U (Cb), odd bytes are V
+      # (Cr). This matches system/camerad/snapshot.py and spectra.cc, which
+      # configures CAM_FORMAT_NV12. An earlier NV21 (V,U) assumption here fed
+      # the V/Cr signal into the blue channel, so red tail lights rendered blue.
+      u = np.array(uv_data[::2], dtype=np.uint8) \
             .reshape((-1, stride // 2))[:height // 2, :width // 2].astype(np.int32)
-      u = np.array(uv_data[1::2], dtype=np.uint8) \
+      v = np.array(uv_data[1::2], dtype=np.uint8) \
             .reshape((-1, stride // 2))[:height // 2, :width // 2].astype(np.int32)
       return y, u, v
     except Exception:
