@@ -18,7 +18,7 @@ from openpilot.sunnypilot.nkaoud_nav.token_server import (
   ParamWebServer, mapbox_token_server, share_endpoint_server,
 )
 from openpilot.sunnypilot.nkaoud_nav.preview_server import (
-  visual_vehicle_preview_server, visual_vehicle_stages_server,
+  visual_vehicle_preview_server, visual_vehicle_stages_server, visual_vehicle_tuning_server,
 )
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.multilang import tr
@@ -213,4 +213,14 @@ def VisualVehicleStagesQrDialog() -> NavParamQrDialog:
     server=visual_vehicle_stages_server(),
     title_text=tr("Detector Pipeline Stages"),
     hint_text=tr("Scan with your phone to see each stage: full frame, the crop before YOLO, and the letterboxed model input with ROI and detections."),
+  )
+
+
+def VisualVehicleTuningQrDialog() -> NavParamQrDialog:
+  # Same QR-dialog reuse; the tuning server adds sliders that POST ROI/gate/
+  # confidence changes, which the detector picks up live (no restart).
+  return NavParamQrDialog(
+    server=visual_vehicle_tuning_server(),
+    title_text=tr("Detector Live Tuning"),
+    hint_text=tr("Scan with your phone to drag the ROI / size-gate / confidence sliders and watch the detection boxes recolor live."),
   )

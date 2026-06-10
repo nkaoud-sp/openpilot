@@ -88,24 +88,87 @@ def _env_float(name: str, default: float) -> float:
 
 
 # Normalized crop ROIs: x1, y1, x2, y2 (fractions of the detector crop).
-# The right ROI is the adjacent-lane band. By default it still spans most of the
-# crop width; narrow it horizontally with the env overrides and watch the Stages
-# preview to see exactly what lands inside.
+# The left ROI is a fixed thin reference sliver; the right ROI is the
+# adjacent-lane band and is live-tunable (env seeds the default, the tuning
+# file/web portal can override it at runtime).
 LEFT_ROI = (0.0 / ROI_MODEL_W, 0.0 / ROI_MODEL_H, 32.0 / ROI_MODEL_W, 224.0 / ROI_MODEL_H)
-RIGHT_ROI = (
-  _env_float("NKAOUD_VVD_RIGHT_X1", 32.0 / ROI_MODEL_W),
-  _env_float("NKAOUD_VVD_RIGHT_Y1", 0.0 / ROI_MODEL_H),
-  _env_float("NKAOUD_VVD_RIGHT_X2", 480.0 / ROI_MODEL_W),
-  _env_float("NKAOUD_VVD_RIGHT_Y2", 224.0 / ROI_MODEL_H),
-)
 
-# Apparent-size / position gate. A car in the immediately adjacent lane is large
-# and low in the frame; cars two or three lanes over are small and sit near the
-# horizon. Raising these rejects far-lane detections. All are fractions of the
-# crop and env-tunable so they can be dialed in from the Stages preview.
-MIN_BOX_W_FRAC = _env_float("NKAOUD_VVD_MIN_BOX_W", 0.08)
-MIN_BOX_H_FRAC = _env_float("NKAOUD_VVD_MIN_BOX_H", 0.20)
-MIN_BOTTOM_Y_FRAC = _env_float("NKAOUD_VVD_MIN_BOTTOM_Y", 0.35)
+# Defaults (env-seeded). These become the starting values for the live tuning
+# file; the apparent-size / position gate rejects far-lane detections (a car in
+# the adjacent lane is large and low; cars two or three lanes over are small and
+# sit near the horizon).
+DEFAULT_RIGHT_X1 = _env_float("NKAOUD_VVD_RIGHT_X1", 32.0 / ROI_MODEL_W)
+DEFAULT_RIGHT_Y1 = _env_float("NKAOUD_VVD_RIGHT_Y1", 0.0 / ROI_MODEL_H)
+DEFAULT_RIGHT_X2 = _env_float("NKAOUD_VVD_RIGHT_X2", 480.0 / ROI_MODEL_W)
+DEFAULT_RIGHT_Y2 = _env_float("NKAOUD_VVD_RIGHT_Y2", 224.0 / ROI_MODEL_H)
+DEFAULT_MIN_BOX_W = _env_float("NKAOUD_VVD_MIN_BOX_W", 0.08)
+DEFAULT_MIN_BOX_H = _env_float("NKAOUD_VVD_MIN_BOX_H", 0.20)
+DEFAULT_MIN_BOTTOM_Y = _env_float("NKAOUD_VVD_MIN_BOTTOM_Y", 0.35)
+DEFAULT_CONF = _env_float("NKAOUD_VISUAL_VEHICLE_CONF", 0.35)
+
+# Live tuning: a small JSON the web portal writes and the detector re-reads
+# (mtime-gated) every frame, so ROI/gate/confidence can be adjusted on-road
+# without a restart. Persisted under /data so it survives reboots.
+TUNING_PATH = str(ARTIFACT_DIR / "vvd_tuning.json")
+
+# key -> (min, max) clamp range.
+TUNING_KEYS: dict[str, tuple[float, float]] = {
+  "right_x1": (0.0, 1.0),
+  "right_y1": (0.0, 1.0),
+  "right_x2": (0.0, 1.0),
+  "right_y2": (0.0, 1.0),
+  "min_box_w": (0.0, 1.0),
+  "min_box_h": (0.0, 1.0),
+  "min_bottom_y": (0.0, 1.0),
+  "confidence": (0.01, 0.99),
+}
+
+TUNING_DEFAULTS: dict[str, float] = {
+  "right_x1": DEFAULT_RIGHT_X1,
+  "right_y1": DEFAULT_RIGHT_Y1,
+  "right_x2": DEFAULT_RIGHT_X2,
+  "right_y2": DEFAULT_RIGHT_Y2,
+  "min_box_w": DEFAULT_MIN_BOX_W,
+  "min_box_h": DEFAULT_MIN_BOX_H,
+  "min_bottom_y": DEFAULT_MIN_BOTTOM_Y,
+  "confidence": DEFAULT_CONF,
+}
+
+
+def load_tuning() -> dict[str, float]:
+  """Current tuning values, defaults filled in for any missing/invalid keys."""
+  values = dict(TUNING_DEFAULTS)
+  try:
+    data = json.loads(Path(TUNING_PATH).read_text())
+  except Exception:
+    return values
+  for key in TUNING_KEYS:
+    if key in data:
+      try:
+        values[key] = float(data[key])
+      except (TypeError, ValueError):
+        continue
+  return values
+
+
+def save_tuning(updates: dict[str, Any]) -> dict[str, float]:
+  """Merge `updates` into the current tuning, clamp to valid ranges, persist."""
+  values = load_tuning()
+  for key, raw in updates.items():
+    if key not in TUNING_KEYS:
+      continue
+    lo, hi = TUNING_KEYS[key]
+    try:
+      values[key] = min(hi, max(lo, float(raw)))
+    except (TypeError, ValueError):
+      continue
+  try:
+    path = Path(TUNING_PATH)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(values, separators=(",", ":")))
+  except OSError:
+    cloudlog.exception("visual vehicle detector failed to write tuning file")
+  return values
 
 
 @dataclass
@@ -160,6 +223,32 @@ class VisualVehicleDetector:
     self.last_model_debug: dict[str, Any] = {}
     self._preproc_dumped = False
     self._logged_buf_geometry = False
+
+    # Live-tunable ROI / gate state, refreshed from TUNING_PATH each frame.
+    self.right_roi: tuple[float, float, float, float] = (
+      DEFAULT_RIGHT_X1, DEFAULT_RIGHT_Y1, DEFAULT_RIGHT_X2, DEFAULT_RIGHT_Y2,
+    )
+    self.min_box_w_frac = DEFAULT_MIN_BOX_W
+    self.min_box_h_frac = DEFAULT_MIN_BOX_H
+    self.min_bottom_y_frac = DEFAULT_MIN_BOTTOM_Y
+    self._tuning_mtime = -1.0
+    self._refresh_tuning()
+
+  def _refresh_tuning(self) -> None:
+    """Re-read the tuning file if it changed; cheap stat() per frame."""
+    try:
+      mtime = os.path.getmtime(TUNING_PATH)
+    except OSError:
+      return  # no tuning file yet: keep env/defaults
+    if mtime == self._tuning_mtime:
+      return
+    self._tuning_mtime = mtime
+    t = load_tuning()
+    self.right_roi = (t["right_x1"], t["right_y1"], t["right_x2"], t["right_y2"])
+    self.min_box_w_frac = t["min_box_w"]
+    self.min_box_h_frac = t["min_box_h"]
+    self.min_bottom_y_frac = t["min_bottom_y"]
+    self.confidence = t["confidence"]
 
   def _write_state(self, left: bool, right: bool, debug: dict[str, Any] | None = None) -> None:
     state = {
@@ -446,23 +535,30 @@ class VisualVehicleDetector:
     self._draw_text(full_draw, (crop_x + 6, crop_y + 6), "detector crop 928x416", (255, 255, 0))
     full_img.save(PREVIEW_FULL_FRAME_CROP_PATH)
 
-    # 2) Raw detector crop + ROI split in crop coordinates: confirms the left/right
-    # classification zones after detections are mapped back to the crop.
+    # Pass/fail per detection: green = trips the right flag (inside the live
+    # right ROI AND passes the size/position gate), gray = ignored. Computed in
+    # crop coordinates with the live thresholds so it tracks the tuning portal.
+    cw_full, ch_full = detector_rgb.shape[1], detector_rgb.shape[0]
+    passes = [self._box_in_roi(det.xyxy, self.right_roi, cw_full, ch_full) for det in detections]
+    pass_color = (0, 255, 0)
+    fail_color = (150, 150, 150)
+
+    # 2) Raw detector crop + live right ROI band in crop coordinates.
     crop_img = Image.fromarray(detector_rgb, "RGB")
     crop_draw = ImageDraw.Draw(crop_img)
     cw, ch = crop_img.size
     left_x2 = int(round(LEFT_ROI[2] * cw))
-    crop_draw.rectangle((0, 0, max(0, left_x2 - 1), ch - 1), outline=(255, 0, 0), width=3)
-    crop_draw.rectangle((left_x2, 0, cw - 1, ch - 1), outline=(0, 128, 255), width=3)
-    crop_draw.line((left_x2, 0, left_x2, ch - 1), fill=(255, 255, 0), width=2)
-    self._draw_text(crop_draw, (4, 4), "LEFT ROI", (255, 0, 0))
-    self._draw_text(crop_draw, (left_x2 + 6, 4), "RIGHT ROI", (0, 128, 255))
+    crop_draw.rectangle((0, 0, max(0, left_x2 - 1), ch - 1), outline=(255, 0, 0), width=2)
+    self._draw_roi_band(crop_draw, self.right_roi, cw, ch)
+    self._draw_gate_lines(crop_draw, cw, ch)
+    self._draw_text(crop_draw, (4, 4), "LEFT", (255, 0, 0))
 
-    for det in detections:
+    for det, ok in zip(detections, passes):
       x1, y1, x2, y2 = det.xyxy
       rect = (int(round(x1)), int(round(y1)), int(round(x2)), int(round(y2)))
-      crop_draw.rectangle(rect, outline=(0, 255, 0), width=2)
-      self._draw_text(crop_draw, (rect[0], max(0, rect[1] - 12)), f"{det.class_id}:{det.confidence:.2f}", (0, 255, 0))
+      color = pass_color if ok else fail_color
+      crop_draw.rectangle(rect, outline=color, width=3 if ok else 1)
+      self._draw_text(crop_draw, (rect[0], max(0, rect[1] - 12)), f"{det.class_id}:{det.confidence:.2f}", color)
     crop_img.save(PREVIEW_DETECTOR_CROP_PATH)
 
     # 3) Exact tensor image going to YOLO after letterbox/resize. This should be
@@ -471,22 +567,42 @@ class VisualVehicleDetector:
     model_img = Image.fromarray(canvas, "RGB")
     model_draw = ImageDraw.Draw(model_img)
     mw, mh = model_img.size
-    lx2 = int(round(LEFT_ROI[2] * mw))
-    model_draw.rectangle((0, 0, max(0, lx2 - 1), mh - 1), outline=(255, 0, 0), width=2)
-    model_draw.rectangle((lx2, 0, mw - 1, mh - 1), outline=(0, 128, 255), width=2)
-    model_draw.line((lx2, 0, lx2, mh - 1), fill=(255, 255, 0), width=1)
-    self._draw_text(model_draw, (3, 3), "LEFT", (255, 0, 0))
-    self._draw_text(model_draw, (lx2 + 4, 3), "RIGHT", (0, 128, 255))
 
-    for det in detections:
+    def _to_model(rx: float, ry: float) -> tuple[int, int]:
+      # ROI fraction is of the crop; map crop px -> letterboxed model px.
+      return int(round(rx * cw_full * scale + pad_x)), int(round(ry * ch_full * scale + pad_y))
+
+    lx2 = int(round(LEFT_ROI[2] * cw_full * scale + pad_x))
+    model_draw.rectangle((int(pad_x), int(pad_y), max(0, lx2 - 1), mh - 1), outline=(255, 0, 0), width=1)
+    rb_x1, rb_y1 = _to_model(self.right_roi[0], self.right_roi[1])
+    rb_x2, rb_y2 = _to_model(self.right_roi[2], self.right_roi[3])
+    model_draw.rectangle((rb_x1, rb_y1, rb_x2, rb_y2), outline=(0, 200, 200), width=2)
+
+    for det, ok in zip(detections, passes):
       x1, y1, x2, y2 = det.xyxy
       mx1 = int(round(x1 * scale + pad_x))
       my1 = int(round(y1 * scale + pad_y))
       mx2 = int(round(x2 * scale + pad_x))
       my2 = int(round(y2 * scale + pad_y))
-      model_draw.rectangle((mx1, my1, mx2, my2), outline=(0, 255, 0), width=2)
-      self._draw_text(model_draw, (mx1, max(0, my1 - 12)), f"{det.class_id}:{det.confidence:.2f}", (0, 255, 0))
+      color = pass_color if ok else fail_color
+      model_draw.rectangle((mx1, my1, mx2, my2), outline=color, width=2 if ok else 1)
+      self._draw_text(model_draw, (mx1, max(0, my1 - 12)), f"{det.class_id}:{det.confidence:.2f}", color)
     model_img.save(PREVIEW_MODEL_INPUT_PATH)
+
+  def _draw_roi_band(self, draw: Any, roi: tuple[float, float, float, float], w: int, h: int) -> None:
+    rx1 = int(round(roi[0] * w))
+    ry1 = int(round(roi[1] * h))
+    rx2 = int(round(roi[2] * w))
+    ry2 = int(round(roi[3] * h))
+    draw.rectangle((rx1, ry1, max(rx1, rx2 - 1), max(ry1, ry2 - 1)), outline=(0, 200, 200), width=3)
+    self._draw_text(draw, (rx1 + 4, ry1 + 4), "RIGHT ROI", (0, 200, 200))
+
+  def _draw_gate_lines(self, draw: Any, w: int, h: int) -> None:
+    # Horizontal line marking the min-bottom-y gate: a box whose bottom is above
+    # this line is rejected as "too far".
+    y = int(round(self.min_bottom_y_frac * h))
+    draw.line((0, y, w - 1, y), fill=(255, 255, 0), width=1)
+    self._draw_text(draw, (4, min(h - 14, y + 2)), "min bottom-y", (255, 255, 0))
 
   def _letterbox(self, rgb: np.ndarray) -> tuple[np.ndarray, int, int, float]:
     w, h = self.input_shape
@@ -572,7 +688,7 @@ class VisualVehicleDetector:
                           image_w: int, image_h: int) -> None:
     raw_vehicle = cls_i in VEHICLE_CLASS_IDS
     raw_left_roi = self._box_in_roi(mapped, LEFT_ROI, image_w, image_h)
-    raw_right_roi = self._box_in_roi(mapped, RIGHT_ROI, image_w, image_h)
+    raw_right_roi = self._box_in_roi(mapped, self.right_roi, image_w, image_h)
     x1, y1, x2, y2 = mapped
     self.last_model_debug.update({
       "raw_best_class_id": cls_i,
@@ -747,8 +863,7 @@ class VisualVehicleDetector:
     }
     return crop, debug
 
-  @staticmethod
-  def _box_in_roi(box: tuple[float, float, float, float], roi: tuple[float, float, float, float], image_w: int, image_h: int) -> bool:
+  def _box_in_roi(self, box: tuple[float, float, float, float], roi: tuple[float, float, float, float], image_w: int, image_h: int) -> bool:
     x1, y1, x2, y2 = box
     rx1, ry1, rx2, ry2 = roi
     rx1 *= image_w
@@ -762,13 +877,14 @@ class VisualVehicleDetector:
     # Distance gate: adjacent-lane cars are large and low in the frame; far-lane
     # cars (two or three lanes over) are small and high. Reject anything too
     # small or whose bottom edge sits too high up toward the horizon.
-    if width < image_w * MIN_BOX_W_FRAC or height < image_h * MIN_BOX_H_FRAC:
+    if width < image_w * self.min_box_w_frac or height < image_h * self.min_box_h_frac:
       return False
-    if bottom < image_h * MIN_BOTTOM_Y_FRAC:
+    if bottom < image_h * self.min_bottom_y_frac:
       return False
     return rx1 <= cx <= rx2 and ry1 <= bottom <= ry2
 
   def update(self, buf: VisionBuf) -> tuple[bool, bool, dict[str, Any]]:
+    self._refresh_tuning()
     planes = self._vipc_to_yuv_planes(buf)
     if planes is None:
       left = self.left_flag.update(False)
@@ -799,13 +915,11 @@ class VisualVehicleDetector:
       except Exception:
         cloudlog.exception("visual vehicle detector live preview write failed")
 
-    # LEFT_ROI and RIGHT_ROI are normalized from the intended 480x224 model
-    # layout, then applied to the crop coordinates that _run_model returns.
-    # Current layout:
-    #   left:  x=0..32   of model input
-    #   right: x=32..480 of model input
+    # LEFT_ROI is a fixed reference sliver; self.right_roi is the live-tunable
+    # adjacent-lane band. Both are normalized fractions of the crop that
+    # _run_model returns, and the size/position gate is applied in _box_in_roi.
     raw_left = any(self._box_in_roi(det.xyxy, LEFT_ROI, image_w, image_h) for det in detections)
-    raw_right = any(self._box_in_roi(det.xyxy, RIGHT_ROI, image_w, image_h) for det in detections)
+    raw_right = any(self._box_in_roi(det.xyxy, self.right_roi, image_w, image_h) for det in detections)
     left = self.left_flag.update(raw_left)
     right = self.right_flag.update(raw_right)
 
@@ -823,11 +937,12 @@ class VisualVehicleDetector:
         "model_input": PREVIEW_MODEL_INPUT_PATH,
       },
       "left_roi_norm": [round(float(v), 5) for v in LEFT_ROI],
-      "right_roi_norm": [round(float(v), 5) for v in RIGHT_ROI],
+      "right_roi_norm": [round(float(v), 5) for v in self.right_roi],
       "gate": {
-        "min_box_w": MIN_BOX_W_FRAC,
-        "min_box_h": MIN_BOX_H_FRAC,
-        "min_bottom_y": MIN_BOTTOM_Y_FRAC,
+        "min_box_w": round(self.min_box_w_frac, 5),
+        "min_box_h": round(self.min_box_h_frac, 5),
+        "min_bottom_y": round(self.min_bottom_y_frac, 5),
+        "confidence": round(self.confidence, 5),
       },
       "raw_left": raw_left,
       "raw_right": raw_right,

@@ -19,6 +19,7 @@ from openpilot.system.ui.widgets.scroller_tici import Scroller
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.nav_token_qr_dialog import (
   VisualVehiclePreviewQrDialog,
   VisualVehicleStagesQrDialog,
+  VisualVehicleTuningQrDialog,
 )
 
 
@@ -391,6 +392,19 @@ class VisualVehicleSettingsLayout(Widget):
         callback=lambda: gui_app.push_widget(VisualVehicleStagesQrDialog()),
       ),
     )
+    self._live_tuning = ListItemSP(
+      title=lambda: tr("Live Tuning"),
+      description=lambda: tr("Shows a QR + URL for a phone browser view with sliders for the right ROI band, the "
+                             "size/position gate and detection confidence. Green boxes trip the right-lane flag, "
+                             "gray are ignored; changes apply live without a restart and persist on the device."),
+      description_visible=True,
+      inline=False,
+      action_item=SimpleButtonActionSP(
+        button_text=lambda: tr("Open Live Tuning"),
+        button_width=800,
+        callback=lambda: gui_app.push_widget(VisualVehicleTuningQrDialog()),
+      ),
+    )
     return [
       self._download_model,
       self._download_model_480,
@@ -403,6 +417,7 @@ class VisualVehicleSettingsLayout(Widget):
       self._debug_log,
       self._live_preview,
       self._stages_preview,
+      self._live_tuning,
     ]
 
   def _render(self, rect):

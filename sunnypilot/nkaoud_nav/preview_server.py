@@ -16,8 +16,10 @@ user taps Cancel.
 """
 from __future__ import annotations
 
+import json
 import os
 import threading
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from openpilot.common.swaglog import cloudlog
@@ -25,13 +27,15 @@ from openpilot.sunnypilot.nkaoud_nav.adjacent_vehicle_detector import (
   BUF_GEOMETRY_PATH, PREVIEW_DETECTOR_CROP_PATH, PREVIEW_FULL_FRAME_CROP_PATH,
   PREVIEW_MODEL_INPUT_PATH, PREVIEW_PNG_PATH, PREVIEW_PNG_PATH_FULL,
   PREVIEW_PNG_PATH_LIMITED, PREVIEW_RAW_U_PATH, PREVIEW_RAW_V_PATH,
-  PREVIEW_RAW_Y_PATH, PREVIEW_REQUEST_PATH,
+  PREVIEW_RAW_Y_PATH, PREVIEW_REQUEST_PATH, TUNING_DEFAULTS, TUNING_KEYS,
+  load_tuning, save_tuning,
 )
 from openpilot.sunnypilot.nkaoud_nav.token_server import get_local_ip
 
 
 DEFAULT_PORT = 8082
 STAGES_PORT = 8083
+TUNING_PORT = 8084
 
 
 PAGE = b"""<!doctype html>
@@ -215,10 +219,14 @@ class PreviewWebServer:
   """
 
   def __init__(self, port: int = DEFAULT_PORT, page: bytes = PAGE,
-               routes: dict[str, str] | None = None) -> None:
+               routes: dict[str, str] | None = None,
+               json_routes: dict[str, Callable[[], bytes]] | None = None,
+               post_handler: Callable[[str, bytes], tuple[int, str, bytes]] | None = None) -> None:
     self.port = port
     self._page = page
     self._routes = PREVIEW_ROUTES if routes is None else routes
+    self._json_routes = json_routes or {}
+    self._post_handler = post_handler
     # Kept name `token_saved` for NavParamQrDialog compatibility; never set here.
     self.token_saved = threading.Event()
     self._server: ThreadingHTTPServer | None = None
@@ -237,6 +245,8 @@ class PreviewWebServer:
 
     page = self._page
     routes = self._routes
+    json_routes = self._json_routes
+    post_handler = self._post_handler
 
     class _Handler(BaseHTTPRequestHandler):
       def log_message(self, fmt, *args):
@@ -250,11 +260,32 @@ class PreviewWebServer:
         self.end_headers()
         self.wfile.write(body)
 
+      def do_POST(self):
+        if post_handler is None:
+          self.send_error(404)
+          return
+        route = self.path.split("?", 1)[0]
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        body = self.rfile.read(length) if length else b""
+        try:
+          code, ctype, resp = post_handler(route, body)
+        except Exception as e:
+          self.send_error(500, f"post failed: {e}")
+          return
+        self._send(resp, ctype, code)
+
       def do_GET(self):
         if self.path in ("/", "/index.html"):
           self._send(page, "text/html; charset=utf-8")
           return
         route = self.path.split("?", 1)[0]
+        json_fn = json_routes.get(route)
+        if json_fn is not None:
+          try:
+            self._send(json_fn(), "application/json")
+          except Exception as e:
+            self.send_error(500, f"json failed: {e}")
+          return
         png_path = routes.get(route)
         if png_path is not None:
           try:
@@ -317,3 +348,150 @@ def visual_vehicle_preview_server(port: int = DEFAULT_PORT) -> PreviewWebServer:
 
 def visual_vehicle_stages_server(port: int = STAGES_PORT) -> PreviewWebServer:
   return PreviewWebServer(port=port, page=STAGES_PAGE, routes=STAGES_ROUTES)
+
+
+TUNING_ROUTES = {
+  "/processed.png":     PREVIEW_MODEL_INPUT_PATH,
+  "/detector_crop.png": PREVIEW_DETECTOR_CROP_PATH,
+}
+
+
+def _tuning_json() -> bytes:
+  return json.dumps(load_tuning()).encode()
+
+
+def _tuning_post(route: str, body: bytes) -> tuple[int, str, bytes]:
+  if route == "/reset":
+    return 200, "application/json", json.dumps(save_tuning(dict(TUNING_DEFAULTS))).encode()
+  if route != "/tuning":
+    return 404, "text/plain; charset=utf-8", b"not found"
+  try:
+    updates = json.loads(body or b"{}")
+  except ValueError:
+    return 400, "text/plain; charset=utf-8", b"bad json"
+  if not isinstance(updates, dict):
+    return 400, "text/plain; charset=utf-8", b"expected object"
+  return 200, "application/json", json.dumps(save_tuning(updates)).encode()
+
+
+# Slider config drives the controls; ranges are display-only (save_tuning still
+# clamps to TUNING_KEYS). Built from the shared key list so it can't drift.
+_SLIDER_RANGES = {
+  "right_x1":     (0.0, 1.0, 0.01),
+  "right_x2":     (0.0, 1.0, 0.01),
+  "right_y1":     (0.0, 1.0, 0.01),
+  "right_y2":     (0.0, 1.0, 0.01),
+  "min_box_w":    (0.0, 0.6, 0.01),
+  "min_box_h":    (0.0, 0.8, 0.01),
+  "min_bottom_y": (0.0, 1.0, 0.01),
+  "confidence":   (0.05, 0.9, 0.01),
+}
+_SLIDER_LABELS = {
+  "right_x1":     "Right ROI  left edge (x1)",
+  "right_x2":     "Right ROI  right edge (x2)",
+  "right_y1":     "Right ROI  top edge (y1)",
+  "right_y2":     "Right ROI  bottom edge (y2)",
+  "min_box_w":    "Min box width (far-lane reject)",
+  "min_box_h":    "Min box height (far-lane reject)",
+  "min_bottom_y": "Min bottom-y (horizon reject)",
+  "confidence":   "Detection confidence",
+}
+_SLIDER_JSON = json.dumps([
+  {"key": k, "min": _SLIDER_RANGES[k][0], "max": _SLIDER_RANGES[k][1],
+   "step": _SLIDER_RANGES[k][2], "label": _SLIDER_LABELS[k]}
+  for k in TUNING_KEYS
+])
+
+TUNING_PAGE = ("""<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Visual Vehicle Detector Tuning</title>
+<style>
+  body { background:#111; color:#ddd; font-family:sans-serif; margin:0; padding:16px; }
+  h2 { margin:0 0 4px 0; text-align:center; }
+  p.lead { margin:0 0 12px 0; color:#888; font-size:13px; text-align:center; }
+  .imgs { display:flex; gap:12px; justify-content:center; flex-wrap:wrap; }
+  .col { display:flex; flex-direction:column; align-items:center; }
+  .cap { font-family:monospace; font-size:12px; color:#9bc3dc; margin-bottom:4px; }
+  img { width:46vw; max-width:540px; min-width:280px; background:#222; border:1px solid #333;
+        image-rendering:pixelated; image-rendering:crisp-edges; }
+  @media (max-width:700px) { img { width:92vw; max-width:none; } }
+  .controls { max-width:760px; margin:16px auto 0 auto; }
+  .ctl { margin:10px 0; }
+  .ctl .row { display:flex; justify-content:space-between; font-size:13px; margin-bottom:2px; }
+  .ctl .val { font-family:monospace; color:#9bdca8; }
+  input[type=range] { width:100%; height:34px; }
+  .btns { text-align:center; margin-top:14px; }
+  button { background:#243; color:#cfe; border:1px solid #365; border-radius:6px;
+           padding:10px 18px; font-size:15px; }
+  #stamp { margin-top:10px; color:#666; font-size:12px; font-family:monospace; text-align:center; }
+  legend { color:#bbb; }
+</style></head>
+<body>
+  <h2>Visual Vehicle Detector &mdash; Live Tuning</h2>
+  <p class="lead">Green boxes trip the right-lane flag; gray are ignored. Cyan = right ROI band, yellow line = min bottom-y. Drag to tune; saved to the device instantly.</p>
+  <div class="imgs">
+    <div class="col"><div class="cap">model input (fed to YOLO)</div><img id="proc" src="/processed.png" alt="(waiting...)"></div>
+    <div class="col"><div class="cap">detector crop</div><img id="crop" src="/detector_crop.png" alt="(waiting...)"></div>
+  </div>
+  <div class="controls" id="controls"></div>
+  <div class="btns"><button id="reset">Reset to defaults</button></div>
+  <div id="stamp">--</div>
+  <script>
+    const SLIDERS = __SLIDERS__;
+    const controls = document.getElementById('controls');
+    const els = {};
+    SLIDERS.forEach(s => {
+      const wrap = document.createElement('div'); wrap.className = 'ctl';
+      const row = document.createElement('div'); row.className = 'row';
+      const lab = document.createElement('span'); lab.textContent = s.label;
+      const val = document.createElement('span'); val.className = 'val'; val.textContent = '--';
+      row.appendChild(lab); row.appendChild(val);
+      const inp = document.createElement('input');
+      inp.type = 'range'; inp.min = s.min; inp.max = s.max; inp.step = s.step;
+      wrap.appendChild(row); wrap.appendChild(inp); controls.appendChild(wrap);
+      els[s.key] = { inp, val };
+      let timer = null;
+      inp.addEventListener('input', () => {
+        val.textContent = parseFloat(inp.value).toFixed(2);
+        clearTimeout(timer);
+        timer = setTimeout(() => post({ [s.key]: parseFloat(inp.value) }), 120);
+      });
+    });
+    function apply(state) {
+      SLIDERS.forEach(s => {
+        if (state[s.key] === undefined) return;
+        els[s.key].inp.value = state[s.key];
+        els[s.key].val.textContent = parseFloat(state[s.key]).toFixed(2);
+      });
+    }
+    function post(body) {
+      fetch('/tuning', { method: 'POST', headers: {'Content-Type':'application/json'},
+                         body: JSON.stringify(body) })
+        .then(r => r.ok ? r.json() : null).then(j => { if (j) apply(j); }).catch(() => {});
+    }
+    document.getElementById('reset').addEventListener('click', () => {
+      fetch('/reset', { method: 'POST' }).then(r => r.ok ? r.json() : null)
+        .then(j => { if (j) apply(j); }).catch(() => {});
+    });
+    fetch('/tuning.json').then(r => r.json()).then(apply).catch(() => {});
+    const proc = document.getElementById('proc');
+    const crop = document.getElementById('crop');
+    const stamp = document.getElementById('stamp');
+    proc.addEventListener('error', () => { stamp.textContent = 'waiting for detector...'; });
+    setInterval(() => {
+      const t = Date.now();
+      proc.src = '/processed.png?t=' + t;
+      crop.src = '/detector_crop.png?t=' + t;
+      stamp.textContent = new Date().toLocaleTimeString();
+    }, 700);
+  </script>
+</body></html>
+""".replace("__SLIDERS__", _SLIDER_JSON)).encode()
+
+
+def visual_vehicle_tuning_server(port: int = TUNING_PORT) -> PreviewWebServer:
+  return PreviewWebServer(
+    port=port, page=TUNING_PAGE, routes=TUNING_ROUTES,
+    json_routes={"/tuning.json": _tuning_json},
+    post_handler=_tuning_post,
+  )
