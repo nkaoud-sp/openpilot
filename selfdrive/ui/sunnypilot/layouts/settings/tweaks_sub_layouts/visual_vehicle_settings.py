@@ -121,6 +121,47 @@ class VisualVehicleSettingsLayout(Widget):
       return tr("Compile PKL")
     return tr("Compile PKL")
 
+  def _compile_driver_button_label(self) -> str:
+    from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import DRIVER_PKL_PATH
+    with self._lock:
+      status = self._status
+    if status.startswith("Compiling"):
+      return tr("Compiling DM PKL...")
+    if status.startswith("error"):
+      return tr("Retry DM Compile")
+    if os.path.exists(DRIVER_PKL_PATH):
+      return tr("Recompile DM PKL")
+    return tr("Compile DM PKL")
+
+  def _compile_driver_description(self) -> str:
+    from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import DRIVER_PKL_PATH
+    with self._lock:
+      status = self._status
+    if status:
+      return status
+    present = "yes" if os.path.exists(DRIVER_PKL_PATH) else "no"
+    return tr("Compiles the current ONNX into a separate driver-camera model "
+              "(visual_vehicle_detector_driver_tinygrad.pkl), used only when the Driver camera is selected. "
+              "Download a square model (320 or 256) first to avoid letterbox waste. DM PKL present: {}").format(present)
+
+  def _run_compile_driver(self) -> None:
+    try:
+      from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import ONNX_PATH, compile_pkl_driver
+      if not os.path.exists(ONNX_PATH):
+        self._set_status("error: ONNX file is missing")
+        return
+      self._set_status("Compiling DM PKL...")
+      compile_pkl_driver()
+      self._set_status(self._load_status_message())
+    except Exception as e:
+      self._set_status(f"error: compile failed: {e}")
+    finally:
+      with self._lock:
+        self._worker = None
+
+  def _trigger_compile_driver(self) -> None:
+    self._start_worker(self._run_compile_driver)
+
   def _download_description(self) -> str:
     from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import ONNX_PATH, PKL_PATH
     with self._lock:
@@ -351,6 +392,18 @@ class VisualVehicleSettingsLayout(Widget):
       ),
     )
 
+    self._compile_driver_model = ListItemSP(
+      title=lambda: tr("Driver-cam PKL"),
+      description=lambda: self._compile_driver_description(),
+      description_visible=True,
+      inline=False,
+      action_item=SimpleButtonActionSP(
+        button_text=lambda: self._compile_driver_button_label(),
+        button_width=800,
+        callback=lambda: self._trigger_compile_driver(),
+      ),
+    )
+
     self._camera_source = multiple_button_item_sp(
       title=lambda: tr("Camera Source"),
       description=lambda: tr("Which camera the detector runs on. Each camera keeps its own crop / ROI / gate "
@@ -436,6 +489,7 @@ class VisualVehicleSettingsLayout(Widget):
       self._download_model_320,
       self._download_model_256,
       self._compile_model,
+      self._compile_driver_model,
       self._camera_source,
       self._readout,
       self._allow_onnx,

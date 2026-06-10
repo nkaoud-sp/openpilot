@@ -64,6 +64,7 @@ class VisualVehicleReadout:
     stale = age > STALE_AFTER_S
     reason = str(debug.get("reason", "unknown"))
     runtime = str(debug.get("runtime", "--"))
+    timing = debug.get("timing", {}) or {}
     input_shape = debug.get("input_shape", [])
     if isinstance(input_shape, list) and len(input_shape) >= 4:
       input_shape_text = f"{input_shape[3]}x{input_shape[2]}"
@@ -99,6 +100,10 @@ class VisualVehicleReadout:
       ("BOX", self._format_box(debug.get("raw_best_box")), _WHITE),
       ("PKL", "YES" if debug.get("pkl_exists", True) else "NO", _WHITE),
       ("ONNX", "YES" if debug.get("onnx_exists", True) else "NO", _WHITE),
+      ("MODEL", str(timing.get("model", "--")), _WHITE),
+      ("LOAD ms", str(timing.get("model_load_ms", "--")), _WHITE),
+      ("INF1 ms", str(timing.get("first_inf_ms", "--")), _WHITE),
+      ("CONN ms", str(timing.get("cam_connect_ms", "--")), _WHITE),
     ]
     self._render_panel(rect, rows, "VISUAL VEHICLE DETECTOR", side="right")
     self._render_panel(rect, raw_rows, "VISUAL RAW DEBUG", side="left")

@@ -51,6 +51,7 @@ PREVIEW_DETECTOR_CROP_PATH = "/tmp/nkaoud_vvd_preview_detector_crop.png"
 PREVIEW_MODEL_INPUT_PATH = "/tmp/nkaoud_vvd_preview_model_input.png"
 BUF_GEOMETRY_PATH = "/tmp/nkaoud_vvd_buf_geometry.json"
 DEFAULT_PKL_PATH = str(ARTIFACT_DIR / "visual_vehicle_detector_tinygrad.pkl")
+DEFAULT_DRIVER_PKL_PATH = str(ARTIFACT_DIR / "visual_vehicle_detector_driver_tinygrad.pkl")
 DEFAULT_ONNX_PATH = str(ARTIFACT_DIR / "visual_vehicle_detector.onnx")
 
 # COCO class IDs from Ultralytics YOLO exports.
@@ -253,6 +254,14 @@ class VisualVehicleDetector:
     migrate_legacy_artifacts()
     self.params = Params()
     self.pkl_path = os.getenv("NKAOUD_VISUAL_VEHICLE_PKL", DEFAULT_PKL_PATH)
+    # Base (road/wide) model and a separate driver-camera model; the detector
+    # switches between them with the camera. Falls back to the base model if the
+    # driver model isn't compiled yet.
+    self.base_pkl_path = self.pkl_path
+    self.driver_pkl_path = os.getenv("NKAOUD_VISUAL_VEHICLE_PKL_DRIVER", DEFAULT_DRIVER_PKL_PATH)
+    self._loaded_pkl: str | None = None
+    self._cold_inference = False
+    self.last_timing: dict[str, Any] = {}
     self.onnx_path = os.getenv("NKAOUD_VISUAL_VEHICLE_ONNX", DEFAULT_ONNX_PATH)
     self.confidence = float(os.getenv("NKAOUD_VISUAL_VEHICLE_CONF", "0.35"))
     # Keep the debug detector well below camera/modeld cadence on comma3x.
@@ -377,7 +386,24 @@ class VisualVehicleDetector:
     self._set_startup_debug(reason=reason, allow_onnx=allow_onnx)
     return False
 
+  def _model_path_for(self, camera: str) -> str:
+    if camera == "driver" and os.path.exists(self.driver_pkl_path):
+      return self.driver_pkl_path
+    return self.base_pkl_path
+
+  def _ensure_model_for(self, camera: str) -> None:
+    """Load the model matching the camera, reloading (and timing) on change.
+    Only applies to the tinygrad runtime; the ONNX fallback is left alone."""
+    if self.runtime == "onnx_cpu":
+      return
+    desired = self._model_path_for(camera)
+    if desired == self._loaded_pkl and self.pkl_model_run is not None:
+      return
+    self.pkl_path = desired
+    self._load_tinygrad_pkl()
+
   def _load_tinygrad_pkl(self) -> bool:
+    load_t0 = time.monotonic()
     try:
       self._set_tinygrad_device_env()
       from tinygrad.tensor import Tensor  # pylint: disable=import-error
@@ -411,8 +437,13 @@ class VisualVehicleDetector:
             self.pkl_input_device = info[3]
 
       self.runtime = "tinygrad_pkl"
-      cloudlog.warning("visual vehicle detector loaded tinygrad pkl %s input=%s shape=%s",
-                       self.pkl_path, self.pkl_input_name, self.input_shape)
+      self._loaded_pkl = self.pkl_path
+      self._cold_inference = True  # next inference pays the GPU warmup cost
+      load_ms = round((time.monotonic() - load_t0) * 1000.0, 1)
+      self.last_timing["model"] = os.path.basename(self.pkl_path)
+      self.last_timing["model_load_ms"] = load_ms
+      cloudlog.warning("visual vehicle detector loaded tinygrad pkl %s input=%s shape=%s load_ms=%.1f",
+                       self.pkl_path, self.pkl_input_name, self.input_shape, load_ms)
       return True
     except Exception as e:
       self.runtime = "tinygrad_pkl_failed"
@@ -731,6 +762,18 @@ class VisualVehicleDetector:
   def _run_model(self, rgb: np.ndarray) -> list[Detection]:
     inp, prep = self._preprocess(rgb)
     self.last_model_debug = {}
+    # Time the first inference after a (re)load: this pays the GPU warmup cost.
+    cold = self._cold_inference
+    t0 = time.monotonic()
+    dets = self._infer(inp, prep)
+    if cold and self.pkl_model_run is not None:
+      self._cold_inference = False
+      self.last_timing["first_inf_ms"] = round((time.monotonic() - t0) * 1000.0, 1)
+      cloudlog.warning("visual vehicle detector first_inference model=%s ms=%.1f",
+                       self.last_timing.get("model"), self.last_timing["first_inf_ms"])
+    return dets
+
+  def _infer(self, inp: np.ndarray, prep: dict[str, float | int]) -> list[Detection]:
     if self.runtime == "tinygrad_pkl":
       if self.pkl_model_run is None or self.Tensor is None:
         return []
@@ -1004,6 +1047,7 @@ class VisualVehicleDetector:
       "detections": len(detections),
       "best_conf": round(float(best_conf), 3),
       "hz": self.detector_hz,
+      "timing": dict(self.last_timing),
     }
     debug.update(self.last_model_debug)
     return left, right, debug
@@ -1044,6 +1088,9 @@ class VisualVehicleDetector:
                                             "runtime": self.runtime})
           time.sleep(0.2)
           continue
+        # Time the camera (re)connect on its own -- this is the "camera switch"
+        # cost, independent of any model reload below.
+        conn_t0 = time.monotonic()
         vipc_client = VisionIpcClient("camerad", stream, True)
         if not vipc_client.connect(False):
           vipc_client = None
@@ -1051,12 +1098,23 @@ class VisualVehicleDetector:
                                             "runtime": self.runtime})
           time.sleep(0.1)
           continue
+        conn_ms = round((time.monotonic() - conn_t0) * 1000.0, 1)
+        self.last_timing["cam_connect_ms"] = conn_ms
+        # Switch this camera's model (timed inside _load_tinygrad_pkl). The
+        # model_load_ms / first_inf_ms in last_timing are the "model switch"
+        # cost; sum with cam_connect_ms for "model+camera switch".
+        prev_loaded = self._loaded_pkl
+        self._ensure_model_for(desired_camera)
+        model_switched = self._loaded_pkl != prev_loaded
         connected_camera = desired_camera
         last_frame_id = -1
         self.left_flag = DebouncedFlag()
         self.right_flag = DebouncedFlag()
-        cloudlog.warning("visual vehicle detector connected camera=%s stream=%s size=%sx%s runtime=%s",
-                         desired_camera, stream, vipc_client.width, vipc_client.height, self.runtime)
+        cloudlog.warning("visual vehicle detector switch camera=%s stream=%s size=%sx%s "
+                         "cam_connect_ms=%.1f model_switched=%s model_load_ms=%s runtime=%s",
+                         desired_camera, stream, vipc_client.width, vipc_client.height, conn_ms,
+                         model_switched, self.last_timing.get("model_load_ms") if model_switched else "n/a",
+                         self.runtime)
 
       new_log_debug = self.params.get_bool("VisualVehicleDetectorLogDebug")
       if new_log_debug != self.log_debug:

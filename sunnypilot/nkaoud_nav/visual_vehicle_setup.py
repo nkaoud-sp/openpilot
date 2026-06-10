@@ -20,6 +20,10 @@ MODEL_DIR = Path("/data/visual_vehicle_detector")
 ONNX_PATH = MODEL_DIR / "visual_vehicle_detector.onnx"
 PKL_PATH = MODEL_DIR / "visual_vehicle_detector_tinygrad.pkl"
 META_PATH = MODEL_DIR / "visual_vehicle_detector_tinygrad.json"
+# Separate model for the driver camera (typically a square export, e.g. 320x320,
+# to avoid letterbox waste on the square driver-window crop).
+DRIVER_PKL_PATH = MODEL_DIR / "visual_vehicle_detector_driver_tinygrad.pkl"
+DRIVER_META_PATH = MODEL_DIR / "visual_vehicle_detector_driver_tinygrad.json"
 STATUS_PATH = MODEL_DIR / "visual_vehicle_detector_setup_status.json"
 
 DEFAULT_MODEL_640_URL = "https://github.com/ultralytics/yolov5/releases/download/v7.0/yolov5n.onnx"
@@ -129,18 +133,24 @@ def ensure_onnx_256() -> None:
   ensure_onnx(DEFAULT_MODEL_256_URL)
 
 
-def compile_pkl(imgsz: int | None = None, warmup: int = 2) -> None:
+def compile_pkl(imgsz: int | None = None, warmup: int = 2,
+                pkl_path: Path = PKL_PATH, meta_path: Path = META_PATH, label: str = "PKL") -> None:
   migrate_legacy_artifacts()
-  write_status("compiling", "Compiling PKL...")
+  write_status("compiling", f"Compiling {label}...")
   from openpilot.tools.nkaoud.compile_visual_vehicle_detector_tinygrad import compile_model
   try:
-    meta = compile_model(str(ONNX_PATH), str(PKL_PATH), str(META_PATH), imgsz=imgsz, warmup=warmup)
+    meta = compile_model(str(ONNX_PATH), str(pkl_path), str(meta_path), imgsz=imgsz, warmup=warmup)
     shape = meta.get("input_shape", []) if isinstance(meta, dict) else []
     if isinstance(shape, list) and len(shape) >= 4:
       size_text = f" ({shape[3]}x{shape[2]})"
     else:
       size_text = ""
-    write_status("compiled", f"PKL compile complete{size_text}.", input_shape=shape)
+    write_status("compiled", f"{label} compile complete{size_text}.", input_shape=shape)
   except Exception as e:
     write_status("error", f"compile failed: {e}")
     raise
+
+
+def compile_pkl_driver(imgsz: int | None = None, warmup: int = 2) -> None:
+  """Compile the current ONNX into the separate driver-camera PKL."""
+  compile_pkl(imgsz=imgsz, warmup=warmup, pkl_path=DRIVER_PKL_PATH, meta_path=DRIVER_META_PATH, label="DM PKL")
