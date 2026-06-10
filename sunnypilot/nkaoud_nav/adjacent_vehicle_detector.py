@@ -75,9 +75,37 @@ DETECT_CROP_H = 416
 ROI_MODEL_W = 480
 ROI_MODEL_H = 224
 
-# Normalized crop ROIs: x1, y1, x2, y2.
+
+def _env_float(name: str, default: float) -> float:
+  raw = os.getenv(name, "")
+  if raw == "":
+    return default
+  try:
+    return float(raw)
+  except ValueError:
+    cloudlog.warning("visual vehicle detector invalid %s=%r; using %s", name, raw, default)
+    return default
+
+
+# Normalized crop ROIs: x1, y1, x2, y2 (fractions of the detector crop).
+# The right ROI is the adjacent-lane band. By default it still spans most of the
+# crop width; narrow it horizontally with the env overrides and watch the Stages
+# preview to see exactly what lands inside.
 LEFT_ROI = (0.0 / ROI_MODEL_W, 0.0 / ROI_MODEL_H, 32.0 / ROI_MODEL_W, 224.0 / ROI_MODEL_H)
-RIGHT_ROI = (32.0 / ROI_MODEL_W, 0.0 / ROI_MODEL_H, 480.0 / ROI_MODEL_W, 224.0 / ROI_MODEL_H)
+RIGHT_ROI = (
+  _env_float("NKAOUD_VVD_RIGHT_X1", 32.0 / ROI_MODEL_W),
+  _env_float("NKAOUD_VVD_RIGHT_Y1", 0.0 / ROI_MODEL_H),
+  _env_float("NKAOUD_VVD_RIGHT_X2", 480.0 / ROI_MODEL_W),
+  _env_float("NKAOUD_VVD_RIGHT_Y2", 224.0 / ROI_MODEL_H),
+)
+
+# Apparent-size / position gate. A car in the immediately adjacent lane is large
+# and low in the frame; cars two or three lanes over are small and sit near the
+# horizon. Raising these rejects far-lane detections. All are fractions of the
+# crop and env-tunable so they can be dialed in from the Stages preview.
+MIN_BOX_W_FRAC = _env_float("NKAOUD_VVD_MIN_BOX_W", 0.08)
+MIN_BOX_H_FRAC = _env_float("NKAOUD_VVD_MIN_BOX_H", 0.20)
+MIN_BOTTOM_Y_FRAC = _env_float("NKAOUD_VVD_MIN_BOTTOM_Y", 0.35)
 
 
 @dataclass
@@ -731,7 +759,12 @@ class VisualVehicleDetector:
     bottom = y2
     width = max(0.0, x2 - x1)
     height = max(0.0, y2 - y1)
-    if width < image_w * 0.025 or height < image_h * 0.04:
+    # Distance gate: adjacent-lane cars are large and low in the frame; far-lane
+    # cars (two or three lanes over) are small and high. Reject anything too
+    # small or whose bottom edge sits too high up toward the horizon.
+    if width < image_w * MIN_BOX_W_FRAC or height < image_h * MIN_BOX_H_FRAC:
+      return False
+    if bottom < image_h * MIN_BOTTOM_Y_FRAC:
       return False
     return rx1 <= cx <= rx2 and ry1 <= bottom <= ry2
 
@@ -791,6 +824,11 @@ class VisualVehicleDetector:
       },
       "left_roi_norm": [round(float(v), 5) for v in LEFT_ROI],
       "right_roi_norm": [round(float(v), 5) for v in RIGHT_ROI],
+      "gate": {
+        "min_box_w": MIN_BOX_W_FRAC,
+        "min_box_h": MIN_BOX_H_FRAC,
+        "min_bottom_y": MIN_BOTTOM_Y_FRAC,
+      },
       "raw_left": raw_left,
       "raw_right": raw_right,
       "left_score": self.left_flag.score,
