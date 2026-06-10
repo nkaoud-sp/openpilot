@@ -106,12 +106,21 @@ DEFAULT_MIN_BOX_H = _env_float("NKAOUD_VVD_MIN_BOX_H", 0.20)
 DEFAULT_MIN_BOTTOM_Y = _env_float("NKAOUD_VVD_MIN_BOTTOM_Y", 0.35)
 DEFAULT_CONF = _env_float("NKAOUD_VISUAL_VEHICLE_CONF", 0.35)
 
+# Crop box (pixels in the full wide-road frame) and detector rate. Also live-
+# tunable; the crop is clamped to the actual frame in _crop_detector_region.
+DEFAULT_CROP_X = _env_float("NKAOUD_VISUAL_VEHICLE_CROP_X", float(DETECT_CROP_X))
+DEFAULT_CROP_Y = _env_float("NKAOUD_VISUAL_VEHICLE_CROP_Y", float(DETECT_CROP_Y))
+DEFAULT_CROP_W = _env_float("NKAOUD_VISUAL_VEHICLE_CROP_W", float(DETECT_CROP_W))
+DEFAULT_CROP_H = _env_float("NKAOUD_VISUAL_VEHICLE_CROP_H", float(DETECT_CROP_H))
+DEFAULT_HZ = float(max(1, min(5, int(_env_float("NKAOUD_VISUAL_VEHICLE_HZ", 1.0)))))
+
 # Live tuning: a small JSON the web portal writes and the detector re-reads
 # (mtime-gated) every frame, so ROI/gate/confidence can be adjusted on-road
 # without a restart. Persisted under /data so it survives reboots.
 TUNING_PATH = str(ARTIFACT_DIR / "vvd_tuning.json")
 
-# key -> (min, max) clamp range.
+# key -> (min, max) clamp range. Crop values are pixels; _crop_detector_region
+# clamps them again to the actual frame size.
 TUNING_KEYS: dict[str, tuple[float, float]] = {
   "right_x1": (0.0, 1.0),
   "right_y1": (0.0, 1.0),
@@ -121,6 +130,11 @@ TUNING_KEYS: dict[str, tuple[float, float]] = {
   "min_box_h": (0.0, 1.0),
   "min_bottom_y": (0.0, 1.0),
   "confidence": (0.01, 0.99),
+  "crop_x": (0.0, 4096.0),
+  "crop_y": (0.0, 4096.0),
+  "crop_w": (16.0, 4096.0),
+  "crop_h": (16.0, 4096.0),
+  "hz": (1.0, 5.0),
 }
 
 TUNING_DEFAULTS: dict[str, float] = {
@@ -132,6 +146,11 @@ TUNING_DEFAULTS: dict[str, float] = {
   "min_box_h": DEFAULT_MIN_BOX_H,
   "min_bottom_y": DEFAULT_MIN_BOTTOM_Y,
   "confidence": DEFAULT_CONF,
+  "crop_x": DEFAULT_CROP_X,
+  "crop_y": DEFAULT_CROP_Y,
+  "crop_w": DEFAULT_CROP_W,
+  "crop_h": DEFAULT_CROP_H,
+  "hz": DEFAULT_HZ,
 }
 
 
@@ -231,6 +250,10 @@ class VisualVehicleDetector:
     self.min_box_w_frac = DEFAULT_MIN_BOX_W
     self.min_box_h_frac = DEFAULT_MIN_BOX_H
     self.min_bottom_y_frac = DEFAULT_MIN_BOTTOM_Y
+    self.crop_x = DEFAULT_CROP_X
+    self.crop_y = DEFAULT_CROP_Y
+    self.crop_w = DEFAULT_CROP_W
+    self.crop_h = DEFAULT_CROP_H
     self._tuning_mtime = -1.0
     self._refresh_tuning()
 
@@ -249,6 +272,11 @@ class VisualVehicleDetector:
     self.min_box_h_frac = t["min_box_h"]
     self.min_bottom_y_frac = t["min_bottom_y"]
     self.confidence = t["confidence"]
+    self.crop_x = t["crop_x"]
+    self.crop_y = t["crop_y"]
+    self.crop_w = t["crop_w"]
+    self.crop_h = t["crop_h"]
+    self.detector_hz = max(1, min(5, int(round(t["hz"]))))
 
   def _write_state(self, left: bool, right: bool, debug: dict[str, Any] | None = None) -> None:
     state = {
@@ -532,7 +560,7 @@ class VisualVehicleDetector:
     crop_h = int(crop_debug.get("crop_h", detector_rgb.shape[0]))
     full_rect = (crop_x, crop_y, crop_x + crop_w - 1, crop_y + crop_h - 1)
     full_draw.rectangle(full_rect, outline=(255, 255, 0), width=4)
-    self._draw_text(full_draw, (crop_x + 6, crop_y + 6), "detector crop 928x416", (255, 255, 0))
+    self._draw_text(full_draw, (crop_x + 6, crop_y + 6), f"detector crop {crop_w}x{crop_h}", (255, 255, 0))
     full_img.save(PREVIEW_FULL_FRAME_CROP_PATH)
 
     # Pass/fail per detection: green = trips the right flag (inside the live
@@ -810,44 +838,22 @@ class VisualVehicleDetector:
   
 
   def _crop_detector_region(self, rgb: np.ndarray) -> tuple[np.ndarray, dict[str, int | str]]:
-    """Crop the fixed detector region from the original RGB camera frame.
+    """Crop the detector region from the original RGB camera frame.
 
-    Defaults:
-      - x/y: 854,425
-      - width/height: 928x416
-      - region: x=854..1782, y=425..841
-
-    You can still tune the crop without editing code by setting:
-      NKAOUD_VISUAL_VEHICLE_CROP_X
-      NKAOUD_VISUAL_VEHICLE_CROP_Y
+    The crop box (self.crop_x/y/w/h, pixels) is live-tunable from the tuning
+    portal and seeded by NKAOUD_VISUAL_VEHICLE_CROP_X/Y/W/H. It is clamped here
+    to fit within the actual frame.
     """
     image_h, image_w = rgb.shape[:2]
 
-    crop_w = min(DETECT_CROP_W, image_w)
-    crop_h = min(DETECT_CROP_H, image_h)
-
-    default_x = DETECT_CROP_X
-    default_y = DETECT_CROP_Y
-
-    def _get_int_env(name: str, default: int) -> int:
-      raw = os.getenv(name, "")
-      if raw == "":
-        return default
-      try:
-        return int(raw)
-      except Exception:
-        cloudlog.warning("visual vehicle detector invalid %s=%r; using %d", name, raw, default)
-        return default
-
-    crop_x = _get_int_env("NKAOUD_VISUAL_VEHICLE_CROP_X", default_x)
-    crop_y = _get_int_env("NKAOUD_VISUAL_VEHICLE_CROP_Y", default_y)
-
-    crop_x = max(0, min(crop_x, image_w - crop_w))
-    crop_y = max(0, min(crop_y, image_h - crop_h))
+    crop_w = max(1, min(int(round(self.crop_w)), image_w))
+    crop_h = max(1, min(int(round(self.crop_h)), image_h))
+    crop_x = max(0, min(int(round(self.crop_x)), image_w - crop_w))
+    crop_y = max(0, min(int(round(self.crop_y)), image_h - crop_h))
 
     crop = rgb[crop_y:crop_y + crop_h, crop_x:crop_x + crop_w]
     debug = {
-      "crop_mode": "fixed_928x416",
+      "crop_mode": "tunable",
       "crop_x": int(crop_x),
       "crop_y": int(crop_y),
       "crop_w": int(crop_w),
@@ -858,8 +864,6 @@ class VisualVehicleDetector:
       "frame_h": int(image_h),
       "roi_model_w": int(ROI_MODEL_W),
       "roi_model_h": int(ROI_MODEL_H),
-      "left_roi_model_px": "x=0..32,y=0..224",
-      "right_roi_model_px": "x=32..480,y=0..224",
     }
     return crop, debug
 
@@ -986,11 +990,17 @@ class VisualVehicleDetector:
     cloudlog.warning("visual vehicle detector connected stream=%s size=%sx%s runtime=%s",
                      stream, vipc_client.width, vipc_client.height, self.runtime)
     rk = Ratekeeper(float(self.detector_hz))
+    current_hz = self.detector_hz
     last_frame_id = -1
     while True:
       new_log_debug = self.params.get_bool("VisualVehicleDetectorLogDebug")
       if new_log_debug != self.log_debug:
         self.log_debug = new_log_debug
+
+      # self.detector_hz can change live via the tuning file (applied in update()).
+      if self.detector_hz != current_hz:
+        current_hz = self.detector_hz
+        rk = Ratekeeper(float(current_hz))
 
       buf = vipc_client.recv()
       if buf is None:

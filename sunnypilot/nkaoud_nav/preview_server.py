@@ -385,6 +385,11 @@ _SLIDER_RANGES = {
   "min_box_h":    (0.0, 0.8, 0.01),
   "min_bottom_y": (0.0, 1.0, 0.01),
   "confidence":   (0.05, 0.9, 0.01),
+  "crop_x":       (0.0, 1928.0, 1.0),
+  "crop_y":       (0.0, 1208.0, 1.0),
+  "crop_w":       (64.0, 1928.0, 1.0),
+  "crop_h":       (64.0, 1208.0, 1.0),
+  "hz":           (1.0, 5.0, 1.0),
 }
 _SLIDER_LABELS = {
   "right_x1":     "Right ROI  left edge (x1)",
@@ -395,6 +400,11 @@ _SLIDER_LABELS = {
   "min_box_h":    "Min box height (far-lane reject)",
   "min_bottom_y": "Min bottom-y (horizon reject)",
   "confidence":   "Detection confidence",
+  "crop_x":       "Crop box  X (px)",
+  "crop_y":       "Crop box  Y (px)",
+  "crop_w":       "Crop box  width (px)",
+  "crop_h":       "Crop box  height (px)",
+  "hz":           "Detector rate (Hz)",
 }
 _SLIDER_JSON = json.dumps([
   {"key": k, "min": _SLIDER_RANGES[k][0], "max": _SLIDER_RANGES[k][1],
@@ -440,6 +450,7 @@ TUNING_PAGE = ("""<!doctype html>
     const SLIDERS = __SLIDERS__;
     const controls = document.getElementById('controls');
     const els = {};
+    function fmt(s, v) { return parseFloat(v).toFixed(s.step < 1 ? 2 : 0); }
     SLIDERS.forEach(s => {
       const wrap = document.createElement('div'); wrap.className = 'ctl';
       const row = document.createElement('div'); row.className = 'row';
@@ -452,7 +463,7 @@ TUNING_PAGE = ("""<!doctype html>
       els[s.key] = { inp, val };
       let timer = null;
       inp.addEventListener('input', () => {
-        val.textContent = parseFloat(inp.value).toFixed(2);
+        val.textContent = fmt(s, inp.value);
         clearTimeout(timer);
         timer = setTimeout(() => post({ [s.key]: parseFloat(inp.value) }), 120);
       });
@@ -461,7 +472,7 @@ TUNING_PAGE = ("""<!doctype html>
       SLIDERS.forEach(s => {
         if (state[s.key] === undefined) return;
         els[s.key].inp.value = state[s.key];
-        els[s.key].val.textContent = parseFloat(state[s.key]).toFixed(2);
+        els[s.key].val.textContent = fmt(s, state[s.key]);
       });
     }
     function post(body) {
