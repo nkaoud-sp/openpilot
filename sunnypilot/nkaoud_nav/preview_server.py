@@ -28,7 +28,7 @@ from openpilot.sunnypilot.nkaoud_nav.adjacent_vehicle_detector import (
   PREVIEW_MODEL_INPUT_PATH, PREVIEW_PNG_PATH, PREVIEW_PNG_PATH_FULL,
   PREVIEW_PNG_PATH_LIMITED, PREVIEW_RAW_U_PATH, PREVIEW_RAW_V_PATH,
   PREVIEW_RAW_Y_PATH, PREVIEW_REQUEST_PATH, TUNING_DEFAULTS, TUNING_KEYS,
-  active_camera, load_tuning, save_tuning,
+  active_camera, frame_info, load_tuning, save_tuning,
 )
 from openpilot.sunnypilot.nkaoud_nav.token_server import get_local_ip
 
@@ -369,9 +369,11 @@ CROP_KEYS = ["crop_x", "crop_y", "crop_w", "crop_h", "hz"]
 
 
 def _tuning_json() -> bytes:
-  # "_camera" lets the portal show which camera profile it is editing; apply()
-  # ignores keys that aren't sliders.
-  return json.dumps({**load_tuning(), "_camera": active_camera()}).encode()
+  # "_camera"/"_frame_*" let the portal show the active profile and auto-range
+  # the crop sliders to the live stream; apply() ignores non-slider keys.
+  info = frame_info()
+  return json.dumps({**load_tuning(), "_camera": active_camera(),
+                     "_frame_w": info.get("frame_w"), "_frame_h": info.get("frame_h")}).encode()
 
 
 def _tuning_post(route: str, body: bytes) -> tuple[int, str, bytes]:
@@ -487,6 +489,9 @@ _PAGE_TEMPLATE = """<!doctype html>
     });
     function apply(state) {
       if (state._camera) document.getElementById('cam').textContent = state._camera;
+      // Auto-range the crop sliders to the live frame size of this camera.
+      if (state._frame_w && els['crop_x']) { els['crop_x'].inp.max = state._frame_w; els['crop_w'].inp.max = state._frame_w; }
+      if (state._frame_h && els['crop_y']) { els['crop_y'].inp.max = state._frame_h; els['crop_h'].inp.max = state._frame_h; }
       SLIDERS.forEach(s => {
         if (state[s.key] === undefined) return;
         els[s.key].inp.value = state[s.key];

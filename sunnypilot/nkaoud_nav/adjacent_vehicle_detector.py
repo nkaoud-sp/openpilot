@@ -134,6 +134,18 @@ def active_camera(params: Params | None = None) -> str:
     idx = 0
   return CAMERAS[idx] if 0 <= idx < len(CAMERAS) else CAMERAS[0]
 
+
+def frame_info() -> dict[str, Any]:
+  """Latest camera/frame dimensions from the detector's state file, so the
+  tuning portal can auto-range the crop sliders to the live stream."""
+  try:
+    st = json.loads(STATE_PATH.read_text())
+    dbg = st.get("debug", {}) or {}
+    crop = dbg.get("crop", {}) or {}
+    return {"camera": dbg.get("camera"), "frame_w": crop.get("frame_w"), "frame_h": crop.get("frame_h")}
+  except Exception:
+    return {}
+
 # key -> (min, max) clamp range. Crop values are pixels; _crop_detector_region
 # clamps them again to the actual frame size.
 TUNING_KEYS: dict[str, tuple[float, float]] = {
