@@ -260,6 +260,7 @@ class VisualVehicleDetector:
     self.base_pkl_path = self.pkl_path
     self.driver_pkl_path = os.getenv("NKAOUD_VISUAL_VEHICLE_PKL_DRIVER", DEFAULT_DRIVER_PKL_PATH)
     self._loaded_pkl: str | None = None
+    self._loaded_pkl_mtime = -1.0
     self._cold_inference = False
     self.last_timing: dict[str, Any] = {}
     self.onnx_path = os.getenv("NKAOUD_VISUAL_VEHICLE_ONNX", DEFAULT_ONNX_PATH)
@@ -393,11 +394,16 @@ class VisualVehicleDetector:
 
   def _ensure_model_for(self, camera: str) -> None:
     """Load the model matching the camera, reloading (and timing) on change.
-    Only applies to the tinygrad runtime; the ONNX fallback is left alone."""
+    Also hot-reloads when the model file itself changes (e.g. recompiled),
+    so no camera toggle is needed. Only applies to the tinygrad runtime."""
     if self.runtime == "onnx_cpu":
       return
     desired = self._model_path_for(camera)
-    if desired == self._loaded_pkl and self.pkl_model_run is not None:
+    try:
+      mtime = os.path.getmtime(desired)
+    except OSError:
+      mtime = -1.0
+    if desired == self._loaded_pkl and self.pkl_model_run is not None and mtime == self._loaded_pkl_mtime:
       return
     self.pkl_path = desired
     self._load_tinygrad_pkl()
@@ -438,6 +444,10 @@ class VisualVehicleDetector:
 
       self.runtime = "tinygrad_pkl"
       self._loaded_pkl = self.pkl_path
+      try:
+        self._loaded_pkl_mtime = os.path.getmtime(self.pkl_path)
+      except OSError:
+        self._loaded_pkl_mtime = -1.0
       self._cold_inference = True  # next inference pays the GPU warmup cost
       load_ms = round((time.monotonic() - load_t0) * 1000.0, 1)
       self.last_timing["model"] = os.path.basename(self.pkl_path)
@@ -981,6 +991,8 @@ class VisualVehicleDetector:
 
   def update(self, buf: VisionBuf) -> tuple[bool, bool, dict[str, Any]]:
     self._refresh_tuning()
+    # Hot-reload the model if its file changed (recompiled) -- cheap mtime stat.
+    self._ensure_model_for(self.camera)
     planes = self._vipc_to_yuv_planes(buf)
     if planes is None:
       left = self.left_flag.update(False)
