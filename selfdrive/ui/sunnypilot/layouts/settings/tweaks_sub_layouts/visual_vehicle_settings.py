@@ -18,6 +18,7 @@ from openpilot.system.ui.widgets.scroller_tici import Scroller
 
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.nav_token_qr_dialog import (
   VisualVehiclePreviewQrDialog,
+  VisualVehicleStagesQrDialog,
 )
 
 
@@ -377,6 +378,19 @@ class VisualVehicleSettingsLayout(Widget):
         callback=lambda: gui_app.push_widget(VisualVehiclePreviewQrDialog()),
       ),
     )
+    self._stages_preview = ListItemSP(
+      title=lambda: tr("Pipeline Stages"),
+      description=lambda: tr("Shows a QR + URL for a phone browser view of every stage: the full camera frame "
+                             "with the crop box, the crop before YOLO, and the letterboxed model input with ROI "
+                             "and detection boxes. The images are written only while this dialog is open."),
+      description_visible=True,
+      inline=False,
+      action_item=SimpleButtonActionSP(
+        button_text=lambda: tr("Open Detector Stages"),
+        button_width=800,
+        callback=lambda: gui_app.push_widget(VisualVehicleStagesQrDialog()),
+      ),
+    )
     return [
       self._download_model,
       self._download_model_480,
@@ -388,6 +402,7 @@ class VisualVehicleSettingsLayout(Widget):
       self._allow_onnx,
       self._debug_log,
       self._live_preview,
+      self._stages_preview,
     ]
 
   def _render(self, rect):

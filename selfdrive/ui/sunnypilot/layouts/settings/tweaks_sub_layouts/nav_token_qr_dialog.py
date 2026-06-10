@@ -17,7 +17,9 @@ import qrcode
 from openpilot.sunnypilot.nkaoud_nav.token_server import (
   ParamWebServer, mapbox_token_server, share_endpoint_server,
 )
-from openpilot.sunnypilot.nkaoud_nav.preview_server import visual_vehicle_preview_server
+from openpilot.sunnypilot.nkaoud_nav.preview_server import (
+  visual_vehicle_preview_server, visual_vehicle_stages_server,
+)
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.lib.text_measure import measure_text_cached
@@ -201,4 +203,14 @@ def VisualVehiclePreviewQrDialog() -> NavParamQrDialog:
     server=visual_vehicle_preview_server(),
     title_text=tr("Detector Live Preview"),
     hint_text=tr("Scan with your phone to see the 320x320 RGB tensor side-by-side: BT.601 full range (production) vs limited range (old bug)."),
+  )
+
+
+def VisualVehicleStagesQrDialog() -> NavParamQrDialog:
+  # Same QR-dialog reuse as the preview above; serves the detector pipeline
+  # stages (full frame -> crop before YOLO -> letterboxed model input).
+  return NavParamQrDialog(
+    server=visual_vehicle_stages_server(),
+    title_text=tr("Detector Pipeline Stages"),
+    hint_text=tr("Scan with your phone to see each stage: full frame, the crop before YOLO, and the letterboxed model input with ROI and detections."),
   )
