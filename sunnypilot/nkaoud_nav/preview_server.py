@@ -350,10 +350,22 @@ def visual_vehicle_stages_server(port: int = STAGES_PORT) -> PreviewWebServer:
   return PreviewWebServer(port=port, page=STAGES_PAGE, routes=STAGES_ROUTES)
 
 
+CROP_PORT = 8085
+
 TUNING_ROUTES = {
   "/processed.png":     PREVIEW_MODEL_INPUT_PATH,
   "/detector_crop.png": PREVIEW_DETECTOR_CROP_PATH,
 }
+CROP_ROUTES = {
+  "/full_frame.png":    PREVIEW_FULL_FRAME_CROP_PATH,
+  "/detector_crop.png": PREVIEW_DETECTOR_CROP_PATH,
+}
+
+# Which sliders appear on which portal. They all write the same tuning file, so
+# each portal just shows its own subset.
+TUNE_KEYS = ["right_x1", "right_y1", "right_x2", "right_y2",
+             "min_box_w", "min_box_h", "min_bottom_y", "confidence"]
+CROP_KEYS = ["crop_x", "crop_y", "crop_w", "crop_h", "hz"]
 
 
 def _tuning_json() -> bytes:
@@ -375,7 +387,7 @@ def _tuning_post(route: str, body: bytes) -> tuple[int, str, bytes]:
 
 
 # Slider config drives the controls; ranges are display-only (save_tuning still
-# clamps to TUNING_KEYS). Built from the shared key list so it can't drift.
+# clamps to TUNING_KEYS).
 _SLIDER_RANGES = {
   "right_x1":     (0.0, 1.0, 0.01),
   "right_x2":     (0.0, 1.0, 0.01),
@@ -406,15 +418,19 @@ _SLIDER_LABELS = {
   "crop_h":       "Crop box  height (px)",
   "hz":           "Detector rate (Hz)",
 }
-_SLIDER_JSON = json.dumps([
-  {"key": k, "min": _SLIDER_RANGES[k][0], "max": _SLIDER_RANGES[k][1],
-   "step": _SLIDER_RANGES[k][2], "label": _SLIDER_LABELS[k]}
-  for k in TUNING_KEYS
-])
 
-TUNING_PAGE = ("""<!doctype html>
+
+def _sliders_json(keys: list[str]) -> str:
+  return json.dumps([
+    {"key": k, "min": _SLIDER_RANGES[k][0], "max": _SLIDER_RANGES[k][1],
+     "step": _SLIDER_RANGES[k][2], "label": _SLIDER_LABELS[k]}
+    for k in keys
+  ])
+
+
+_PAGE_TEMPLATE = """<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Visual Vehicle Detector Tuning</title>
+<title>__TITLE__</title>
 <style>
   body { background:#111; color:#ddd; font-family:sans-serif; margin:0; padding:16px; }
   h2 { margin:0 0 4px 0; text-align:center; }
@@ -434,20 +450,18 @@ TUNING_PAGE = ("""<!doctype html>
   button { background:#243; color:#cfe; border:1px solid #365; border-radius:6px;
            padding:10px 18px; font-size:15px; }
   #stamp { margin-top:10px; color:#666; font-size:12px; font-family:monospace; text-align:center; }
-  legend { color:#bbb; }
 </style></head>
 <body>
-  <h2>Visual Vehicle Detector &mdash; Live Tuning</h2>
-  <p class="lead">Green boxes trip the right-lane flag; gray are ignored. Cyan = right ROI band, yellow line = min bottom-y. Drag to tune; saved to the device instantly.</p>
-  <div class="imgs">
-    <div class="col"><div class="cap">model input (fed to YOLO)</div><img id="proc" src="/processed.png" alt="(waiting...)"></div>
-    <div class="col"><div class="cap">detector crop</div><img id="crop" src="/detector_crop.png" alt="(waiting...)"></div>
-  </div>
+  <h2>__TITLE__</h2>
+  <p class="lead">__LEAD__</p>
+  <div class="imgs">__IMAGES_HTML__</div>
   <div class="controls" id="controls"></div>
   <div class="btns"><button id="reset">Reset to defaults</button></div>
   <div id="stamp">--</div>
   <script>
     const SLIDERS = __SLIDERS__;
+    const IMAGES = __IMAGES__;
+    const DEFAULTS = __DEFAULTS__;
     const controls = document.getElementById('controls');
     const els = {};
     function fmt(s, v) { return parseFloat(v).toFixed(s.step < 1 ? 2 : 0); }
@@ -480,29 +494,66 @@ TUNING_PAGE = ("""<!doctype html>
                          body: JSON.stringify(body) })
         .then(r => r.ok ? r.json() : null).then(j => { if (j) apply(j); }).catch(() => {});
     }
-    document.getElementById('reset').addEventListener('click', () => {
-      fetch('/reset', { method: 'POST' }).then(r => r.ok ? r.json() : null)
-        .then(j => { if (j) apply(j); }).catch(() => {});
-    });
+    document.getElementById('reset').addEventListener('click', () => post(DEFAULTS));
     fetch('/tuning.json').then(r => r.json()).then(apply).catch(() => {});
-    const proc = document.getElementById('proc');
-    const crop = document.getElementById('crop');
+    const imgEls = IMAGES.map(im => document.getElementById(im.id));
     const stamp = document.getElementById('stamp');
-    proc.addEventListener('error', () => { stamp.textContent = 'waiting for detector...'; });
+    if (imgEls[0]) imgEls[0].addEventListener('error', () => { stamp.textContent = 'waiting for detector...'; });
     setInterval(() => {
       const t = Date.now();
-      proc.src = '/processed.png?t=' + t;
-      crop.src = '/detector_crop.png?t=' + t;
+      IMAGES.forEach((im, i) => { imgEls[i].src = im.route + '?t=' + t; });
       stamp.textContent = new Date().toLocaleTimeString();
     }, 700);
   </script>
 </body></html>
-""".replace("__SLIDERS__", _SLIDER_JSON)).encode()
+"""
+
+
+def _render_tuning_page(title: str, lead: str, images: list[dict[str, str]], keys: list[str]) -> bytes:
+  imgs_html = "".join(
+    f'<div class="col"><div class="cap">{im["cap"]}</div>'
+    f'<img id="{im["id"]}" src="{im["route"]}" alt="(waiting...)"></div>'
+    for im in images
+  )
+  defaults = {k: TUNING_DEFAULTS[k] for k in keys}
+  return (_PAGE_TEMPLATE
+          .replace("__TITLE__", title)
+          .replace("__LEAD__", lead)
+          .replace("__IMAGES_HTML__", imgs_html)
+          .replace("__SLIDERS__", _sliders_json(keys))
+          .replace("__IMAGES__", json.dumps([{"id": im["id"], "route": im["route"]} for im in images]))
+          .replace("__DEFAULTS__", json.dumps(defaults))
+          ).encode()
+
+
+TUNING_PAGE = _render_tuning_page(
+  "Visual Vehicle Detector &mdash; Live Tuning",
+  "Green boxes trip the right-lane flag; gray are ignored. Cyan = right ROI band, yellow line = min bottom-y. Drag to tune; saved to the device instantly.",
+  [{"id": "proc", "route": "/processed.png", "cap": "model input (fed to YOLO)"},
+   {"id": "crop", "route": "/detector_crop.png", "cap": "detector crop"}],
+  TUNE_KEYS,
+)
+
+CROP_PAGE = _render_tuning_page(
+  "Visual Vehicle Detector &mdash; Crop &amp; Rate",
+  "Drag the crop box (yellow rectangle) over the area you want YOLO to see, and set the detector rate. Saved to the device instantly.",
+  [{"id": "full", "route": "/full_frame.png", "cap": "full frame + crop box"},
+   {"id": "crop", "route": "/detector_crop.png", "cap": "resulting crop"}],
+  CROP_KEYS,
+)
 
 
 def visual_vehicle_tuning_server(port: int = TUNING_PORT) -> PreviewWebServer:
   return PreviewWebServer(
     port=port, page=TUNING_PAGE, routes=TUNING_ROUTES,
+    json_routes={"/tuning.json": _tuning_json},
+    post_handler=_tuning_post,
+  )
+
+
+def visual_vehicle_crop_server(port: int = CROP_PORT) -> PreviewWebServer:
+  return PreviewWebServer(
+    port=port, page=CROP_PAGE, routes=CROP_ROUTES,
     json_routes={"/tuning.json": _tuning_json},
     post_handler=_tuning_post,
   )

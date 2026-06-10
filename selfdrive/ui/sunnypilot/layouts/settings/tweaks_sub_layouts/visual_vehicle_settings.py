@@ -17,6 +17,7 @@ from openpilot.system.ui.widgets.network import NavButton
 from openpilot.system.ui.widgets.scroller_tici import Scroller
 
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.nav_token_qr_dialog import (
+  VisualVehicleCropQrDialog,
   VisualVehiclePreviewQrDialog,
   VisualVehicleStagesQrDialog,
   VisualVehicleTuningQrDialog,
@@ -394,15 +395,28 @@ class VisualVehicleSettingsLayout(Widget):
     )
     self._live_tuning = ListItemSP(
       title=lambda: tr("Live Tuning"),
-      description=lambda: tr("Shows a QR + URL for a phone browser view with sliders for the right ROI band, the "
-                             "size/position gate and detection confidence. Green boxes trip the right-lane flag, "
-                             "gray are ignored; changes apply live without a restart and persist on the device."),
+      description=lambda: tr("Shows a QR + URL for a phone browser view, over the model input image, with sliders "
+                             "for the right ROI band, the size/position gate and detection confidence. Green boxes "
+                             "trip the right-lane flag, gray are ignored; changes apply live and persist."),
       description_visible=True,
       inline=False,
       action_item=SimpleButtonActionSP(
         button_text=lambda: tr("Open Live Tuning"),
         button_width=800,
         callback=lambda: gui_app.push_widget(VisualVehicleTuningQrDialog()),
+      ),
+    )
+    self._crop_tuning = ListItemSP(
+      title=lambda: tr("Crop & Rate"),
+      description=lambda: tr("Shows a QR + URL for a phone browser view, over the full camera frame, with sliders "
+                             "for the crop box (x/y/width/height) and the detector rate. Drag the yellow crop box "
+                             "over the area YOLO should see; changes apply live and persist."),
+      description_visible=True,
+      inline=False,
+      action_item=SimpleButtonActionSP(
+        button_text=lambda: tr("Open Crop & Rate"),
+        button_width=800,
+        callback=lambda: gui_app.push_widget(VisualVehicleCropQrDialog()),
       ),
     )
     return [
@@ -418,6 +432,7 @@ class VisualVehicleSettingsLayout(Widget):
       self._live_preview,
       self._stages_preview,
       self._live_tuning,
+      self._crop_tuning,
     ]
 
   def _render(self, rect):
