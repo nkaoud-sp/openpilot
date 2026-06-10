@@ -75,6 +75,7 @@ class VisualVehicleReadout:
     right = bool(state.get("right", False))
 
     rows = [
+      ("CAMERA", str(debug.get("camera", "--")).upper(), _WHITE),
       ("LEFT", "VEHICLE" if left else "CLEAR", self._status_color(left, stale, reason)),
       ("RIGHT", "VEHICLE" if right else "CLEAR", self._status_color(right, stale, reason)),
       ("STATUS", "STALE" if stale else reason.upper(), _AMBER if stale or reason != "ok" else _GREEN),
