@@ -7,9 +7,12 @@ See the LICENSE.md file in the root directory for more details.
 import pyray as rl
 
 from openpilot.common.constants import CV
+from openpilot.selfdrive.ui import UI_BORDER_SIZE
+from openpilot.selfdrive.ui.onroad.driver_state import BTN_SIZE as DM_BTN_SIZE
 from openpilot.selfdrive.ui.mici.onroad.torque_bar import TorqueBar
 from openpilot.selfdrive.ui.sunnypilot.onroad.developer_ui import DeveloperUiRenderer, DeveloperUiState, get_bottom_dev_ui_offset
 from openpilot.selfdrive.ui.sunnypilot.onroad.nav_button import NavButton
+from openpilot.selfdrive.ui.sunnypilot.onroad.visual_vehicle_capture_button import VisualVehicleCaptureButton
 from openpilot.selfdrive.ui.sunnypilot.onroad.nav_lane_guidance import NavLaneGuidance
 from openpilot.selfdrive.ui.sunnypilot.onroad.nav_maneuver_banner import NavManeuverBanner
 from openpilot.selfdrive.ui.sunnypilot.onroad.road_name import RoadNameRenderer
@@ -41,6 +44,7 @@ class HudRendererSP(HudRenderer):
     self.speed_renderer = SpeedRenderer()
     self._torque_bar = TorqueBar(scale=3.0, always=True)
     self._nav_button = NavButton(UI_CONFIG.button_size)
+    self._capture_button = VisualVehicleCaptureButton(UI_CONFIG.button_size)
     self._nav_maneuver_banner = NavManeuverBanner()
     self._nav_lane_guidance = NavLaneGuidance()
 
@@ -156,9 +160,18 @@ class HudRendererSP(HudRenderer):
     nav_y = rect.y + UI_CONFIG.border_size + UI_CONFIG.button_size + 30
     self._nav_button.render(rl.Rectangle(nav_x, nav_y, UI_CONFIG.button_size, UI_CONFIG.button_size))
 
+    # Image-capture button: stacked directly above the driver-monitoring widget,
+    # mirroring its left/right (RHD) placement so the two move together.
+    dm_offset = UI_BORDER_SIZE + DM_BTN_SIZE // 2
+    is_rhd = ui_state.sm["driverMonitoringState"].isRHD
+    dm_cx = rect.x + (rect.width - dm_offset if is_rhd else dm_offset)
+    dm_top = rect.y + rect.height - dm_offset - get_bottom_dev_ui_offset() - DM_BTN_SIZE // 2
+    cap_size = UI_CONFIG.button_size
+    self._capture_button.render(rl.Rectangle(dm_cx - cap_size / 2, dm_top - 24 - cap_size, cap_size, cap_size))
+
     # Maneuver banner: top-center, drawn last so it sits above everything else.
     self._nav_maneuver_banner.render(rect)
     self._nav_lane_guidance.render(rect)
 
   def user_interacting(self) -> bool:
-    return super().user_interacting() or self._nav_button.is_pressed
+    return super().user_interacting() or self._nav_button.is_pressed or self._capture_button.is_pressed
