@@ -63,6 +63,26 @@ DEFAULT_CAPTURE_HZ = 2.0
 CAPTURE_MAX_FILES = 8000
 CAPTURE_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB safety cap
 
+# Driver-camera occupancy classifier (TinyCNN). The driver camera REPLACES the
+# YOLO detection path with a whole-crop blocked/clear classifier. It takes the
+# per-camera driver crop (the same crop the capture portal saves as
+# cap_driver_*.jpg), cuts a fixed inner ROI, stretches it to img_size, normalizes
+# to [-1, 1], and emits softmax logits [clear, blocked].
+DEFAULT_CLASSIFIER_PKL_PATH = str(ARTIFACT_DIR / "visual_vehicle_classifier_driver_tinygrad.pkl")
+DEFAULT_CLASSIFIER_ONNX_PATH = str(ARTIFACT_DIR / "visual_vehicle_classifier_driver.onnx")
+CLASSIFIER_IMG_SIZE = 320            # fixed model input (the ONNX is 1x3x320x320)
+CLASSIFIER_SRC_W = 543               # the cap_driver_*.jpg geometry training was cut from
+CLASSIFIER_SRC_H = 530
+CLASSIFIER_ROI_ABS = (30, 55, 535, 425)  # x1,y1,x2,y2 ROI inside that 543x530 crop
+# Applied as fractions of the live driver crop so it stays correct if the crop
+# size changes proportionally (exact when the crop is 543x530, as at capture).
+CLASSIFIER_ROI_FRAC = (
+  CLASSIFIER_ROI_ABS[0] / CLASSIFIER_SRC_W, CLASSIFIER_ROI_ABS[1] / CLASSIFIER_SRC_H,
+  CLASSIFIER_ROI_ABS[2] / CLASSIFIER_SRC_W, CLASSIFIER_ROI_ABS[3] / CLASSIFIER_SRC_H,
+)
+CLASSIFIER_CAMERA = "driver"
+DEFAULT_BLOCKED_THRESHOLD = 0.5
+
 # COCO class IDs from Ultralytics YOLO exports.
 VEHICLE_CLASS_IDS = {1, 2, 3, 5, 7}  # bicycle, car, motorcycle, bus, truck
 
@@ -363,9 +383,23 @@ class VisualVehicleDetector:
     self.onnx_session = None
     self.onnx_input_name = ""
 
+    # Driver-camera classifier runtime (separate from the YOLO runtime above).
+    self.classifier_pkl_path = os.getenv("NKAOUD_VISUAL_VEHICLE_CLASSIFIER_PKL", DEFAULT_CLASSIFIER_PKL_PATH)
+    self.classifier_onnx_path = os.getenv("NKAOUD_VISUAL_VEHICLE_CLASSIFIER_ONNX", DEFAULT_CLASSIFIER_ONNX_PATH)
+    self.classifier_runtime = "none"
+    self.classifier_pkl_run = None
+    self.classifier_session = None
+    self.classifier_input_name = "input_img"
+    self.classifier_input_dtype = None
+    self.classifier_input_device = None
+    self._classifier_loaded: str | None = None
+    self._classifier_mtime = -1.0
+    self.blocked_threshold = float(os.getenv("NKAOUD_VISUAL_VEHICLE_BLOCKED_THRESHOLD", str(DEFAULT_BLOCKED_THRESHOLD)))
+
     self.input_shape: tuple[int, int] = (320, 320)  # width, height
     self.left_flag = DebouncedFlag()
     self.right_flag = DebouncedFlag()
+    self.blocked_flag = DebouncedFlag()
     self.startup_debug: dict[str, Any] = {"reason": "not_started", "runtime": self.runtime}
     self.last_model_debug: dict[str, Any] = {}
     self._preproc_dumped = False
@@ -477,6 +511,8 @@ class VisualVehicleDetector:
     """Load the model matching the camera, reloading (and timing) on change.
     Also hot-reloads when the model file itself changes (e.g. recompiled),
     so no camera toggle is needed. Only applies to the tinygrad runtime."""
+    if camera == CLASSIFIER_CAMERA:
+      return  # driver cam uses the classifier, not a YOLO pkl
     if self.runtime == "onnx_cpu":
       return
     desired = self._model_path_for(camera)
@@ -560,6 +596,146 @@ class VisualVehicleDetector:
       self._set_startup_debug(reason="onnx_load_failed", error=str(e))
       cloudlog.exception("visual vehicle detector failed to initialize ONNX fallback")
       return False
+
+  # ---- Driver-camera occupancy classifier (replaces YOLO for the driver cam) ----
+
+  def classifier_available(self) -> bool:
+    return self.classifier_runtime in ("tinygrad_pkl", "onnx_cpu")
+
+  def _ensure_classifier(self) -> None:
+    """Load (and hot-reload on file change) the driver classifier. Prefers the
+    compiled tinygrad pkl; falls back to ONNX when VisualVehicleDetectorAllowOnnx
+    is set, mirroring the YOLO runtime selection."""
+    pkl = self.classifier_pkl_path
+    if os.path.exists(pkl):
+      mtime = os.path.getmtime(pkl)
+      if not (self._classifier_loaded == pkl and self.classifier_pkl_run is not None and mtime == self._classifier_mtime):
+        if self._load_classifier_pkl(pkl):
+          self._classifier_loaded, self._classifier_mtime = pkl, mtime
+      return
+
+    if self.params.get_bool("VisualVehicleDetectorAllowOnnx") and os.path.exists(self.classifier_onnx_path):
+      onnx = self.classifier_onnx_path
+      mtime = os.path.getmtime(onnx)
+      if not (self._classifier_loaded == onnx and self.classifier_session is not None and mtime == self._classifier_mtime):
+        if self._load_classifier_onnx(onnx):
+          self._classifier_loaded, self._classifier_mtime = onnx, mtime
+      return
+
+    # Nothing loadable -- drop any stale runtime so the readout shows "missing".
+    self.classifier_runtime = "none"
+    self.classifier_pkl_run = None
+    self.classifier_session = None
+    self._classifier_loaded = None
+
+  def _load_classifier_pkl(self, path: str) -> bool:
+    try:
+      self._set_tinygrad_device_env()
+      from tinygrad.tensor import Tensor  # pylint: disable=import-error
+      self.Tensor = Tensor
+      with open(path, "rb") as f:
+        self.classifier_pkl_run = pickle.load(f)
+      captured = getattr(self.classifier_pkl_run, "captured", None)
+      if captured is not None:
+        names = list(getattr(captured, "expected_names", []) or [])
+        if names:
+          self.classifier_input_name = names[0]
+        infos = list(getattr(captured, "expected_input_info", []) or [])
+        if infos and len(infos[0]) > 2:
+          self.classifier_input_dtype = infos[0][2]
+          if len(infos[0]) > 3:
+            self.classifier_input_device = infos[0][3]
+      self.classifier_session = None
+      self.classifier_runtime = "tinygrad_pkl"
+      cloudlog.warning("visual vehicle classifier loaded tinygrad pkl %s input=%s", path, self.classifier_input_name)
+      return True
+    except Exception:
+      self.classifier_runtime = "tinygrad_pkl_failed"
+      cloudlog.exception("visual vehicle classifier failed to load tinygrad pkl")
+      return False
+
+  def _load_classifier_onnx(self, path: str) -> bool:
+    try:
+      import onnxruntime as ort  # pylint: disable=import-error
+      self.classifier_session = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
+      self.classifier_input_name = self.classifier_session.get_inputs()[0].name
+      self.classifier_pkl_run = None
+      self.classifier_runtime = "onnx_cpu"
+      cloudlog.warning("visual vehicle classifier loaded ONNX %s input=%s", path, self.classifier_input_name)
+      return True
+    except Exception:
+      self.classifier_runtime = "onnx_failed"
+      cloudlog.exception("visual vehicle classifier failed to load ONNX")
+      return False
+
+  def _preprocess_classifier(self, detector_rgb: np.ndarray) -> tuple[np.ndarray, dict[str, int]]:
+    """Reproduce training preprocessing exactly: cut the fixed ROI from the
+    driver crop, stretch (no letterbox) to img_size, scale to [-1, 1], NCHW."""
+    h, w = detector_rgb.shape[:2]
+    fx1, fy1, fx2, fy2 = CLASSIFIER_ROI_FRAC
+    x1 = int(np.clip(round(fx1 * w), 0, w - 1))
+    y1 = int(np.clip(round(fy1 * h), 0, h - 1))
+    x2 = int(np.clip(round(fx2 * w), x1 + 1, w))
+    y2 = int(np.clip(round(fy2 * h), y1 + 1, h))
+    roi = detector_rgb[y1:y2, x1:x2]
+    # Bilinear stretch to match the training resize (PIL is already a dep here).
+    from PIL import Image
+    resized = np.asarray(
+      Image.fromarray(roi, "RGB").resize((CLASSIFIER_IMG_SIZE, CLASSIFIER_IMG_SIZE), Image.BILINEAR)
+    )
+    x = resized.astype(np.float32) / 127.5 - 1.0  # -> [-1, 1]
+    x = np.transpose(x, (2, 0, 1))[None]
+    return np.ascontiguousarray(x), {"roi_x1": x1, "roi_y1": y1, "roi_x2": x2, "roi_y2": y2}
+
+  def _run_classifier(self, inp: np.ndarray) -> float:
+    """Return p_blocked = softmax(logits)[1]."""
+    if self.classifier_runtime == "tinygrad_pkl" and self.classifier_pkl_run is not None and self.Tensor is not None:
+      tensor = self.Tensor(inp, device=self.classifier_input_device).realize() if self.classifier_input_device \
+        else self.Tensor(inp).realize()
+      if self.classifier_input_dtype is not None:
+        tensor = tensor.cast(self.classifier_input_dtype)
+      out = self.classifier_pkl_run(**{self.classifier_input_name: tensor})
+      logits = self._tensor_to_numpy(out)
+    elif self.classifier_runtime == "onnx_cpu" and self.classifier_session is not None:
+      logits = self.classifier_session.run(None, {self.classifier_input_name: inp})[0]
+    else:
+      raise RuntimeError("classifier runtime not loaded")
+    l = np.asarray(logits, dtype=np.float32).reshape(-1)[:2]  # [clear, blocked]
+    e = np.exp(l - l.max())
+    return float((e / e.sum())[1])
+
+  def _update_classifier(self, detector_rgb: np.ndarray, crop_debug: dict[str, int | str]) -> tuple[bool, bool, dict[str, Any]]:
+    """Driver-camera path: whole-crop blocked/clear instead of YOLO boxes.
+    Reports a dedicated signal; the left/right flags stay clear."""
+    base = {"runtime": self.classifier_runtime, "crop": crop_debug,
+            "input_shape": [CLASSIFIER_IMG_SIZE, CLASSIFIER_IMG_SIZE],
+            "hz": self.detector_hz, "timing": dict(self.last_timing),
+            "capture": {"on": capture_requested(), "saved": self._capture_count}}
+    if not self.classifier_available():
+      return False, False, {**base, "reason": "classifier_missing",
+                            "classifier": {"active": False, "model": self.classifier_pkl_path,
+                                           "allow_onnx": self.params.get_bool("VisualVehicleDetectorAllowOnnx")}}
+    try:
+      inp, roi = self._preprocess_classifier(detector_rgb)
+      p_blocked = self._run_classifier(inp)
+    except Exception as e:
+      cloudlog.exception("visual vehicle classifier inference failed")
+      return False, False, {**base, "reason": "classifier_error", "error": str(e)}
+
+    blocked = self.blocked_flag.update(p_blocked >= self.blocked_threshold)
+    base["classifier"] = {
+      "active": True,
+      "blocked": bool(blocked),
+      "p_blocked": round(p_blocked, 4),
+      "p_clear": round(1.0 - p_blocked, 4),
+      "threshold": round(self.blocked_threshold, 3),
+      "score": self.blocked_flag.score,
+      "roi": [roi["roi_x1"], roi["roi_y1"], roi["roi_x2"], roi["roi_y2"]],
+      "src_crop": [int(detector_rgb.shape[1]), int(detector_rgb.shape[0])],
+      "expected_src": [CLASSIFIER_SRC_W, CLASSIFIER_SRC_H],
+    }
+    base["reason"] = "ok"
+    return False, False, base
 
   def _vipc_to_yuv_planes(self, buf: VisionBuf) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
     """Returns (y, u, v) as int16 arrays from the NV12 VisionIPC buffer, or None.
@@ -1109,8 +1285,12 @@ class VisualVehicleDetector:
 
   def update(self, buf: VisionBuf) -> tuple[bool, bool, dict[str, Any]]:
     self._refresh_tuning()
-    # Hot-reload the model if its file changed (recompiled) -- cheap mtime stat.
-    self._ensure_model_for(self.camera)
+    # Driver cam runs the occupancy classifier; road/wide run YOLO. Hot-reload
+    # the relevant model if its file changed (recompiled) -- cheap mtime stat.
+    if self.camera == CLASSIFIER_CAMERA:
+      self._ensure_classifier()
+    else:
+      self._ensure_model_for(self.camera)
     planes = self._vipc_to_yuv_planes(buf)
     if planes is None:
       left = self.left_flag.update(False)
@@ -1124,9 +1304,15 @@ class VisualVehicleDetector:
       right = self.right_flag.update(False)
       return left, right, {"reason": "frame_convert_failed", "runtime": self.runtime}
 
-    # Run YOLO on the fixed crop only, not on the full camera frame.
+    # Crop the per-camera detector region (shared by capture, YOLO, classifier).
     detector_rgb, crop_debug = self._crop_detector_region(rgb)
     self._maybe_capture(detector_rgb)
+
+    # Driver cam: whole-crop blocked/clear classifier, not YOLO boxes.
+    if self.camera == CLASSIFIER_CAMERA:
+      return self._update_classifier(detector_rgb, crop_debug)
+
+    # Run YOLO on the fixed crop only, not on the full camera frame.
     detections = self._run_model(detector_rgb)
     image_h, image_w = detector_rgb.shape[:2]
 
@@ -1194,7 +1380,9 @@ class VisualVehicleDetector:
 
   def run(self) -> None:
     self.log_debug = self.params.get_bool("VisualVehicleDetectorLogDebug")
-    if not self._load_runtime():
+    runtime_ok = self._load_runtime()
+    self._ensure_classifier()  # driver-cam path can run even without a YOLO model
+    if not runtime_ok and not self.classifier_available():
       rk = Ratekeeper(1.0)
       while True:
         # Keep the real startup failure visible instead of overwriting it with
@@ -1236,12 +1424,16 @@ class VisualVehicleDetector:
         # model_load_ms / first_inf_ms in last_timing are the "model switch"
         # cost; sum with cam_connect_ms for "model+camera switch".
         prev_loaded = self._loaded_pkl
-        self._ensure_model_for(desired_camera)
+        if desired_camera == CLASSIFIER_CAMERA:
+          self._ensure_classifier()
+        else:
+          self._ensure_model_for(desired_camera)
         model_switched = self._loaded_pkl != prev_loaded
         connected_camera = desired_camera
         last_frame_id = -1
         self.left_flag = DebouncedFlag()
         self.right_flag = DebouncedFlag()
+        self.blocked_flag = DebouncedFlag()
         cloudlog.warning("visual vehicle detector switch camera=%s stream=%s size=%sx%s "
                          "cam_connect_ms=%.1f model_switched=%s model_load_ms=%s runtime=%s",
                          desired_camera, stream, vipc_client.width, vipc_client.height, conn_ms,
