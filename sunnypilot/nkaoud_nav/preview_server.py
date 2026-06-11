@@ -368,7 +368,7 @@ CROP_ROUTES = {
 # each portal just shows its own subset.
 TUNE_KEYS = ["right_x1", "right_y1", "right_x2", "right_y2",
              "min_box_w", "min_box_h", "min_bottom_y", "confidence"]
-CROP_KEYS = ["crop_x", "crop_y", "crop_w", "crop_h", "hz"]
+CROP_KEYS = ["crop_x", "crop_y", "crop_w", "crop_h", "hz", "blocked_threshold"]
 
 
 def _tuning_json() -> bytes:
@@ -409,6 +409,7 @@ _SLIDER_RANGES = {
   "crop_w":       (64.0, 1928.0, 1.0),
   "crop_h":       (64.0, 1208.0, 1.0),
   "hz":           (1.0, 5.0, 1.0),
+  "blocked_threshold": (0.05, 0.95, 0.01),
 }
 _SLIDER_LABELS = {
   "right_x1":     "Right ROI  left edge (x1)",
@@ -424,6 +425,7 @@ _SLIDER_LABELS = {
   "crop_w":       "Crop box  width (px)",
   "crop_h":       "Crop box  height (px)",
   "hz":           "Detector rate (Hz)",
+  "blocked_threshold": "Blocked threshold (driver cam)",
 }
 
 

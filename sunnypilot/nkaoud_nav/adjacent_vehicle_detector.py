@@ -257,6 +257,7 @@ TUNING_KEYS: dict[str, tuple[float, float]] = {
   "crop_w": (16.0, 4096.0),
   "crop_h": (16.0, 4096.0),
   "hz": (1.0, 5.0),
+  "blocked_threshold": (0.05, 0.95),
 }
 
 TUNING_DEFAULTS: dict[str, float] = {
@@ -273,6 +274,7 @@ TUNING_DEFAULTS: dict[str, float] = {
   "crop_w": DEFAULT_CROP_W,
   "crop_h": DEFAULT_CROP_H,
   "hz": DEFAULT_HZ,
+  "blocked_threshold": DEFAULT_BLOCKED_THRESHOLD,
 }
 
 
@@ -442,6 +444,7 @@ class VisualVehicleDetector:
     self.crop_w = t["crop_w"]
     self.crop_h = t["crop_h"]
     self.detector_hz = max(1, min(5, int(round(t["hz"]))))
+    self.blocked_threshold = t["blocked_threshold"]
 
   def _write_state(self, left: bool, right: bool, debug: dict[str, Any] | None = None) -> None:
     state = {
@@ -685,7 +688,7 @@ class VisualVehicleDetector:
     )
     x = resized.astype(np.float32) / 127.5 - 1.0  # -> [-1, 1]
     x = np.transpose(x, (2, 0, 1))[None]
-    return np.ascontiguousarray(x), {"roi_x1": x1, "roi_y1": y1, "roi_x2": x2, "roi_y2": y2}
+    return np.ascontiguousarray(x), {"roi_x1": x1, "roi_y1": y1, "roi_x2": x2, "roi_y2": y2}, resized
 
   def _run_classifier(self, inp: np.ndarray) -> float:
     """Return p_blocked = softmax(logits)[1]."""
@@ -704,7 +707,8 @@ class VisualVehicleDetector:
     e = np.exp(l - l.max())
     return float((e / e.sum())[1])
 
-  def _update_classifier(self, detector_rgb: np.ndarray, crop_debug: dict[str, int | str]) -> tuple[bool, bool, dict[str, Any]]:
+  def _update_classifier(self, rgb_full: np.ndarray, detector_rgb: np.ndarray,
+                         crop_debug: dict[str, int | str]) -> tuple[bool, bool, dict[str, Any]]:
     """Driver-camera path: whole-crop blocked/clear instead of YOLO boxes.
     Reports a dedicated signal; the left/right flags stay clear."""
     base = {"runtime": self.classifier_runtime, "crop": crop_debug,
@@ -716,11 +720,20 @@ class VisualVehicleDetector:
                             "classifier": {"active": False, "model": self.classifier_pkl_path,
                                            "allow_onnx": self.params.get_bool("VisualVehicleDetectorAllowOnnx")}}
     try:
-      inp, roi = self._preprocess_classifier(detector_rgb)
+      inp, roi, model_input = self._preprocess_classifier(detector_rgb)
       p_blocked = self._run_classifier(inp)
     except Exception as e:
       cloudlog.exception("visual vehicle classifier inference failed")
       return False, False, {**base, "reason": "classifier_error", "error": str(e)}
+
+    # Live preview (Crop & Rate / classifier input), only while a portal holds
+    # the sentinel: full frame + crop box, the crop with the ROI box, and the
+    # exact 320x320 the model sees.
+    if os.path.exists(PREVIEW_REQUEST_PATH):
+      try:
+        self._write_classifier_previews(rgb_full, detector_rgb, crop_debug, roi, model_input)
+      except Exception:
+        cloudlog.exception("visual vehicle classifier preview write failed")
 
     blocked = self.blocked_flag.update(p_blocked >= self.blocked_threshold)
     base["classifier"] = {
@@ -736,6 +749,33 @@ class VisualVehicleDetector:
     }
     base["reason"] = "ok"
     return False, False, base
+
+  def _write_classifier_previews(self, rgb_full: np.ndarray, detector_rgb: np.ndarray,
+                                 crop_debug: dict[str, int | str], roi: dict[str, int],
+                                 model_input: np.ndarray) -> None:
+    """Driver-cam equivalent of the YOLO stage previews, feeding the same portal
+    image routes: full frame + crop box, the crop with the classifier ROI box,
+    and the exact 320x320 tensor (pre-normalization) the model sees."""
+    from PIL import Image, ImageDraw
+
+    full_img = Image.fromarray(rgb_full, "RGB")
+    fd = ImageDraw.Draw(full_img)
+    cx, cy = int(crop_debug.get("crop_x", 0)), int(crop_debug.get("crop_y", 0))
+    cw = int(crop_debug.get("crop_w", detector_rgb.shape[1]))
+    ch = int(crop_debug.get("crop_h", detector_rgb.shape[0]))
+    fd.rectangle((cx, cy, cx + cw - 1, cy + ch - 1), outline=(255, 255, 0), width=4)
+    self._draw_text(fd, (cx + 6, cy + 6), f"driver crop {cw}x{ch}", (255, 255, 0))
+    full_img.save(PREVIEW_FULL_FRAME_CROP_PATH)
+
+    crop_img = Image.fromarray(detector_rgb, "RGB")
+    cd = ImageDraw.Draw(crop_img)
+    cd.rectangle((roi["roi_x1"], roi["roi_y1"], roi["roi_x2"] - 1, roi["roi_y2"] - 1),
+                 outline=(0, 200, 200), width=3)
+    self._draw_text(cd, (roi["roi_x1"] + 4, roi["roi_y1"] + 4), "classifier ROI", (0, 200, 200))
+    crop_img.save(PREVIEW_DETECTOR_CROP_PATH)
+
+    # The 320x320 the model classifies (this is what blocked/clear is decided on).
+    Image.fromarray(model_input, "RGB").save(PREVIEW_MODEL_INPUT_PATH)
 
   def _vipc_to_yuv_planes(self, buf: VisionBuf) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
     """Returns (y, u, v) as int16 arrays from the NV12 VisionIPC buffer, or None.
@@ -1310,7 +1350,7 @@ class VisualVehicleDetector:
 
     # Driver cam: whole-crop blocked/clear classifier, not YOLO boxes.
     if self.camera == CLASSIFIER_CAMERA:
-      return self._update_classifier(detector_rgb, crop_debug)
+      return self._update_classifier(rgb, detector_rgb, crop_debug)
 
     # Run YOLO on the fixed crop only, not on the full camera frame.
     detections = self._run_model(detector_rgb)
