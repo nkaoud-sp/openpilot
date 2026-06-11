@@ -26,6 +26,15 @@ DRIVER_PKL_PATH = MODEL_DIR / "visual_vehicle_detector_driver_tinygrad.pkl"
 DRIVER_META_PATH = MODEL_DIR / "visual_vehicle_detector_driver_tinygrad.json"
 STATUS_PATH = MODEL_DIR / "visual_vehicle_detector_setup_status.json"
 
+# Driver-camera occupancy classifier (TinyCNN, 320x320, [clear, blocked]).
+# Separate from the YOLO detector model above; the detector loads this only for
+# the driver camera. ONNX runs directly (with AllowOnnx); the pkl is the
+# preferred on-device runtime.
+CLASSIFIER_ONNX_PATH = MODEL_DIR / "visual_vehicle_classifier_driver.onnx"
+CLASSIFIER_PKL_PATH = MODEL_DIR / "visual_vehicle_classifier_driver_tinygrad.pkl"
+CLASSIFIER_META_PATH = MODEL_DIR / "visual_vehicle_classifier_driver_tinygrad.json"
+DEFAULT_CLASSIFIER_URL = "https://github.com/nkaoud-sp/resources/raw/refs/heads/main/cnnv1_320x320_v0.1a.onnx"
+
 DEFAULT_MODEL_640_URL = "https://github.com/ultralytics/yolov5/releases/download/v7.0/yolov5n.onnx"
 DEFAULT_MODEL_480_URL = "https://github.com/nkaoud-sp/resources/raw/refs/heads/main/yolov5n_480x480_v7.0.onnx"
 DEFAULT_MODEL_480X224_URL = "https://github.com/nkaoud-sp/resources/raw/refs/heads/main/yolov5n_480x224_v7.0.onnx"
@@ -133,13 +142,33 @@ def ensure_onnx_256() -> None:
   ensure_onnx(DEFAULT_MODEL_256_URL)
 
 
+def ensure_classifier_onnx(url: str = DEFAULT_CLASSIFIER_URL) -> None:
+  """Download the hosted driver-cam classifier ONNX to the path the detector reads."""
+  migrate_legacy_artifacts()
+  MODEL_DIR.mkdir(parents=True, exist_ok=True)
+  if not url:
+    write_status("error", "No DM classifier URL configured.")
+    raise RuntimeError("No DM classifier URL configured")
+  write_status("downloading", "Downloading DM classifier ONNX...", url=url)
+  try:
+    if CLASSIFIER_ONNX_PATH.exists():
+      CLASSIFIER_ONNX_PATH.unlink()
+    urllib.request.urlretrieve(url, CLASSIFIER_ONNX_PATH)
+    write_status("downloaded", "DM classifier ONNX download complete.", url=url,
+                 classifier_onnx_mb=_size_mb(CLASSIFIER_ONNX_PATH))
+  except Exception as e:
+    write_status("error", f"classifier download failed: {e}", url=url)
+    raise
+
+
 def compile_pkl(imgsz: int | None = None, warmup: int = 2,
+                onnx_path: Path = ONNX_PATH,
                 pkl_path: Path = PKL_PATH, meta_path: Path = META_PATH, label: str = "PKL") -> None:
   migrate_legacy_artifacts()
   write_status("compiling", f"Compiling {label}...")
   from openpilot.tools.nkaoud.compile_visual_vehicle_detector_tinygrad import compile_model
   try:
-    meta = compile_model(str(ONNX_PATH), str(pkl_path), str(meta_path), imgsz=imgsz, warmup=warmup)
+    meta = compile_model(str(onnx_path), str(pkl_path), str(meta_path), imgsz=imgsz, warmup=warmup)
     shape = meta.get("input_shape", []) if isinstance(meta, dict) else []
     if isinstance(shape, list) and len(shape) >= 4:
       size_text = f" ({shape[3]}x{shape[2]})"
@@ -154,3 +183,10 @@ def compile_pkl(imgsz: int | None = None, warmup: int = 2,
 def compile_pkl_driver(imgsz: int | None = None, warmup: int = 2) -> None:
   """Compile the current ONNX into the separate driver-camera PKL."""
   compile_pkl(imgsz=imgsz, warmup=warmup, pkl_path=DRIVER_PKL_PATH, meta_path=DRIVER_META_PATH, label="DM PKL")
+
+
+def compile_classifier_pkl(warmup: int = 2) -> None:
+  """Compile the downloaded DM classifier ONNX into its tinygrad PKL. The model
+  has a fixed 320x320 input, so imgsz is left to the model's own shape."""
+  compile_pkl(imgsz=None, warmup=warmup, onnx_path=CLASSIFIER_ONNX_PATH,
+              pkl_path=CLASSIFIER_PKL_PATH, meta_path=CLASSIFIER_META_PATH, label="DM Classifier PKL")

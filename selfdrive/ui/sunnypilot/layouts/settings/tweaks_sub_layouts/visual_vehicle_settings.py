@@ -163,6 +163,87 @@ class VisualVehicleSettingsLayout(Widget):
   def _trigger_compile_driver(self) -> None:
     self._start_worker(self._run_compile_driver)
 
+  def _download_classifier_button_label(self) -> str:
+    from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import CLASSIFIER_ONNX_PATH
+    with self._lock:
+      status = self._status
+    if status.startswith("Downloading"):
+      return tr("Downloading DM Classifier...")
+    if status.startswith("error"):
+      return tr("Retry DM Classifier Download")
+    if os.path.exists(CLASSIFIER_ONNX_PATH):
+      return tr("Re-download DM Classifier")
+    return tr("Download DM Classifier")
+
+  def _download_classifier_description(self) -> str:
+    from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import CLASSIFIER_ONNX_PATH, CLASSIFIER_PKL_PATH
+    with self._lock:
+      status = self._status
+    if status:
+      return status
+    onnx = "yes" if os.path.exists(CLASSIFIER_ONNX_PATH) else "no"
+    pkl = "yes" if os.path.exists(CLASSIFIER_PKL_PATH) else "no"
+    return tr("Downloads the hosted driver-cam blocked/clear classifier (320x320 TinyCNN). Used only when the "
+              "Driver camera is selected; replaces YOLO there. Enable 'Allow ONNX Fallback' to run it without "
+              "compiling, or compile it below. ONNX: {}  PKL: {}").format(onnx, pkl)
+
+  def _run_download_classifier(self) -> None:
+    try:
+      from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import ensure_classifier_onnx
+      self._set_status("Downloading DM classifier ONNX...")
+      ensure_classifier_onnx()
+      self._set_status(self._load_status_message())
+    except Exception as e:
+      self._set_status(f"error: download failed: {e}")
+    finally:
+      with self._lock:
+        self._worker = None
+
+  def _trigger_download_classifier(self) -> None:
+    self._start_worker(self._run_download_classifier)
+
+  def _compile_classifier_button_label(self) -> str:
+    from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import CLASSIFIER_PKL_PATH
+    with self._lock:
+      status = self._status
+    if status.startswith("Compiling"):
+      return tr("Compiling DM Classifier PKL...")
+    if status.startswith("error"):
+      return tr("Retry DM Classifier Compile")
+    if os.path.exists(CLASSIFIER_PKL_PATH):
+      return tr("Recompile DM Classifier PKL")
+    return tr("Compile DM Classifier PKL")
+
+  def _compile_classifier_description(self) -> str:
+    from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import CLASSIFIER_ONNX_PATH, CLASSIFIER_PKL_PATH
+    with self._lock:
+      status = self._status
+    if status:
+      return status
+    if os.path.exists(CLASSIFIER_PKL_PATH):
+      return tr("DM classifier PKL present. Tap to rebuild it on this device.")
+    if os.path.exists(CLASSIFIER_ONNX_PATH):
+      return tr("Compiles the DM classifier ONNX to its tinygrad PKL on this device. Keep the car offroad.")
+    return tr("Download the DM classifier ONNX first, then compile it.")
+
+  def _run_compile_classifier(self) -> None:
+    try:
+      from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import CLASSIFIER_ONNX_PATH, compile_classifier_pkl
+      if not os.path.exists(CLASSIFIER_ONNX_PATH):
+        self._set_status("error: DM classifier ONNX is missing")
+        return
+      self._set_status("Compiling DM Classifier PKL...")
+      compile_classifier_pkl()
+      self._set_status(self._load_status_message())
+    except Exception as e:
+      self._set_status(f"error: compile failed: {e}")
+    finally:
+      with self._lock:
+        self._worker = None
+
+  def _trigger_compile_classifier(self) -> None:
+    self._start_worker(self._run_compile_classifier)
+
   def _download_description(self) -> str:
     from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import ONNX_PATH, PKL_PATH
     with self._lock:
@@ -405,6 +486,29 @@ class VisualVehicleSettingsLayout(Widget):
       ),
     )
 
+    self._download_classifier = ListItemSP(
+      title=lambda: tr("DM Classifier ONNX (320)"),
+      description=lambda: self._download_classifier_description(),
+      description_visible=True,
+      inline=False,
+      action_item=SimpleButtonActionSP(
+        button_text=lambda: self._download_classifier_button_label(),
+        button_width=800,
+        callback=lambda: self._trigger_download_classifier(),
+      ),
+    )
+    self._compile_classifier = ListItemSP(
+      title=lambda: tr("DM Classifier PKL"),
+      description=lambda: self._compile_classifier_description(),
+      description_visible=True,
+      inline=False,
+      action_item=SimpleButtonActionSP(
+        button_text=lambda: self._compile_classifier_button_label(),
+        button_width=800,
+        callback=lambda: self._trigger_compile_classifier(),
+      ),
+    )
+
     self._camera_source = multiple_button_item_sp(
       title=lambda: tr("Camera Source"),
       description=lambda: tr("Which camera the detector runs on. Each camera keeps its own crop / ROI / gate "
@@ -504,6 +608,8 @@ class VisualVehicleSettingsLayout(Widget):
       self._download_model_256,
       self._compile_model,
       self._compile_driver_model,
+      self._download_classifier,
+      self._compile_classifier,
       self._camera_source,
       self._readout,
       self._allow_onnx,
