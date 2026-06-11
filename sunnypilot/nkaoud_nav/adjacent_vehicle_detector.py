@@ -54,6 +54,15 @@ DEFAULT_PKL_PATH = str(ARTIFACT_DIR / "visual_vehicle_detector_tinygrad.pkl")
 DEFAULT_DRIVER_PKL_PATH = str(ARTIFACT_DIR / "visual_vehicle_detector_driver_tinygrad.pkl")
 DEFAULT_ONNX_PATH = str(ARTIFACT_DIR / "visual_vehicle_detector.onnx")
 
+# Dataset capture: while the capture portal/dialog is open (sentinel present)
+# and the car is onroad, the detector saves the selected camera's crop as JPEG
+# for future training. Capped to protect device storage.
+CAPTURE_DIR = ARTIFACT_DIR / "captures"
+CAPTURE_REQUEST_PATH = "/tmp/nkaoud_vvd_capture.request"
+DEFAULT_CAPTURE_HZ = 2.0
+CAPTURE_MAX_FILES = 8000
+CAPTURE_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB safety cap
+
 # COCO class IDs from Ultralytics YOLO exports.
 VEHICLE_CLASS_IDS = {1, 2, 3, 5, 7}  # bicycle, car, motorcycle, bus, truck
 
@@ -146,6 +155,71 @@ def frame_info() -> dict[str, Any]:
     return {"camera": dbg.get("camera"), "frame_w": crop.get("frame_w"), "frame_h": crop.get("frame_h")}
   except Exception:
     return {}
+
+
+# ---- Dataset capture helpers (shared with the capture web portal) ----
+
+def capture_set_request(enabled: bool, hz: float = DEFAULT_CAPTURE_HZ) -> None:
+  """Create/remove the capture sentinel. Its content is the capture rate (Hz)."""
+  if enabled:
+    try:
+      with open(CAPTURE_REQUEST_PATH, "w") as f:
+        f.write(str(float(hz)))
+    except OSError:
+      cloudlog.exception("visual vehicle detector failed to set capture request")
+  else:
+    try:
+      os.remove(CAPTURE_REQUEST_PATH)
+    except FileNotFoundError:
+      pass
+    except OSError:
+      cloudlog.exception("visual vehicle detector failed to clear capture request")
+
+
+def capture_requested() -> bool:
+  return os.path.exists(CAPTURE_REQUEST_PATH)
+
+
+def capture_hz() -> float:
+  try:
+    return max(0.2, min(5.0, float(Path(CAPTURE_REQUEST_PATH).read_text().strip())))
+  except Exception:
+    return DEFAULT_CAPTURE_HZ
+
+
+def capture_stats() -> dict[str, int]:
+  count = 0
+  total = 0
+  try:
+    with os.scandir(CAPTURE_DIR) as it:
+      for entry in it:
+        if entry.is_file() and entry.name.endswith(".jpg"):
+          count += 1
+          try:
+            total += entry.stat().st_size
+          except OSError:
+            pass
+  except FileNotFoundError:
+    pass
+  return {"count": count, "bytes": total}
+
+
+def capture_files() -> list[str]:
+  try:
+    return sorted(str(e.path) for e in os.scandir(CAPTURE_DIR) if e.is_file() and e.name.endswith(".jpg"))
+  except FileNotFoundError:
+    return []
+
+
+def capture_delete_all() -> int:
+  removed = 0
+  for path in capture_files():
+    try:
+      os.remove(path)
+      removed += 1
+    except OSError:
+      pass
+  return removed
 
 # key -> (min, max) clamp range. Crop values are pixels; _crop_detector_region
 # clamps them again to the actual frame size.
@@ -263,6 +337,13 @@ class VisualVehicleDetector:
     self._loaded_pkl_mtime = -1.0
     self._cold_inference = False
     self.last_timing: dict[str, Any] = {}
+
+    # Dataset capture state.
+    self._last_capture_t = 0.0
+    self._capture_scan_t = 0.0
+    self._capture_count = 0
+    self._capture_bytes = 0
+    self._capture_seq = 0
     self.onnx_path = os.getenv("NKAOUD_VISUAL_VEHICLE_ONNX", DEFAULT_ONNX_PATH)
     self.confidence = float(os.getenv("NKAOUD_VISUAL_VEHICLE_CONF", "0.35"))
     # Keep the debug detector well below camera/modeld cadence on comma3x.
@@ -989,6 +1070,43 @@ class VisualVehicleDetector:
       return np.ascontiguousarray(rgb[:, ::-1])
     return rgb
 
+  def _maybe_capture(self, detector_rgb: np.ndarray) -> None:
+    """Save the camera crop as JPEG for training while the capture portal is
+    open and the car is onroad. Throttled to the requested Hz and capped to
+    protect device storage."""
+    if not capture_requested():
+      return
+    if self.params.get_bool("IsOffroad"):
+      return  # onroad only
+
+    now = time.monotonic()
+    if now - self._last_capture_t < 1.0 / capture_hz():
+      return
+
+    # Re-scan periodically so the cap reflects external deletes and respects the
+    # storage limit without statting the directory every frame.
+    if now - self._capture_scan_t > 2.0:
+      stats = capture_stats()
+      self._capture_count = stats["count"]
+      self._capture_bytes = stats["bytes"]
+      self._capture_scan_t = now
+
+    if self._capture_count >= CAPTURE_MAX_FILES or self._capture_bytes >= CAPTURE_MAX_BYTES:
+      return  # cap reached; the portal status surfaces this
+
+    try:
+      from PIL import Image
+      CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+      self._capture_seq += 1
+      fname = f"cap_{self.camera}_{int(time.time() * 1000)}_{self._capture_seq}.jpg"
+      path = CAPTURE_DIR / fname
+      Image.fromarray(detector_rgb, "RGB").save(path, "JPEG", quality=90)
+      self._last_capture_t = now
+      self._capture_count += 1
+      self._capture_bytes += path.stat().st_size
+    except Exception:
+      cloudlog.exception("visual vehicle detector capture failed")
+
   def update(self, buf: VisionBuf) -> tuple[bool, bool, dict[str, Any]]:
     self._refresh_tuning()
     # Hot-reload the model if its file changed (recompiled) -- cheap mtime stat.
@@ -1008,6 +1126,7 @@ class VisualVehicleDetector:
 
     # Run YOLO on the fixed crop only, not on the full camera frame.
     detector_rgb, crop_debug = self._crop_detector_region(rgb)
+    self._maybe_capture(detector_rgb)
     detections = self._run_model(detector_rgb)
     image_h, image_w = detector_rgb.shape[:2]
 
@@ -1060,6 +1179,7 @@ class VisualVehicleDetector:
       "best_conf": round(float(best_conf), 3),
       "hz": self.detector_hz,
       "timing": dict(self.last_timing),
+      "capture": {"on": capture_requested(), "saved": self._capture_count},
     }
     debug.update(self.last_model_debug)
     return left, right, debug

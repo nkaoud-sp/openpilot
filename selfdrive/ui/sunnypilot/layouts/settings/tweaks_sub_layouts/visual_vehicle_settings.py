@@ -19,6 +19,7 @@ from openpilot.system.ui.widgets.network import NavButton
 from openpilot.system.ui.widgets.scroller_tici import Scroller
 
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.nav_token_qr_dialog import (
+  VisualVehicleCaptureQrDialog,
   VisualVehicleCropQrDialog,
   VisualVehiclePreviewQrDialog,
   VisualVehicleStagesQrDialog,
@@ -482,6 +483,19 @@ class VisualVehicleSettingsLayout(Widget):
         callback=lambda: gui_app.push_widget(VisualVehicleCropQrDialog()),
       ),
     )
+    self._image_capture = ListItemSP(
+      title=lambda: tr("Image Capture (training)"),
+      description=lambda: tr("Records the selected camera's crop to the device while this portal's QR dialog is "
+                             "open and the car is onroad (offroad is paused). No live preview. Scan the QR to "
+                             "download all images as a ZIP or delete them. Capped to protect storage."),
+      description_visible=True,
+      inline=False,
+      action_item=SimpleButtonActionSP(
+        button_text=lambda: tr("Open Image Capture"),
+        button_width=800,
+        callback=lambda: gui_app.push_widget(VisualVehicleCaptureQrDialog()),
+      ),
+    )
     return [
       self._download_model,
       self._download_model_480,
@@ -498,6 +512,7 @@ class VisualVehicleSettingsLayout(Widget):
       self._stages_preview,
       self._live_tuning,
       self._crop_tuning,
+      self._image_capture,
     ]
 
   def _render(self, rect):

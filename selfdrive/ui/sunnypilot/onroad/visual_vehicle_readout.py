@@ -75,8 +75,11 @@ class VisualVehicleReadout:
     left = bool(state.get("left", False))
     right = bool(state.get("right", False))
 
+    capture = debug.get("capture", {}) or {}
+    cap_on = bool(capture.get("on"))
     rows = [
       ("CAMERA", str(debug.get("camera", "--")).upper(), _WHITE),
+      ("CAPTURE", (f"REC {capture.get('saved', 0)}" if cap_on else "OFF"), _RED if cap_on else _DIM),
       ("LEFT", "VEHICLE" if left else "CLEAR", self._status_color(left, stale, reason)),
       ("RIGHT", "VEHICLE" if right else "CLEAR", self._status_color(right, stale, reason)),
       ("STATUS", "STALE" if stale else reason.upper(), _AMBER if stale or reason != "ok" else _GREEN),

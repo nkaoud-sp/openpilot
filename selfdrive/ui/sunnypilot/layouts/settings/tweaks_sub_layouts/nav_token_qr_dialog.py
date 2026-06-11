@@ -18,7 +18,7 @@ from openpilot.sunnypilot.nkaoud_nav.token_server import (
   ParamWebServer, mapbox_token_server, share_endpoint_server,
 )
 from openpilot.sunnypilot.nkaoud_nav.preview_server import (
-  visual_vehicle_crop_server, visual_vehicle_preview_server,
+  visual_vehicle_capture_server, visual_vehicle_crop_server, visual_vehicle_preview_server,
   visual_vehicle_stages_server, visual_vehicle_tuning_server,
 )
 from openpilot.system.ui.lib.application import gui_app, FontWeight
@@ -233,4 +233,15 @@ def VisualVehicleCropQrDialog() -> NavParamQrDialog:
     server=visual_vehicle_crop_server(),
     title_text=tr("Detector Crop & Rate"),
     hint_text=tr("Scan with your phone to drag the crop box over the full frame and set the detector rate."),
+  )
+
+
+def VisualVehicleCaptureQrDialog() -> NavParamQrDialog:
+  # Dataset capture portal: records the selected camera's crop (onroad only)
+  # while this dialog is open; the phone page downloads/deletes the images.
+  return NavParamQrDialog(
+    server=visual_vehicle_capture_server(),
+    title_text=tr("Detector Image Capture"),
+    hint_text=tr("While this dialog is open and the car is onroad, the selected camera's crop is recorded. "
+                 "Scan with your phone to download the images as a ZIP or delete them."),
   )

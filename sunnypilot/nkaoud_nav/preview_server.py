@@ -19,16 +19,18 @@ from __future__ import annotations
 import json
 import os
 import threading
+import zipfile
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.nkaoud_nav.adjacent_vehicle_detector import (
-  BUF_GEOMETRY_PATH, PREVIEW_DETECTOR_CROP_PATH, PREVIEW_FULL_FRAME_CROP_PATH,
-  PREVIEW_MODEL_INPUT_PATH, PREVIEW_PNG_PATH, PREVIEW_PNG_PATH_FULL,
-  PREVIEW_PNG_PATH_LIMITED, PREVIEW_RAW_U_PATH, PREVIEW_RAW_V_PATH,
+  BUF_GEOMETRY_PATH, CAPTURE_MAX_BYTES, CAPTURE_MAX_FILES, PREVIEW_DETECTOR_CROP_PATH,
+  PREVIEW_FULL_FRAME_CROP_PATH, PREVIEW_MODEL_INPUT_PATH, PREVIEW_PNG_PATH,
+  PREVIEW_PNG_PATH_FULL, PREVIEW_PNG_PATH_LIMITED, PREVIEW_RAW_U_PATH, PREVIEW_RAW_V_PATH,
   PREVIEW_RAW_Y_PATH, PREVIEW_REQUEST_PATH, TUNING_DEFAULTS, TUNING_KEYS,
-  active_camera, frame_info, load_tuning, save_tuning,
+  active_camera, capture_delete_all, capture_files, capture_hz, capture_set_request,
+  capture_stats, frame_info, load_tuning, save_tuning,
 )
 from openpilot.sunnypilot.nkaoud_nav.token_server import get_local_ip
 
@@ -36,6 +38,7 @@ from openpilot.sunnypilot.nkaoud_nav.token_server import get_local_ip
 DEFAULT_PORT = 8082
 STAGES_PORT = 8083
 TUNING_PORT = 8084
+CAPTURE_PORT = 8086
 
 
 PAGE = b"""<!doctype html>
@@ -574,3 +577,204 @@ def visual_vehicle_crop_server(port: int = CROP_PORT) -> PreviewWebServer:
     json_routes={"/tuning.json": _tuning_json},
     post_handler=_tuning_post,
   )
+
+
+# ---------------- Dataset capture portal ----------------
+
+CAPTURE_PAGE = b"""<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Visual Vehicle Detector Capture</title>
+<style>
+  body { background:#111; color:#ddd; font-family:sans-serif; margin:0; padding:16px; text-align:center; }
+  h2 { margin:0 0 4px 0; }
+  p.lead { color:#888; font-size:13px; margin:0 0 18px 0; }
+  .stat { font-family:monospace; font-size:15px; margin:6px 0; }
+  .stat b { color:#9bdca8; }
+  .rec { display:inline-block; padding:6px 14px; border-radius:6px; font-family:monospace; margin:8px 0; }
+  .rec.on { background:#3a1d1d; color:#ff8a8a; }
+  .rec.off { background:#222; color:#888; }
+  .ctl { margin:14px auto; max-width:520px; }
+  input[type=range] { width:100%; height:34px; }
+  .btns { margin-top:16px; display:flex; gap:12px; justify-content:center; flex-wrap:wrap; }
+  a.btn, button { background:#243; color:#cfe; border:1px solid #365; border-radius:6px;
+                  padding:12px 20px; font-size:15px; text-decoration:none; display:inline-block; }
+  button.danger { background:#3a1d1d; color:#ffb3b3; border-color:#633; }
+  #msg { margin-top:12px; color:#888; font-size:13px; font-family:monospace; min-height:18px; }
+</style></head>
+<body>
+  <h2>Visual Vehicle Detector &mdash; Image Capture</h2>
+  <p class="lead">Saves the selected camera's crop for training while this page's QR dialog is open and the car is onroad. No live preview.</p>
+  <div class="rec off" id="rec">--</div>
+  <div class="stat">camera: <b id="cam">--</b></div>
+  <div class="stat">images: <b id="count">--</b> &nbsp; size: <b id="size">--</b></div>
+  <div class="stat" id="cap" style="color:#caa;"></div>
+  <div class="ctl">
+    <div style="display:flex; justify-content:space-between; font-size:13px;"><span>Capture rate</span><span class="stat" style="margin:0;"><b id="hzval">--</b> Hz</span></div>
+    <input type="range" id="hz" min="0.2" max="5" step="0.2">
+  </div>
+  <div class="btns">
+    <a class="btn" id="dl" href="/download.zip">Download ZIP</a>
+    <button class="danger" id="del">Delete all</button>
+  </div>
+  <div id="msg"></div>
+  <script>
+    const recEl = document.getElementById('rec');
+    const fmtMB = b => (b / (1024*1024)).toFixed(1) + ' MB';
+    function refresh() {
+      fetch('/status.json?t=' + Date.now()).then(r => r.json()).then(s => {
+        document.getElementById('cam').textContent = s.camera || '--';
+        document.getElementById('count').textContent = s.count;
+        document.getElementById('size').textContent = fmtMB(s.bytes);
+        recEl.textContent = s.onroad ? 'RECORDING (onroad)' : 'PAUSED (offroad)';
+        recEl.className = 'rec ' + (s.onroad ? 'on' : 'off');
+        const capped = s.count >= s.max_files || s.bytes >= s.max_bytes;
+        document.getElementById('cap').textContent = capped
+          ? ('STORAGE CAP REACHED -- capture stopped (max ' + s.max_files + ' files / ' + fmtMB(s.max_bytes) + ')') : '';
+        const hz = document.getElementById('hz');
+        if (document.activeElement !== hz) { hz.value = s.hz; document.getElementById('hzval').textContent = (+s.hz).toFixed(1); }
+      }).catch(() => {});
+    }
+    const hz = document.getElementById('hz');
+    let t = null;
+    hz.addEventListener('input', () => {
+      document.getElementById('hzval').textContent = (+hz.value).toFixed(1);
+      clearTimeout(t);
+      t = setTimeout(() => fetch('/hz', {method:'POST', body: hz.value}).catch(()=>{}), 150);
+    });
+    document.getElementById('del').addEventListener('click', () => {
+      if (!confirm('Delete ALL captured images?')) return;
+      fetch('/delete', {method:'POST'}).then(r => r.json()).then(j => {
+        document.getElementById('msg').textContent = 'Deleted ' + j.removed + ' images.';
+        refresh();
+      }).catch(() => {});
+    });
+    setInterval(refresh, 1500);
+    refresh();
+  </script>
+</body></html>
+"""
+
+
+class CaptureWebServer:
+  """Dataset capture portal. Mirrors ParamWebServer's interface (start/stop/url/
+  token_saved) so NavParamQrDialog renders it. While running it holds the
+  capture sentinel, so the detector records the selected camera's crop (onroad
+  only). Streams all images as a single zip and supports delete-all."""
+
+  def __init__(self, port: int = CAPTURE_PORT) -> None:
+    self.port = port
+    self.token_saved = threading.Event()  # never set; dialog stays on QR view
+    self._server: ThreadingHTTPServer | None = None
+    self._thread: threading.Thread | None = None
+
+  def _status(self) -> bytes:
+    try:
+      from openpilot.common.params import Params
+      onroad = not Params().get_bool("IsOffroad")
+    except Exception:
+      onroad = False
+    stats = capture_stats()
+    return json.dumps({
+      "camera": active_camera(),
+      "count": stats["count"],
+      "bytes": stats["bytes"],
+      "hz": capture_hz(),
+      "onroad": onroad,
+      "max_files": CAPTURE_MAX_FILES,
+      "max_bytes": CAPTURE_MAX_BYTES,
+    }).encode()
+
+  def start(self) -> None:
+    if self._server is not None:
+      return
+    capture_set_request(True, capture_hz())
+    server = self
+
+    class _Handler(BaseHTTPRequestHandler):
+      def log_message(self, fmt, *args):
+        pass
+
+      def _send(self, body: bytes, ctype: str, code: int = 200) -> None:
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+      def do_GET(self):
+        route = self.path.split("?", 1)[0]
+        if route in ("/", "/index.html"):
+          self._send(CAPTURE_PAGE, "text/html; charset=utf-8")
+          return
+        if route == "/status.json":
+          self._send(server._status(), "application/json")
+          return
+        if route == "/download.zip":
+          self._stream_zip()
+          return
+        self.send_error(404)
+
+      def _stream_zip(self):
+        files = capture_files()
+        # Stream the zip straight to the socket (stdlib zipfile handles the
+        # non-seekable stream via data descriptors), so we never hold the whole
+        # archive in RAM. No Content-Length -> close the connection at the end.
+        self.send_response(200)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Disposition", 'attachment; filename="vvd_captures.zip"')
+        self.send_header("Connection", "close")
+        self.end_headers()
+        try:
+          with zipfile.ZipFile(self.wfile, "w", zipfile.ZIP_STORED) as zf:
+            for path in files:
+              try:
+                zf.write(path, arcname=os.path.basename(path))
+              except OSError:
+                continue
+        except Exception:
+          cloudlog.exception("nkaoud_vvd capture: zip stream failed")
+
+      def do_POST(self):
+        route = self.path.split("?", 1)[0]
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        body = self.rfile.read(length) if length else b""
+        if route == "/delete":
+          removed = capture_delete_all()
+          self._send(json.dumps({"removed": removed}).encode(), "application/json")
+          return
+        if route == "/hz":
+          try:
+            capture_set_request(True, float(body.decode().strip()))
+          except (ValueError, AttributeError):
+            self.send_error(400, "bad hz")
+            return
+          self._send(server._status(), "application/json")
+          return
+        self.send_error(404)
+
+    self._server = ThreadingHTTPServer(("0.0.0.0", self.port), _Handler)
+    self._thread = threading.Thread(target=self._server.serve_forever,
+                                    name="nkaoud_vvd_capture_ws", daemon=True)
+    self._thread.start()
+    cloudlog.info(f"nkaoud_vvd capture web: started on 0.0.0.0:{self.port}")
+
+  def stop(self) -> None:
+    if self._server is not None:
+      try:
+        self._server.shutdown()
+        self._server.server_close()
+      except OSError:
+        pass
+      self._server = None
+      self._thread = None
+      cloudlog.info("nkaoud_vvd capture web: stopped")
+    capture_set_request(False)
+
+  @property
+  def url(self) -> str:
+    return f"http://{get_local_ip()}:{self.port}/"
+
+
+def visual_vehicle_capture_server(port: int = CAPTURE_PORT) -> CaptureWebServer:
+  return CaptureWebServer(port=port)
