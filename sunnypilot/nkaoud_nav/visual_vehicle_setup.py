@@ -26,14 +26,16 @@ DRIVER_PKL_PATH = MODEL_DIR / "visual_vehicle_detector_driver_tinygrad.pkl"
 DRIVER_META_PATH = MODEL_DIR / "visual_vehicle_detector_driver_tinygrad.json"
 STATUS_PATH = MODEL_DIR / "visual_vehicle_detector_setup_status.json"
 
-# Driver-camera occupancy classifier (TinyCNN, 320x320, [clear, blocked]).
+# Driver-camera occupancy classifier (MobileNetV3-Small, 320x320, 2-class).
 # Separate from the YOLO detector model above; the detector loads this only for
 # the driver camera. ONNX runs directly (with AllowOnnx); the pkl is the
-# preferred on-device runtime.
+# preferred on-device runtime. NOTE: host a self-contained ONNX (weights
+# embedded, no external .onnx.data sidecar) or the single-file download/compile
+# will fail with missing weights.
 CLASSIFIER_ONNX_PATH = MODEL_DIR / "visual_vehicle_classifier_driver.onnx"
 CLASSIFIER_PKL_PATH = MODEL_DIR / "visual_vehicle_classifier_driver_tinygrad.pkl"
 CLASSIFIER_META_PATH = MODEL_DIR / "visual_vehicle_classifier_driver_tinygrad.json"
-DEFAULT_CLASSIFIER_URL = "https://github.com/nkaoud-sp/resources/raw/refs/heads/main/cnnv1_320x320_v0.1a.onnx"
+DEFAULT_CLASSIFIER_URL = "https://github.com/nkaoud-sp/resources/raw/refs/heads/main/car_classifier_320_weighted.onnx"
 
 DEFAULT_MODEL_640_URL = "https://github.com/ultralytics/yolov5/releases/download/v7.0/yolov5n.onnx"
 DEFAULT_MODEL_480_URL = "https://github.com/nkaoud-sp/resources/raw/refs/heads/main/yolov5n_480x480_v7.0.onnx"

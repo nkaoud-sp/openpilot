@@ -183,9 +183,9 @@ class VisualVehicleSettingsLayout(Widget):
       return status
     onnx = "yes" if os.path.exists(CLASSIFIER_ONNX_PATH) else "no"
     pkl = "yes" if os.path.exists(CLASSIFIER_PKL_PATH) else "no"
-    return tr("Downloads the hosted driver-cam blocked/clear classifier (320x320 TinyCNN). Used only when the "
-              "Driver camera is selected; replaces YOLO there. Enable 'Allow ONNX Fallback' to run it without "
-              "compiling, or compile it below. ONNX: {}  PKL: {}").format(onnx, pkl)
+    return tr("Downloads the hosted driver-cam car classifier (320x320 MobileNetV3-Small, 2-class). Used only "
+              "when the Driver camera is selected; replaces YOLO there. Enable 'Allow ONNX Fallback' to run it "
+              "without compiling, or compile it below. ONNX: {}  PKL: {}").format(onnx, pkl)
 
   def _run_download_classifier(self) -> None:
     try:

@@ -63,11 +63,13 @@ DEFAULT_CAPTURE_HZ = 2.0
 CAPTURE_MAX_FILES = 8000
 CAPTURE_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB safety cap
 
-# Driver-camera occupancy classifier (TinyCNN). The driver camera REPLACES the
-# YOLO detection path with a whole-crop blocked/clear classifier. It takes the
-# per-camera driver crop (the same crop the capture portal saves as
-# cap_driver_*.jpg), cuts a fixed inner ROI, stretches it to img_size, normalizes
-# to [-1, 1], and emits softmax logits [clear, blocked].
+# Driver-camera occupancy classifier. The driver camera REPLACES the YOLO
+# detection path with a whole-crop 2-class classifier (the current model is a
+# MobileNetV3-Small car classifier). It takes the per-camera driver crop (the
+# same crop the capture portal saves as cap_driver_*.jpg), cuts a fixed inner
+# ROI, stretches it to img_size, normalizes (see CLASSIFIER_NORM below), and
+# emits softmax logits over 2 classes; CLASSIFIER_POS_INDEX picks the
+# "blocked"/positive (car-present) logit.
 DEFAULT_CLASSIFIER_PKL_PATH = str(ARTIFACT_DIR / "visual_vehicle_classifier_driver_tinygrad.pkl")
 DEFAULT_CLASSIFIER_ONNX_PATH = str(ARTIFACT_DIR / "visual_vehicle_classifier_driver.onnx")
 CLASSIFIER_IMG_SIZE = 320            # fixed model input (the ONNX is 1x3x320x320)
@@ -82,6 +84,20 @@ CLASSIFIER_ROI_FRAC = (
 )
 CLASSIFIER_CAMERA = "driver"
 DEFAULT_BLOCKED_THRESHOLD = 0.5
+
+# Classifier input normalization. MobileNetV3-Small (torchvision/timm) trains
+# with ImageNet mean/std, so that is the default. If the model was trained
+# differently, switch on-device without recompiling via the env var:
+#   imagenet -> (RGB/255 - mean) / std        (default, MobileNetV3 standard)
+#   signed   -> RGB/127.5 - 1                  (the previous TinyCNN's [-1, 1])
+#   unit     -> RGB/255                         (plain [0, 1])
+CLASSIFIER_NORM = os.getenv("NKAOUD_VISUAL_VEHICLE_CLASSIFIER_NORM", "imagenet").strip().lower()
+IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+# Which softmax index is the positive ("blocked"/car-present) class. The old
+# TinyCNN was [clear, blocked] -> 1; a [no_car, car] head is also 1. Override if
+# your label order is reversed.
+CLASSIFIER_POS_INDEX = int(os.getenv("NKAOUD_VISUAL_VEHICLE_CLASSIFIER_POS_INDEX", "1"))
 
 # COCO class IDs from Ultralytics YOLO exports.
 VEHICLE_CLASS_IDS = {1, 2, 3, 5, 7}  # bicycle, car, motorcycle, bus, truck
@@ -672,8 +688,8 @@ class VisualVehicleDetector:
       return False
 
   def _preprocess_classifier(self, detector_rgb: np.ndarray) -> tuple[np.ndarray, dict[str, int]]:
-    """Reproduce training preprocessing exactly: cut the fixed ROI from the
-    driver crop, stretch (no letterbox) to img_size, scale to [-1, 1], NCHW."""
+    """Reproduce training preprocessing: cut the fixed ROI from the driver crop,
+    stretch (no letterbox) to img_size, normalize per CLASSIFIER_NORM, NCHW."""
     h, w = detector_rgb.shape[:2]
     fx1, fy1, fx2, fy2 = CLASSIFIER_ROI_FRAC
     x1 = int(np.clip(round(fx1 * w), 0, w - 1))
@@ -686,12 +702,17 @@ class VisualVehicleDetector:
     resized = np.asarray(
       Image.fromarray(roi, "RGB").resize((CLASSIFIER_IMG_SIZE, CLASSIFIER_IMG_SIZE), Image.BILINEAR)
     )
-    x = resized.astype(np.float32) / 127.5 - 1.0  # -> [-1, 1]
+    if CLASSIFIER_NORM == "signed":
+      x = resized.astype(np.float32) / 127.5 - 1.0          # [-1, 1] (old TinyCNN)
+    elif CLASSIFIER_NORM == "unit":
+      x = resized.astype(np.float32) / 255.0                # [0, 1]
+    else:  # "imagenet" (default, MobileNetV3-Small standard)
+      x = (resized.astype(np.float32) / 255.0 - IMAGENET_MEAN) / IMAGENET_STD
     x = np.transpose(x, (2, 0, 1))[None]
     return np.ascontiguousarray(x), {"roi_x1": x1, "roi_y1": y1, "roi_x2": x2, "roi_y2": y2}, resized
 
   def _run_classifier(self, inp: np.ndarray) -> float:
-    """Return p_blocked = softmax(logits)[1]."""
+    """Return p_blocked = softmax(logits)[CLASSIFIER_POS_INDEX]."""
     if self.classifier_runtime == "tinygrad_pkl" and self.classifier_pkl_run is not None and self.Tensor is not None:
       tensor = self.Tensor(inp, device=self.classifier_input_device).realize() if self.classifier_input_device \
         else self.Tensor(inp).realize()
@@ -703,9 +724,9 @@ class VisualVehicleDetector:
       logits = self.classifier_session.run(None, {self.classifier_input_name: inp})[0]
     else:
       raise RuntimeError("classifier runtime not loaded")
-    l = np.asarray(logits, dtype=np.float32).reshape(-1)[:2]  # [clear, blocked]
+    l = np.asarray(logits, dtype=np.float32).reshape(-1)[:2]  # 2-class logits
     e = np.exp(l - l.max())
-    return float((e / e.sum())[1])
+    return float((e / e.sum())[CLASSIFIER_POS_INDEX])
 
   def _update_classifier(self, rgb_full: np.ndarray, detector_rgb: np.ndarray,
                          crop_debug: dict[str, int | str]) -> tuple[bool, bool, dict[str, Any]]:
@@ -746,6 +767,8 @@ class VisualVehicleDetector:
       "roi": [roi["roi_x1"], roi["roi_y1"], roi["roi_x2"], roi["roi_y2"]],
       "src_crop": [int(detector_rgb.shape[1]), int(detector_rgb.shape[0])],
       "expected_src": [CLASSIFIER_SRC_W, CLASSIFIER_SRC_H],
+      "norm": CLASSIFIER_NORM,
+      "pos_index": CLASSIFIER_POS_INDEX,
     }
     base["reason"] = "ok"
     return False, False, base
