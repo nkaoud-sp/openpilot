@@ -159,7 +159,13 @@ DEFAULT_CROP_X = _env_float("NKAOUD_VISUAL_VEHICLE_CROP_X", float(DETECT_CROP_X)
 DEFAULT_CROP_Y = _env_float("NKAOUD_VISUAL_VEHICLE_CROP_Y", float(DETECT_CROP_Y))
 DEFAULT_CROP_W = _env_float("NKAOUD_VISUAL_VEHICLE_CROP_W", float(DETECT_CROP_W))
 DEFAULT_CROP_H = _env_float("NKAOUD_VISUAL_VEHICLE_CROP_H", float(DETECT_CROP_H))
-DEFAULT_HZ = float(max(1, min(5, int(_env_float("NKAOUD_VISUAL_VEHICLE_HZ", 1.0)))))
+# Upper bound for the detector rate. The detector is a nice(15) background
+# process that shares the GPU with modeld (20 Hz, safety-critical), so this is
+# the contention ceiling -- raising it trades responsiveness for the risk of
+# starving the driving model. Default rate stays 1 Hz; the slider/env can go up
+# to this cap.
+MAX_DETECTOR_HZ = 20
+DEFAULT_HZ = float(max(1, min(MAX_DETECTOR_HZ, int(_env_float("NKAOUD_VISUAL_VEHICLE_HZ", 1.0)))))
 
 # Live tuning: a small JSON the web portal writes and the detector re-reads
 # (mtime-gated) every frame, so ROI/gate/confidence can be adjusted on-road
@@ -273,7 +279,7 @@ TUNING_KEYS: dict[str, tuple[float, float]] = {
   "crop_y": (0.0, 4096.0),
   "crop_w": (16.0, 4096.0),
   "crop_h": (16.0, 4096.0),
-  "hz": (1.0, 5.0),
+  "hz": (1.0, float(MAX_DETECTOR_HZ)),
   "blocked_threshold": (0.05, 0.95),
 }
 
@@ -385,8 +391,9 @@ class VisualVehicleDetector:
     self._capture_seq = 0
     self.onnx_path = os.getenv("NKAOUD_VISUAL_VEHICLE_ONNX", DEFAULT_ONNX_PATH)
     self.confidence = float(os.getenv("NKAOUD_VISUAL_VEHICLE_CONF", "0.35"))
-    # Keep the debug detector well below camera/modeld cadence on comma3x.
-    self.detector_hz = max(1, min(5, int(os.getenv("NKAOUD_VISUAL_VEHICLE_HZ", "1"))))
+    # Default the detector well below camera/modeld cadence on comma3x; the
+    # slider/env can raise it up to MAX_DETECTOR_HZ.
+    self.detector_hz = max(1, min(MAX_DETECTOR_HZ, int(os.getenv("NKAOUD_VISUAL_VEHICLE_HZ", "1"))))
     self.log_debug = False
     self.runtime = "none"
 
@@ -460,7 +467,7 @@ class VisualVehicleDetector:
     self.crop_y = t["crop_y"]
     self.crop_w = t["crop_w"]
     self.crop_h = t["crop_h"]
-    self.detector_hz = max(1, min(5, int(round(t["hz"]))))
+    self.detector_hz = max(1, min(MAX_DETECTOR_HZ, int(round(t["hz"]))))
     self.blocked_threshold = t["blocked_threshold"]
 
   def _write_state(self, left: bool, right: bool, debug: dict[str, Any] | None = None) -> None:

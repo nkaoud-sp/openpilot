@@ -25,7 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.nkaoud_nav.adjacent_vehicle_detector import (
-  BUF_GEOMETRY_PATH, CAPTURE_MAX_BYTES, CAPTURE_MAX_FILES, PREVIEW_DETECTOR_CROP_PATH,
+  BUF_GEOMETRY_PATH, CAPTURE_MAX_BYTES, CAPTURE_MAX_FILES, MAX_DETECTOR_HZ, PREVIEW_DETECTOR_CROP_PATH,
   PREVIEW_FULL_FRAME_CROP_PATH, PREVIEW_MODEL_INPUT_PATH, PREVIEW_PNG_PATH,
   PREVIEW_PNG_PATH_FULL, PREVIEW_PNG_PATH_LIMITED, PREVIEW_RAW_U_PATH, PREVIEW_RAW_V_PATH,
   PREVIEW_RAW_Y_PATH, PREVIEW_REQUEST_PATH, TUNING_DEFAULTS, TUNING_KEYS,
@@ -408,7 +408,7 @@ _SLIDER_RANGES = {
   "crop_y":       (0.0, 1208.0, 1.0),
   "crop_w":       (64.0, 1928.0, 1.0),
   "crop_h":       (64.0, 1208.0, 1.0),
-  "hz":           (1.0, 5.0, 1.0),
+  "hz":           (1.0, float(MAX_DETECTOR_HZ), 1.0),
   "blocked_threshold": (0.05, 0.95, 0.01),
 }
 _SLIDER_LABELS = {
