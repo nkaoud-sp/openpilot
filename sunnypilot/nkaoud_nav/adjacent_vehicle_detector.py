@@ -94,10 +94,11 @@ DEFAULT_BLOCKED_THRESHOLD = 0.5
 CLASSIFIER_NORM = os.getenv("NKAOUD_VISUAL_VEHICLE_CLASSIFIER_NORM", "imagenet").strip().lower()
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-# Which softmax index is the positive ("blocked"/car-present) class. The old
-# TinyCNN was [clear, blocked] -> 1; a [no_car, car] head is also 1. Override if
-# your label order is reversed.
-CLASSIFIER_POS_INDEX = int(os.getenv("NKAOUD_VISUAL_VEHICLE_CLASSIFIER_POS_INDEX", "1"))
+# Which softmax index is the positive ("blocked"/car-present) class. The current
+# MobileNetV3 DM model uses class 0 == car, so car-present is softmax[0] -> 0.
+# (The old TinyCNN was [clear, blocked] -> 1.) Override if your label order
+# differs: NKAOUD_VISUAL_VEHICLE_CLASSIFIER_POS_INDEX=1.
+CLASSIFIER_POS_INDEX = int(os.getenv("NKAOUD_VISUAL_VEHICLE_CLASSIFIER_POS_INDEX", "0"))
 
 # COCO class IDs from Ultralytics YOLO exports.
 VEHICLE_CLASS_IDS = {1, 2, 3, 5, 7}  # bicycle, car, motorcycle, bus, truck
