@@ -95,6 +95,8 @@ class VisualVehicleReadout:
         ("STATUS", "STALE" if stale else reason.upper(), _AMBER if stale or reason != "ok" else _GREEN),
         ("RUNTIME", runtime.upper(), _GREEN if runtime == "tinygrad_pkl" else (_AMBER if runtime == "onnx_cpu" else _DIM)),
         ("INPUT", input_shape_text, _WHITE),
+        ("RATE", f"{timing.get('measured_hz', '--')} / {debug.get('hz', '--')} Hz", _WHITE),
+        ("INF ms", str(timing.get("infer_ms", "--")), _WHITE),
         ("AGE", f"{age:.1f}s", _AMBER if stale else _WHITE),
         ("FRAME", str(debug.get("frame_id", "--")), _DIM),
       ]
@@ -109,6 +111,8 @@ class VisualVehicleReadout:
       ("STATUS", "STALE" if stale else reason.upper(), _AMBER if stale or reason != "ok" else _GREEN),
       ("RUNTIME", runtime.upper(), _GREEN if runtime == "tinygrad_pkl" else (_AMBER if runtime == "onnx_cpu" else _DIM)),
       ("INPUT", input_shape_text, _WHITE),
+      ("RATE", f"{timing.get('measured_hz', '--')} / {debug.get('hz', '--')} Hz", _WHITE),
+      ("INF ms", str(timing.get("infer_ms", "--")), _WHITE),
       ("AGE", f"{age:.1f}s", _AMBER if stale else _WHITE),
       ("DETS", str(debug.get("detections", "--")), _WHITE),
       ("BEST", str(debug.get("best_conf", "--")), _WHITE),

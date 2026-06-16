@@ -22,6 +22,7 @@ import json
 import os
 import pickle
 import time
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -422,6 +423,14 @@ class VisualVehicleDetector:
     self._classifier_mtime = -1.0
     self.blocked_threshold = float(os.getenv("NKAOUD_VISUAL_VEHICLE_BLOCKED_THRESHOLD", str(DEFAULT_BLOCKED_THRESHOLD)))
 
+    # Throughput / latency measurement. _proc_ts holds the wall-clock time of
+    # recent processed (new) frames so we can report the real sustained rate
+    # (independent of the slider setpoint); _infer_ms is the last model inference
+    # time in ms. Both are surfaced in the debug readout.
+    self._proc_ts: deque[float] = deque(maxlen=20)
+    self._measured_hz = 0.0
+    self._infer_ms = 0.0
+
     self.input_shape: tuple[int, int] = (320, 320)  # width, height
     self.left_flag = DebouncedFlag()
     self.right_flag = DebouncedFlag()
@@ -750,7 +759,11 @@ class VisualVehicleDetector:
                                            "allow_onnx": self.params.get_bool("VisualVehicleDetectorAllowOnnx")}}
     try:
       inp, roi, model_input = self._preprocess_classifier(detector_rgb)
+      t0 = time.monotonic()
       p_blocked = self._run_classifier(inp)
+      self._infer_ms = (time.monotonic() - t0) * 1000.0
+      self.last_timing["infer_ms"] = round(self._infer_ms, 1)
+      base["timing"] = dict(self.last_timing)  # refresh: base snapshotted pre-inference
     except Exception as e:
       cloudlog.exception("visual vehicle classifier inference failed")
       return False, False, {**base, "reason": "classifier_error", "error": str(e)}
@@ -1104,6 +1117,8 @@ class VisualVehicleDetector:
     cold = self._cold_inference
     t0 = time.monotonic()
     dets = self._infer(inp, prep)
+    self._infer_ms = (time.monotonic() - t0) * 1000.0
+    self.last_timing["infer_ms"] = round(self._infer_ms, 1)
     if cold and self.pkl_model_run is not None:
       self._cold_inference = False
       self.last_timing["first_inf_ms"] = round((time.monotonic() - t0) * 1000.0, 1)
@@ -1354,8 +1369,20 @@ class VisualVehicleDetector:
     except Exception:
       cloudlog.exception("visual vehicle detector capture failed")
 
+  def _record_proc(self) -> None:
+    """Record this processed (new) frame and update the measured throughput.
+    update() is called once per fresh camera frame, so the spacing of these
+    timestamps is the real sustained rate, independent of the slider setpoint."""
+    self._proc_ts.append(time.monotonic())
+    if len(self._proc_ts) >= 2:
+      span = self._proc_ts[-1] - self._proc_ts[0]
+      self._measured_hz = (len(self._proc_ts) - 1) / span if span > 0 else 0.0
+    self.last_timing["measured_hz"] = round(self._measured_hz, 1)
+    self.last_timing["infer_ms"] = round(self._infer_ms, 1)
+
   def update(self, buf: VisionBuf) -> tuple[bool, bool, dict[str, Any]]:
     self._refresh_tuning()
+    self._record_proc()
     # Driver cam runs the occupancy classifier; road/wide run YOLO. Hot-reload
     # the relevant model if its file changed (recompiled) -- cheap mtime stat.
     if self.camera == CLASSIFIER_CAMERA:
@@ -1505,6 +1532,7 @@ class VisualVehicleDetector:
         self.left_flag = DebouncedFlag()
         self.right_flag = DebouncedFlag()
         self.blocked_flag = DebouncedFlag()
+        self._proc_ts.clear()  # don't carry the switch gap into the measured rate
         cloudlog.warning("visual vehicle detector switch camera=%s stream=%s size=%sx%s "
                          "cam_connect_ms=%.1f model_switched=%s model_load_ms=%s runtime=%s",
                          desired_camera, stream, vipc_client.width, vipc_client.height, conn_ms,
