@@ -770,8 +770,8 @@ class VisualVehicleDetector:
 
     # Live preview (Crop & Rate / classifier input), only while a portal holds
     # the sentinel: full frame + crop box, the crop with the ROI box, and the
-    # exact 320x320 the model sees.
-    if os.path.exists(PREVIEW_REQUEST_PATH):
+    # exact 320x320 the model sees. rgb_full is None on the hot path (no portal).
+    if rgb_full is not None and os.path.exists(PREVIEW_REQUEST_PATH):
       try:
         self._write_classifier_previews(rgb_full, detector_rgb, crop_debug, roi, model_input)
       except Exception:
@@ -1273,22 +1273,27 @@ class VisualVehicleDetector:
     return detections
   
 
-  def _crop_detector_region(self, rgb: np.ndarray) -> tuple[np.ndarray, dict[str, int | str]]:
-    """Crop the detector region from the original RGB camera frame.
+  def _crop_rect(self, frame_w: int, frame_h: int) -> tuple[int, int, int, int]:
+    """Live-tunable detector crop box (pixels), clamped to the frame and
+    even-aligned so a YUV420 crop-before-convert is pixel-exact (chroma is
+    half-resolution). Seeded by NKAOUD_VISUAL_VEHICLE_CROP_X/Y/W/H."""
+    crop_w = max(2, min(int(round(self.crop_w)), frame_w))
+    crop_h = max(2, min(int(round(self.crop_h)), frame_h))
+    crop_x = max(0, min(int(round(self.crop_x)), frame_w - crop_w))
+    crop_y = max(0, min(int(round(self.crop_y)), frame_h - crop_h))
+    crop_x -= crop_x % 2
+    crop_y -= crop_y % 2
+    crop_w -= crop_w % 2
+    crop_h -= crop_h % 2
+    crop_w = max(2, min(crop_w, frame_w - crop_x))
+    crop_h = max(2, min(crop_h, frame_h - crop_y))
+    crop_w -= crop_w % 2
+    crop_h -= crop_h % 2
+    return crop_x, crop_y, crop_w, crop_h
 
-    The crop box (self.crop_x/y/w/h, pixels) is live-tunable from the tuning
-    portal and seeded by NKAOUD_VISUAL_VEHICLE_CROP_X/Y/W/H. It is clamped here
-    to fit within the actual frame.
-    """
-    image_h, image_w = rgb.shape[:2]
-
-    crop_w = max(1, min(int(round(self.crop_w)), image_w))
-    crop_h = max(1, min(int(round(self.crop_h)), image_h))
-    crop_x = max(0, min(int(round(self.crop_x)), image_w - crop_w))
-    crop_y = max(0, min(int(round(self.crop_y)), image_h - crop_h))
-
-    crop = rgb[crop_y:crop_y + crop_h, crop_x:crop_x + crop_w]
-    debug = {
+  def _crop_debug(self, frame_w: int, frame_h: int, rect: tuple[int, int, int, int]) -> dict[str, int | str]:
+    crop_x, crop_y, crop_w, crop_h = rect
+    return {
       "crop_mode": "tunable",
       "crop_x": int(crop_x),
       "crop_y": int(crop_y),
@@ -1296,12 +1301,30 @@ class VisualVehicleDetector:
       "crop_h": int(crop_h),
       "crop_x2_exclusive": int(crop_x + crop_w),
       "crop_y2_exclusive": int(crop_y + crop_h),
-      "frame_w": int(image_w),
-      "frame_h": int(image_h),
+      "frame_w": int(frame_w),
+      "frame_h": int(frame_h),
       "roi_model_w": int(ROI_MODEL_W),
       "roi_model_h": int(ROI_MODEL_H),
     }
-    return crop, debug
+
+  def _yuv_crop_to_rgb(self, planes: tuple[np.ndarray, np.ndarray, np.ndarray],
+                       rect: tuple[int, int, int, int], mirror: bool) -> np.ndarray:
+    """Convert only the detector crop to RGB instead of the whole frame. The
+    full-frame NV12->RGB is the per-tick bottleneck, yet the model only ever
+    sees the crop. For the mirrored driver view the oriented crop maps to flipped
+    source columns, so we crop the mirror of the box and flip the small result --
+    pixel-exact vs convert-full -> orient -> crop, but ~(frame/crop)x cheaper."""
+    y, u, v = planes
+    crop_x, crop_y, crop_w, crop_h = rect
+    frame_w = int(y.shape[1])
+    sx = (frame_w - crop_x - crop_w) if mirror else crop_x
+    yc = y[crop_y:crop_y + crop_h, sx:sx + crop_w]
+    uc = u[crop_y // 2:(crop_y + crop_h) // 2, sx // 2:(sx + crop_w) // 2]
+    vc = v[crop_y // 2:(crop_y + crop_h) // 2, sx // 2:(sx + crop_w) // 2]
+    rgb = self._yuv_to_rgb(yc, uc, vc, full_range=True)
+    if mirror:
+      rgb = rgb[:, ::-1]
+    return np.ascontiguousarray(rgb)
 
   def _box_in_roi(self, box: tuple[float, float, float, float], roi: tuple[float, float, float, float], image_w: int, image_h: int) -> bool:
     x1, y1, x2, y2 = box
@@ -1394,16 +1417,30 @@ class VisualVehicleDetector:
       left = self.left_flag.update(False)
       right = self.right_flag.update(False)
       return left, right, {"reason": "frame_convert_failed", "runtime": self.runtime}
+
+    frame_h, frame_w = planes[0].shape[:2]
+    rect = self._crop_rect(frame_w, frame_h)
+    crop_debug = self._crop_debug(frame_w, frame_h, rect)
+    mirror = self.camera == "driver"
+    # The full-frame NV12->RGB is the per-tick bottleneck and the model only
+    # sees the crop, so convert just the crop on the hot path. Previews need the
+    # whole oriented frame, so fall back to full conversion only when a portal
+    # is open.
+    preview_on = os.path.exists(PREVIEW_REQUEST_PATH)
     try:
-      rgb = self._orient(self._yuv_to_rgb(*planes, full_range=True))
+      if preview_on:
+        rgb = self._orient(self._yuv_to_rgb(*planes, full_range=True))
+        crop_x, crop_y, crop_w, crop_h = rect
+        detector_rgb = np.ascontiguousarray(rgb[crop_y:crop_y + crop_h, crop_x:crop_x + crop_w])
+      else:
+        rgb = None
+        detector_rgb = self._yuv_crop_to_rgb(planes, rect, mirror)
     except Exception:
       cloudlog.exception("visual vehicle detector failed YUV->RGB conversion")
       left = self.left_flag.update(False)
       right = self.right_flag.update(False)
       return left, right, {"reason": "frame_convert_failed", "runtime": self.runtime}
 
-    # Crop the per-camera detector region (shared by capture, YOLO, classifier).
-    detector_rgb, crop_debug = self._crop_detector_region(rgb)
     self._maybe_capture(detector_rgb)
 
     # Driver cam: whole-crop blocked/clear classifier, not YOLO boxes.
@@ -1419,6 +1456,8 @@ class VisualVehicleDetector:
     # holds the request sentinel.
     if os.path.exists(PREVIEW_REQUEST_PATH):
       try:
+        if rgb is None:  # preview turned on this tick; build the full frame now
+          rgb = self._orient(self._yuv_to_rgb(*planes, full_range=True))
         rgb_limited = self._orient(self._yuv_to_rgb(*planes, full_range=False))
         self._write_preview_pair(rgb, rgb_limited)
         self._write_raw_planes(*planes)
