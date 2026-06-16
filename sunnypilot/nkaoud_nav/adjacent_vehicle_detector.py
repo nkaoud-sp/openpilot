@@ -821,63 +821,86 @@ class VisualVehicleDetector:
     # The 320x320 the model classifies (this is what blocked/clear is decided on).
     Image.fromarray(model_input, "RGB").save(PREVIEW_MODEL_INPUT_PATH)
 
-  def _vipc_to_yuv_planes(self, buf: VisionBuf) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
-    """Returns (y, u, v) as int16 arrays from the NV12 VisionIPC buffer, or None.
-    y is full-resolution (height, width); u and v are quarter-resolution
-    (height/2, width/2). Mirrors system/camerad/snapshot.py exactly to avoid
-    any shape/dtype surprises from buf.data."""
+  def _buf_geometry(self, buf: VisionBuf) -> tuple[int, int, int, int, int, int]:
+    """NV12 buffer geometry: (width, height, stride, uv_offset, uv_height,
+    uv_plane_size). Logs the layout once for debugging (shared by the full-frame
+    and crop paths)."""
+    width = int(buf.width)
+    height = int(buf.height)
+    stride = int(buf.stride)
+    uv_offset = int(buf.uv_offset)
+    # uv_height calculation copied from snapshot.py.
+    uv_height = ((height // 2) + 15) // 16 * 16
+    uv_plane_size = stride * uv_height
+    if not self._logged_buf_geometry:
+      try:
+        dlen = len(buf.data)
+      except Exception:
+        dlen = -1
+      cloudlog.warning(
+        "visual vehicle detector NV12 buf geometry: "
+        "width=%d height=%d stride=%d uv_offset=%d uv_height=%d "
+        "uv_plane_size=%d data_len=%d",
+        width, height, stride, uv_offset, uv_height, uv_plane_size, dlen,
+      )
+      try:
+        import json as _json
+        with open(BUF_GEOMETRY_PATH, "w") as f:
+          _json.dump({
+            "width": width, "height": height, "stride": stride,
+            "uv_offset": uv_offset, "uv_height": uv_height,
+            "uv_plane_size": uv_plane_size, "data_len": dlen,
+            "uv_offset_matches_y_plane": uv_offset == stride * height,
+            "uv_offset_matches_y_plane_aligned": uv_offset == stride * (((height + 31) // 32) * 32),
+          }, f)
+      except OSError:
+        cloudlog.exception("visual vehicle detector failed to write geometry json")
+      self._logged_buf_geometry = True
+    return width, height, stride, uv_offset, uv_height, uv_plane_size
+
+  def _vipc_crop_to_rgb(self, buf: VisionBuf, rect: tuple[int, int, int, int], mirror: bool) -> np.ndarray | None:
+    """Hot path: read and convert ONLY the detector crop from the NV12 buffer,
+    never materializing the full frame. Views over buf.data are sliced to the
+    crop and only the crop is cast to int32 and converted, so cost scales with
+    the crop size. For the mirrored driver view the oriented crop maps to flipped
+    source columns. Pixel-identical to _vipc_to_yuv_planes -> orient -> crop; the
+    even-aligned rect (from _crop_rect) keeps the half-res chroma crop exact."""
     try:
-      width = int(buf.width)
-      height = int(buf.height)
-      stride = int(buf.stride)
-      uv_offset = int(buf.uv_offset)
-      # uv_height calculation copied from snapshot.py.
-      uv_height = ((height // 2) + 15) // 16 * 16
-      uv_plane_size = stride * uv_height
+      width, _height, stride, uv_offset, uv_height, uv_plane_size = self._buf_geometry(buf)
+      crop_x, crop_y, crop_w, crop_h = rect
+      sx = (width - crop_x - crop_w) if mirror else crop_x
+      bx = 2 * (sx // 2)  # even byte column where the interleaved U/V crop starts
+      flat = np.frombuffer(buf.data, dtype=np.uint8)
+      # Y: a (rows x stride) view; slice the crop, cast only the crop to int32.
+      y2d = flat[:uv_offset].reshape((-1, stride))
+      yc = y2d[crop_y:crop_y + crop_h, sx:sx + crop_w].astype(np.int32)
+      # UV: interleaved U/V per row. Crop the row band and the byte columns that
+      # cover the crop, then deinterleave the small block (even=U, odd=V).
+      uv2d = flat[uv_offset:uv_offset + uv_plane_size].reshape((uv_height, stride))
+      block = uv2d[crop_y // 2:(crop_y + crop_h) // 2, bx:bx + crop_w]
+      uc = block[:, 0::2].astype(np.int32)
+      vc = block[:, 1::2].astype(np.int32)
+      rgb = self._yuv_to_rgb(yc, uc, vc, full_range=True)
+      if mirror:
+        rgb = rgb[:, ::-1]
+      return np.ascontiguousarray(rgb)
+    except Exception:
+      cloudlog.exception("visual vehicle detector failed crop plane extraction")
+      return None
 
-      # One-time debug log so we can verify the buffer layout values reported
-      # by VisionBuf rather than guessing -- if the splatter persists, these
-      # numbers are the first thing to check.
-      if not self._logged_buf_geometry:
-        try:
-          dlen = len(buf.data)
-        except Exception:
-          dlen = -1
-        cloudlog.warning(
-          "visual vehicle detector NV12 buf geometry: "
-          "width=%d height=%d stride=%d uv_offset=%d uv_height=%d "
-          "uv_plane_size=%d data_len=%d",
-          width, height, stride, uv_offset, uv_height, uv_plane_size, dlen,
-        )
-        # Also persist for the web preview page so the user can read these
-        # values without SSH access.
-        try:
-          import json as _json
-          with open(BUF_GEOMETRY_PATH, "w") as f:
-            _json.dump({
-              "width": width, "height": height, "stride": stride,
-              "uv_offset": uv_offset, "uv_height": uv_height,
-              "uv_plane_size": uv_plane_size, "data_len": dlen,
-              "uv_offset_matches_y_plane": uv_offset == stride * height,
-              "uv_offset_matches_y_plane_aligned": uv_offset == stride * (((height + 31) // 32) * 32),
-            }, f)
-        except OSError:
-          cloudlog.exception("visual vehicle detector failed to write geometry json")
-        self._logged_buf_geometry = True
-
-      # Slice buf.data as a memoryview FIRST, then wrap with np.array. This is
-      # what snapshot.py does and it sidesteps any shape buf.data might carry.
-      # int32 (not int16) is required: subsequent 256*Y overflows int16 for any
-      # Y >= 128 (256*128 = 32768 > int16 max 32767), wraps negative, and after
-      # >> 8 ends up as a large negative bias in the BT.601 sums -- which is
-      # exactly what was making bright regions render as dark / magenta.
+  def _vipc_to_yuv_planes(self, buf: VisionBuf) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """Full-frame (y, u, v) int32 planes from the NV12 buffer, or None. y is
+    full-resolution; u and v are quarter-resolution. Used for the preview path;
+    the hot loop uses _vipc_crop_to_rgb to avoid touching the whole frame."""
+    try:
+      width, height, stride, uv_offset, _uv_height, uv_plane_size = self._buf_geometry(buf)
+      # Slice buf.data as a memoryview FIRST, then wrap with np.array. int32 (not
+      # int16) is required: 256*Y overflows int16 for any Y >= 128, wraps
+      # negative, and after >> 8 biases the BT.601 sums (dark / magenta).
       y = np.array(buf.data[:uv_offset], dtype=np.uint8) \
             .reshape((-1, stride))[:height, :width].astype(np.int32)
       uv_data = buf.data[uv_offset:uv_offset + uv_plane_size]
-      # Standard NV12 chroma interleave: even bytes are U (Cb), odd bytes are V
-      # (Cr). This matches system/camerad/snapshot.py and spectra.cc, which
-      # configures CAM_FORMAT_NV12. An earlier NV21 (V,U) assumption here fed
-      # the V/Cr signal into the blue channel, so red tail lights rendered blue.
+      # Standard NV12 chroma interleave: even bytes are U (Cb), odd bytes are V (Cr).
       u = np.array(uv_data[::2], dtype=np.uint8) \
             .reshape((-1, stride // 2))[:height // 2, :width // 2].astype(np.int32)
       v = np.array(uv_data[1::2], dtype=np.uint8) \
@@ -1307,25 +1330,6 @@ class VisualVehicleDetector:
       "roi_model_h": int(ROI_MODEL_H),
     }
 
-  def _yuv_crop_to_rgb(self, planes: tuple[np.ndarray, np.ndarray, np.ndarray],
-                       rect: tuple[int, int, int, int], mirror: bool) -> np.ndarray:
-    """Convert only the detector crop to RGB instead of the whole frame. The
-    full-frame NV12->RGB is the per-tick bottleneck, yet the model only ever
-    sees the crop. For the mirrored driver view the oriented crop maps to flipped
-    source columns, so we crop the mirror of the box and flip the small result --
-    pixel-exact vs convert-full -> orient -> crop, but ~(frame/crop)x cheaper."""
-    y, u, v = planes
-    crop_x, crop_y, crop_w, crop_h = rect
-    frame_w = int(y.shape[1])
-    sx = (frame_w - crop_x - crop_w) if mirror else crop_x
-    yc = y[crop_y:crop_y + crop_h, sx:sx + crop_w]
-    uc = u[crop_y // 2:(crop_y + crop_h) // 2, sx // 2:(sx + crop_w) // 2]
-    vc = v[crop_y // 2:(crop_y + crop_h) // 2, sx // 2:(sx + crop_w) // 2]
-    rgb = self._yuv_to_rgb(yc, uc, vc, full_range=True)
-    if mirror:
-      rgb = rgb[:, ::-1]
-    return np.ascontiguousarray(rgb)
-
   def _box_in_roi(self, box: tuple[float, float, float, float], roi: tuple[float, float, float, float], image_w: int, image_h: int) -> bool:
     x1, y1, x2, y2 = box
     rx1, ry1, rx2, ry2 = roi
@@ -1412,29 +1416,29 @@ class VisualVehicleDetector:
       self._ensure_classifier()
     else:
       self._ensure_model_for(self.camera)
-    planes = self._vipc_to_yuv_planes(buf)
-    if planes is None:
-      left = self.left_flag.update(False)
-      right = self.right_flag.update(False)
-      return left, right, {"reason": "frame_convert_failed", "runtime": self.runtime}
-
-    frame_h, frame_w = planes[0].shape[:2]
+    frame_w, frame_h = int(buf.width), int(buf.height)
     rect = self._crop_rect(frame_w, frame_h)
     crop_debug = self._crop_debug(frame_w, frame_h, rect)
     mirror = self.camera == "driver"
-    # The full-frame NV12->RGB is the per-tick bottleneck and the model only
-    # sees the crop, so convert just the crop on the hot path. Previews need the
-    # whole oriented frame, so fall back to full conversion only when a portal
-    # is open.
+    # Extracting + converting the whole ~2MP frame every tick is the bottleneck,
+    # and the model only sees the crop, so read just the crop's bytes from the
+    # NV12 buffer on the hot path. A portal preview needs the whole oriented
+    # frame, so fall back to full extraction only when one is open.
     preview_on = os.path.exists(PREVIEW_REQUEST_PATH)
+    planes = None
     try:
       if preview_on:
+        planes = self._vipc_to_yuv_planes(buf)
+        if planes is None:
+          raise RuntimeError("plane extraction failed")
         rgb = self._orient(self._yuv_to_rgb(*planes, full_range=True))
         crop_x, crop_y, crop_w, crop_h = rect
         detector_rgb = np.ascontiguousarray(rgb[crop_y:crop_y + crop_h, crop_x:crop_x + crop_w])
       else:
         rgb = None
-        detector_rgb = self._yuv_crop_to_rgb(planes, rect, mirror)
+        detector_rgb = self._vipc_crop_to_rgb(buf, rect, mirror)
+        if detector_rgb is None:
+          raise RuntimeError("crop extraction failed")
     except Exception:
       cloudlog.exception("visual vehicle detector failed YUV->RGB conversion")
       left = self.left_flag.update(False)
@@ -1456,7 +1460,9 @@ class VisualVehicleDetector:
     # holds the request sentinel.
     if os.path.exists(PREVIEW_REQUEST_PATH):
       try:
-        if rgb is None:  # preview turned on this tick; build the full frame now
+        if planes is None:  # preview turned on this tick; build the full frame now
+          planes = self._vipc_to_yuv_planes(buf)
+        if rgb is None:
           rgb = self._orient(self._yuv_to_rgb(*planes, full_range=True))
         rgb_limited = self._orient(self._yuv_to_rgb(*planes, full_range=False))
         self._write_preview_pair(rgb, rgb_limited)
