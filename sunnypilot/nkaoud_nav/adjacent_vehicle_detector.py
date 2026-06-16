@@ -54,6 +54,8 @@ BUF_GEOMETRY_PATH = "/tmp/nkaoud_vvd_buf_geometry.json"
 DEFAULT_PKL_PATH = str(ARTIFACT_DIR / "visual_vehicle_detector_tinygrad.pkl")
 DEFAULT_DRIVER_PKL_PATH = str(ARTIFACT_DIR / "visual_vehicle_detector_driver_tinygrad.pkl")
 DEFAULT_ONNX_PATH = str(ARTIFACT_DIR / "visual_vehicle_detector.onnx")
+STATE_WRITE_HZ = 5.0
+STATE_WRITE_INTERVAL = 1.0 / STATE_WRITE_HZ
 
 # Dataset capture: while the capture portal/dialog is open (sentinel present)
 # and the car is onroad, the detector saves the selected camera's crop as JPEG
@@ -383,6 +385,8 @@ class VisualVehicleDetector:
     self._loaded_pkl_mtime = -1.0
     self._cold_inference = False
     self.last_timing: dict[str, Any] = {}
+    self._last_state_write_t = 0.0
+    self._pending_state: dict[str, Any] | None = None
 
     # Dataset capture state.
     self._last_capture_t = 0.0
@@ -479,17 +483,27 @@ class VisualVehicleDetector:
     self.detector_hz = max(1, min(MAX_DETECTOR_HZ, int(round(t["hz"]))))
     self.blocked_threshold = t["blocked_threshold"]
 
-  def _write_state(self, left: bool, right: bool, debug: dict[str, Any] | None = None) -> None:
+  def _write_state(self, left: bool, right: bool, debug: dict[str, Any] | None = None, force: bool = False) -> None:
     state = {
       "left": bool(left),
       "right": bool(right),
       "monotonic_time": time.monotonic(),
       "debug": debug or {},
     }
+    self._pending_state = state
+    if not force and state["monotonic_time"] - self._last_state_write_t < STATE_WRITE_INTERVAL:
+      return
+
+    state = self._pending_state
+    if state is None:
+      return
+
     tmp_path = STATE_PATH.with_suffix(".tmp")
     try:
       tmp_path.write_text(json.dumps(state, separators=(",", ":")))
       os.replace(tmp_path, STATE_PATH)
+      self._last_state_write_t = float(state["monotonic_time"])
+      self._pending_state = None
     except Exception:
       cloudlog.exception("visual vehicle detector failed to write state")
 
@@ -504,7 +518,7 @@ class VisualVehicleDetector:
     }
     payload.update(debug)
     self.startup_debug = payload
-    self._write_state(False, False, payload)
+    self._write_state(False, False, payload, force=True)
 
   def _set_tinygrad_device_env(self) -> None:
     # Match openpilot's tinygrad modeld convention when possible.
@@ -859,31 +873,50 @@ class VisualVehicleDetector:
     return width, height, stride, uv_offset, uv_height, uv_plane_size
 
   def _vipc_crop_to_rgb(self, buf: VisionBuf, rect: tuple[int, int, int, int], mirror: bool) -> np.ndarray | None:
-    """Hot path: read and convert ONLY the detector crop from the NV12 buffer,
-    never materializing the full frame. Views over buf.data are sliced to the
-    crop and only the crop is cast to int32 and converted, so cost scales with
-    the crop size. For the mirrored driver view the oriented crop maps to flipped
-    source columns. Pixel-identical to _vipc_to_yuv_planes -> orient -> crop; the
-    even-aligned rect (from _crop_rect) keeps the half-res chroma crop exact."""
+    """Hot path: read and convert ONLY the detector crop from the NV12 buffer.
+
+    This avoids full-frame materialization and also avoids a few large temporary
+    arrays from the generic YUV path (`repeat`, `stack`, extra int32 copies) by
+    expanding U/V directly into full-res working buffers for the crop only.
+    """
     try:
       width, _height, stride, uv_offset, uv_height, uv_plane_size = self._buf_geometry(buf)
       crop_x, crop_y, crop_w, crop_h = rect
       sx = (width - crop_x - crop_w) if mirror else crop_x
       bx = 2 * (sx // 2)  # even byte column where the interleaved U/V crop starts
       flat = np.frombuffer(buf.data, dtype=np.uint8)
-      # Y: a (rows x stride) view; slice the crop, cast only the crop to int32.
+
+      # Y: a (rows x stride) view; slice only the crop and widen once.
       y2d = flat[:uv_offset].reshape((-1, stride))
-      yc = y2d[crop_y:crop_y + crop_h, sx:sx + crop_w].astype(np.int32)
-      # UV: interleaved U/V per row. Crop the row band and the byte columns that
-      # cover the crop, then deinterleave the small block (even=U, odd=V).
+      y = y2d[crop_y:crop_y + crop_h, sx:sx + crop_w].astype(np.int32)
+
+      # UV: crop the row band and byte columns that cover the crop, then expand
+      # the half-res chroma directly to full-res int32 planes for the crop.
       uv2d = flat[uv_offset:uv_offset + uv_plane_size].reshape((uv_height, stride))
       block = uv2d[crop_y // 2:(crop_y + crop_h) // 2, bx:bx + crop_w]
-      uc = block[:, 0::2].astype(np.int32)
-      vc = block[:, 1::2].astype(np.int32)
-      rgb = self._yuv_to_rgb(yc, uc, vc, full_range=True)
+      u_half = block[:, 0::2]
+      v_half = block[:, 1::2]
+
+      u = np.empty((crop_h, crop_w), dtype=np.int32)
+      v = np.empty((crop_h, crop_w), dtype=np.int32)
+      u[0::2, 0::2] = u_half
+      u[0::2, 1::2] = u_half
+      u[1::2, 0::2] = u_half
+      u[1::2, 1::2] = u_half
+      v[0::2, 0::2] = v_half
+      v[0::2, 1::2] = v_half
+      v[1::2, 0::2] = v_half
+      v[1::2, 1::2] = v_half
+
+      d = u - 128
+      e = v - 128
+      rgb = np.empty((crop_h, crop_w, 3), dtype=np.uint8)
+      rgb[..., 0] = np.clip((256 * y + 359 * e + 128) >> 8, 0, 255)
+      rgb[..., 1] = np.clip((256 * y - 88 * d - 183 * e + 128) >> 8, 0, 255)
+      rgb[..., 2] = np.clip((256 * y + 454 * d + 128) >> 8, 0, 255)
       if mirror:
-        rgb = rgb[:, ::-1]
-      return np.ascontiguousarray(rgb)
+        return np.ascontiguousarray(rgb[:, ::-1])
+      return rgb
     except Exception:
       cloudlog.exception("visual vehicle detector failed crop plane extraction")
       return None
