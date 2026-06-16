@@ -499,11 +499,13 @@ class VisualVehicleDetector:
       return
 
     tmp_path = STATE_PATH.with_suffix(".tmp")
+    t0 = time.monotonic()
     try:
       tmp_path.write_text(json.dumps(state, separators=(",", ":")))
       os.replace(tmp_path, STATE_PATH)
       self._last_state_write_t = float(state["monotonic_time"])
       self._pending_state = None
+      self.last_timing["state_write_ms"] = round((time.monotonic() - t0) * 1000.0, 1)
     except Exception:
       cloudlog.exception("visual vehicle detector failed to write state")
 
@@ -772,7 +774,9 @@ class VisualVehicleDetector:
                             "classifier": {"active": False, "model": self.classifier_pkl_path,
                                            "allow_onnx": self.params.get_bool("VisualVehicleDetectorAllowOnnx")}}
     try:
+      t0 = time.monotonic()
       inp, roi, model_input = self._preprocess_classifier(detector_rgb)
+      self.last_timing["preprocess_ms"] = round((time.monotonic() - t0) * 1000.0, 1)
       t0 = time.monotonic()
       p_blocked = self._run_classifier(inp)
       self._infer_ms = (time.monotonic() - t0) * 1000.0
@@ -1460,6 +1464,7 @@ class VisualVehicleDetector:
     preview_on = os.path.exists(PREVIEW_REQUEST_PATH)
     planes = None
     try:
+      t0 = time.monotonic()
       if preview_on:
         planes = self._vipc_to_yuv_planes(buf)
         if planes is None:
@@ -1472,6 +1477,7 @@ class VisualVehicleDetector:
         detector_rgb = self._vipc_crop_to_rgb(buf, rect, mirror)
         if detector_rgb is None:
           raise RuntimeError("crop extraction failed")
+      self.last_timing["crop_rgb_ms"] = round((time.monotonic() - t0) * 1000.0, 1)
     except Exception:
       cloudlog.exception("visual vehicle detector failed YUV->RGB conversion")
       left = self.left_flag.update(False)

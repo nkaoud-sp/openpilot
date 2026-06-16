@@ -52,6 +52,16 @@ class VisualVehicleReadout:
       return _AMBER if reason in ("state_missing", "inactive", "waiting_for_camera", "waiting_for_vipc", "pkl_missing") else _RED
     return _RED if active else _GREEN
 
+  @staticmethod
+  def _timing_breakdown(timing: dict) -> str:
+    """Per-stage ms: C=crop->RGB, P=preprocess, I=inference, W=state write."""
+    return "C{} P{} I{} W{}".format(
+      timing.get("crop_rgb_ms", "--"),
+      timing.get("preprocess_ms", "--"),
+      timing.get("infer_ms", "--"),
+      timing.get("state_write_ms", "--"),
+    )
+
   def draw(self, rect: rl.Rectangle):
     visible = bool(getattr(ui_state, "visual_vehicle_detector_readout", False))
     self._update_alpha(visible)
@@ -97,6 +107,7 @@ class VisualVehicleReadout:
         ("INPUT", input_shape_text, _WHITE),
         ("RATE", f"{timing.get('measured_hz', '--')} / {debug.get('hz', '--')} Hz", _WHITE),
         ("INF ms", str(timing.get("infer_ms", "--")), _WHITE),
+        ("TIMING", self._timing_breakdown(timing), _WHITE),
         ("AGE", f"{age:.1f}s", _AMBER if stale else _WHITE),
         ("FRAME", str(debug.get("frame_id", "--")), _DIM),
       ]
