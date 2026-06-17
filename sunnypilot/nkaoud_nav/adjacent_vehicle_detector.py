@@ -446,9 +446,11 @@ class VisualVehicleDetector:
     self.right_flag = DebouncedFlag()
     # Driver-cam classifier: alternate left/right each frame (one inference per
     # frame, ~half rate per side). Each side keeps its own debounce + last prob.
+    # Snappier debounce than the YOLO flags: each per-side sample is already
+    # ~half-rate (~0.12s), so 1 sample asserts; maximum=2 keeps the clear quick.
     self._classifier_side = "right"
-    self._cls_left_flag = DebouncedFlag()
-    self._cls_right_flag = DebouncedFlag()
+    self._cls_left_flag = DebouncedFlag(threshold=1, maximum=2)
+    self._cls_right_flag = DebouncedFlag(threshold=1, maximum=2)
     self._cls_p_left: float | None = None
     self._cls_p_right: float | None = None
     self.startup_debug: dict[str, Any] = {"reason": "not_started", "runtime": self.runtime}
@@ -1664,8 +1666,8 @@ class VisualVehicleDetector:
         last_frame_id = -1
         self.left_flag = DebouncedFlag()
         self.right_flag = DebouncedFlag()
-        self._cls_left_flag = DebouncedFlag()
-        self._cls_right_flag = DebouncedFlag()
+        self._cls_left_flag = DebouncedFlag(threshold=1, maximum=2)
+        self._cls_right_flag = DebouncedFlag(threshold=1, maximum=2)
         self._cls_p_left = None
         self._cls_p_right = None
         self._classifier_side = "right"
