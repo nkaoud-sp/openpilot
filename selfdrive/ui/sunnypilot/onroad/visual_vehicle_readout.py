@@ -90,23 +90,33 @@ class VisualVehicleReadout:
     classifier = debug.get("classifier", {}) or {}
 
     if classifier.get("active") or reason in ("classifier_missing", "classifier_error"):
-      # Driver-cam occupancy classifier: a single BLOCKED/CLEAR signal.
-      blocked = bool(classifier.get("blocked"))
-      p_blk = classifier.get("p_blocked")
-      lane_color = _RED if blocked else _GREEN
-      if stale or reason != "ok":
-        lane_color = _AMBER
+      # Driver-cam car classifier: left/right occupancy (sides alternate frames).
+      left_blk = bool(classifier.get("left_blocked"))
+      right_blk = bool(classifier.get("right_blocked"))
+      p_left = classifier.get("p_left")
+      p_right = classifier.get("p_right")
+      side = str(classifier.get("side", "--")).upper()
+
+      def _side_color(blk: bool) -> rl.Color:
+        if stale or reason != "ok":
+          return _AMBER
+        return _RED if blk else _GREEN
+
+      def _p(v) -> str:
+        return f"{v:.2f}" if isinstance(v, (int, float)) else "--"
+
       rows = [
         ("CAMERA", str(debug.get("camera", "--")).upper(), _WHITE),
         ("CAPTURE", (f"REC {capture.get('saved', 0)}" if cap_on else "OFF"), _RED if cap_on else _DIM),
-        ("LANE", "BLOCKED" if blocked else "CLEAR", lane_color),
-        ("P(BLK)", f"{p_blk:.2f}" if isinstance(p_blk, (int, float)) else "--", lane_color),
+        ("LEFT", "BLOCKED" if left_blk else "CLEAR", _side_color(left_blk)),
+        ("RIGHT", "BLOCKED" if right_blk else "CLEAR", _side_color(right_blk)),
+        ("P L/R", f"{_p(p_left)} / {_p(p_right)}", _WHITE),
+        ("EVAL", side, _DIM),
         ("THRESH", str(classifier.get("threshold", "--")), _DIM),
         ("STATUS", "STALE" if stale else reason.upper(), _AMBER if stale or reason != "ok" else _GREEN),
         ("RUNTIME", runtime.upper(), _GREEN if runtime == "tinygrad_pkl" else (_AMBER if runtime == "onnx_cpu" else _DIM)),
         ("INPUT", input_shape_text, _WHITE),
         ("RATE", f"{timing.get('measured_hz', '--')} / {debug.get('hz', '--')} Hz", _WHITE),
-        ("INF ms", str(timing.get("infer_ms", "--")), _WHITE),
         ("TIMING", self._timing_breakdown(timing), _WHITE),
         ("AGE", f"{age:.1f}s", _AMBER if stale else _WHITE),
         ("FRAME", str(debug.get("frame_id", "--")), _DIM),

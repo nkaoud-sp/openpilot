@@ -370,6 +370,11 @@ class DebouncedFlag:
       self.score = max(0, self.score - 1)
     return self.score >= self.threshold
 
+  def value(self) -> bool:
+    """Current debounced state without consuming a sample (for the side that
+    wasn't evaluated this frame)."""
+    return self.score >= self.threshold
+
 
 class VisualVehicleDetector:
   def __init__(self) -> None:
@@ -439,7 +444,13 @@ class VisualVehicleDetector:
     self._classifier_input_buf = np.empty((1, 3, CLASSIFIER_IMG_SIZE, CLASSIFIER_IMG_SIZE), dtype=np.float32)
     self.left_flag = DebouncedFlag()
     self.right_flag = DebouncedFlag()
-    self.blocked_flag = DebouncedFlag()
+    # Driver-cam classifier: alternate left/right each frame (one inference per
+    # frame, ~half rate per side). Each side keeps its own debounce + last prob.
+    self._classifier_side = "right"
+    self._cls_left_flag = DebouncedFlag()
+    self._cls_right_flag = DebouncedFlag()
+    self._cls_p_left: float | None = None
+    self._cls_p_right: float | None = None
     self.startup_debug: dict[str, Any] = {"reason": "not_started", "runtime": self.runtime}
     self.last_model_debug: dict[str, Any] = {}
     self._preproc_dumped = False
@@ -767,17 +778,20 @@ class VisualVehicleDetector:
     return float((e / e.sum())[CLASSIFIER_POS_INDEX])
 
   def _update_classifier(self, rgb_full: np.ndarray, detector_rgb: np.ndarray,
-                         crop_debug: dict[str, int | str]) -> tuple[bool, bool, dict[str, Any]]:
-    """Driver-camera path: whole-crop blocked/clear instead of YOLO boxes.
-    Reports a dedicated signal; the left/right flags stay clear."""
-    base = {"runtime": self.classifier_runtime, "crop": crop_debug,
+                         crop_debug: dict[str, int | str], side: str | None) -> tuple[bool, bool, dict[str, Any]]:
+    """Driver-camera path: whole-crop car/no-car classifier. Alternates sides
+    each frame (`side` is the one evaluated now); the other side holds its last
+    debounced state. Returns (left_blocked, right_blocked)."""
+    side = side or "right"
+    base = {"runtime": self.classifier_runtime, "crop": crop_debug, "side": side,
             "input_shape": [CLASSIFIER_IMG_SIZE, CLASSIFIER_IMG_SIZE],
             "hz": self.detector_hz, "timing": dict(self.last_timing),
             "capture": {"on": capture_requested(), "saved": self._capture_count}}
     if not self.classifier_available():
-      return False, False, {**base, "reason": "classifier_missing",
-                            "classifier": {"active": False, "model": self.classifier_pkl_path,
-                                           "allow_onnx": self.params.get_bool("VisualVehicleDetectorAllowOnnx")}}
+      return self._cls_left_flag.value(), self._cls_right_flag.value(), {
+        **base, "reason": "classifier_missing",
+        "classifier": {"active": False, "model": self.classifier_pkl_path,
+                       "allow_onnx": self.params.get_bool("VisualVehicleDetectorAllowOnnx")}}
     try:
       t0 = time.monotonic()
       inp, roi, model_input = self._preprocess_classifier(detector_rgb)
@@ -789,7 +803,8 @@ class VisualVehicleDetector:
       base["timing"] = dict(self.last_timing)  # refresh: base snapshotted pre-inference
     except Exception as e:
       cloudlog.exception("visual vehicle classifier inference failed")
-      return False, False, {**base, "reason": "classifier_error", "error": str(e)}
+      return self._cls_left_flag.value(), self._cls_right_flag.value(), {
+        **base, "reason": "classifier_error", "error": str(e)}
 
     # Live preview (Crop & Rate / classifier input), only while a portal holds
     # the sentinel: full frame + crop box, the crop with the ROI box, and the
@@ -800,14 +815,26 @@ class VisualVehicleDetector:
       except Exception:
         cloudlog.exception("visual vehicle classifier preview write failed")
 
-    blocked = self.blocked_flag.update(p_blocked >= self.blocked_threshold)
+    # Update only the side evaluated this frame; the other side persists.
+    raw = p_blocked >= self.blocked_threshold
+    if side == "left":
+      self._cls_left_flag.update(raw)
+      self._cls_p_left = p_blocked
+    else:
+      self._cls_right_flag.update(raw)
+      self._cls_p_right = p_blocked
+    left_blocked = self._cls_left_flag.value()
+    right_blocked = self._cls_right_flag.value()
     base["classifier"] = {
       "active": True,
-      "blocked": bool(blocked),
-      "p_blocked": round(p_blocked, 4),
-      "p_clear": round(1.0 - p_blocked, 4),
+      "side": side,
+      "left_blocked": bool(left_blocked),
+      "right_blocked": bool(right_blocked),
+      "p_left": round(self._cls_p_left, 4) if self._cls_p_left is not None else None,
+      "p_right": round(self._cls_p_right, 4) if self._cls_p_right is not None else None,
       "threshold": round(self.blocked_threshold, 3),
-      "score": self.blocked_flag.score,
+      "left_score": self._cls_left_flag.score,
+      "right_score": self._cls_right_flag.score,
       "roi": [roi["roi_x1"], roi["roi_y1"], roi["roi_x2"], roi["roi_y2"]],
       "src_crop": [int(detector_rgb.shape[1]), int(detector_rgb.shape[0])],
       "expected_src": [CLASSIFIER_SRC_W, CLASSIFIER_SRC_H],
@@ -815,7 +842,7 @@ class VisualVehicleDetector:
       "pos_index": CLASSIFIER_POS_INDEX,
     }
     base["reason"] = "ok"
-    return False, False, base
+    return left_blocked, right_blocked, base
 
   def _write_classifier_previews(self, rgb_full: np.ndarray, detector_rgb: np.ndarray,
                                  crop_debug: dict[str, int | str], roi: dict[str, int],
@@ -1401,7 +1428,7 @@ class VisualVehicleDetector:
       return np.ascontiguousarray(rgb[:, ::-1])
     return rgb
 
-  def _maybe_capture(self, detector_rgb: np.ndarray) -> None:
+  def _maybe_capture(self, detector_rgb: np.ndarray, side: str | None = None) -> None:
     """Save the camera crop as JPEG for training while the capture portal is
     open and the car is onroad. Throttled to the requested Hz and capped to
     protect device storage."""
@@ -1429,7 +1456,10 @@ class VisualVehicleDetector:
       from PIL import Image
       CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
       self._capture_seq += 1
-      fname = f"cap_{self.camera}_{int(time.time() * 1000)}_{self._capture_seq}.jpg"
+      # Tag the side so alternating driver-cam crops (left frames are mirrored
+      # to look like right) stay distinguishable in a future dataset.
+      side_tag = f"_{side}" if side else ""
+      fname = f"cap_{self.camera}{side_tag}_{int(time.time() * 1000)}_{self._capture_seq}.jpg"
       path = CAPTURE_DIR / fname
       Image.fromarray(detector_rgb, "RGB").save(path, "JPEG", quality=90)
       self._last_capture_t = now
@@ -1462,6 +1492,16 @@ class VisualVehicleDetector:
     rect = self._crop_rect(frame_w, frame_h)
     crop_debug = self._crop_debug(frame_w, frame_h, rect)
     mirror = self.camera == "driver"
+    # Driver classifier: alternate sides each frame. The driver cam is a
+    # symmetric selfie, so the SAME crop read with the un-mirror flip is the
+    # right lane (world-oriented, as trained) and read WITHOUT it is the left
+    # lane already in right-looking orientation -- so we just toggle `mirror`.
+    classifier_side = None
+    if self.camera == CLASSIFIER_CAMERA:
+      self._classifier_side = "left" if self._classifier_side == "right" else "right"
+      classifier_side = self._classifier_side
+      if classifier_side == "left":
+        mirror = not mirror
     # Extracting + converting the whole ~2MP frame every tick is the bottleneck,
     # and the model only sees the crop, so read just the crop's bytes from the
     # NV12 buffer on the hot path. A portal preview needs the whole oriented
@@ -1474,7 +1514,11 @@ class VisualVehicleDetector:
         planes = self._vipc_to_yuv_planes(buf)
         if planes is None:
           raise RuntimeError("plane extraction failed")
-        rgb = self._orient(self._yuv_to_rgb(*planes, full_range=True))
+        # Match the hot path's per-side orientation (mirror toggles by side) so
+        # the preview crop is the same image the classifier sees.
+        rgb = self._yuv_to_rgb(*planes, full_range=True)
+        if mirror:
+          rgb = np.ascontiguousarray(rgb[:, ::-1])
         crop_x, crop_y, crop_w, crop_h = rect
         detector_rgb = np.ascontiguousarray(rgb[crop_y:crop_y + crop_h, crop_x:crop_x + crop_w])
       else:
@@ -1489,11 +1533,11 @@ class VisualVehicleDetector:
       right = self.right_flag.update(False)
       return left, right, {"reason": "frame_convert_failed", "runtime": self.runtime}
 
-    self._maybe_capture(detector_rgb)
+    self._maybe_capture(detector_rgb, classifier_side)
 
     # Driver cam: whole-crop blocked/clear classifier, not YOLO boxes.
     if self.camera == CLASSIFIER_CAMERA:
-      return self._update_classifier(rgb, detector_rgb, crop_debug)
+      return self._update_classifier(rgb, detector_rgb, crop_debug, classifier_side)
 
     # Run YOLO on the fixed crop only, not on the full camera frame.
     detections = self._run_model(detector_rgb)
@@ -1620,7 +1664,11 @@ class VisualVehicleDetector:
         last_frame_id = -1
         self.left_flag = DebouncedFlag()
         self.right_flag = DebouncedFlag()
-        self.blocked_flag = DebouncedFlag()
+        self._cls_left_flag = DebouncedFlag()
+        self._cls_right_flag = DebouncedFlag()
+        self._cls_p_left = None
+        self._cls_p_right = None
+        self._classifier_side = "right"
         self._proc_ts.clear()  # don't carry the switch gap into the measured rate
         cloudlog.warning("visual vehicle detector switch camera=%s stream=%s size=%sx%s "
                          "cam_connect_ms=%.1f model_switched=%s model_load_ms=%s runtime=%s",
