@@ -436,6 +436,7 @@ class VisualVehicleDetector:
     self._infer_ms = 0.0
 
     self.input_shape: tuple[int, int] = (320, 320)  # width, height
+    self._classifier_input_buf = np.empty((1, 3, CLASSIFIER_IMG_SIZE, CLASSIFIER_IMG_SIZE), dtype=np.float32)
     self.left_flag = DebouncedFlag()
     self.right_flag = DebouncedFlag()
     self.blocked_flag = DebouncedFlag()
@@ -735,14 +736,18 @@ class VisualVehicleDetector:
     resized = np.asarray(
       Image.fromarray(roi, "RGB").resize((CLASSIFIER_IMG_SIZE, CLASSIFIER_IMG_SIZE), Image.BILINEAR)
     )
+    x = self._classifier_input_buf
+    np.copyto(x[0], resized.transpose(2, 0, 1), casting="unsafe")
     if CLASSIFIER_NORM == "signed":
-      x = resized.astype(np.float32) / 127.5 - 1.0          # [-1, 1] (old TinyCNN)
+      x[0] /= 127.5
+      x[0] -= 1.0                                           # [-1, 1] (old TinyCNN)
     elif CLASSIFIER_NORM == "unit":
-      x = resized.astype(np.float32) / 255.0                # [0, 1]
+      x[0] /= 255.0                                         # [0, 1]
     else:  # "imagenet" (default, MobileNetV3-Small standard)
-      x = (resized.astype(np.float32) / 255.0 - IMAGENET_MEAN) / IMAGENET_STD
-    x = np.transpose(x, (2, 0, 1))[None]
-    return np.ascontiguousarray(x), {"roi_x1": x1, "roi_y1": y1, "roi_x2": x2, "roi_y2": y2}, resized
+      x[0] /= 255.0
+      x[0] -= IMAGENET_MEAN[:, None, None]
+      x[0] /= IMAGENET_STD[:, None, None]
+    return x, {"roi_x1": x1, "roi_y1": y1, "roi_x2": x2, "roi_y2": y2}, resized
 
   def _run_classifier(self, inp: np.ndarray) -> float:
     """Return p_blocked = softmax(logits)[CLASSIFIER_POS_INDEX]."""
