@@ -244,6 +244,92 @@ class VisualVehicleSettingsLayout(Widget):
   def _trigger_compile_classifier(self) -> None:
     self._start_worker(self._run_compile_classifier)
 
+  # ---- Wide-camera car classifier (replaces YOLO on the wide cam) ----
+
+  def _download_wide_classifier_button_label(self) -> str:
+    from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import WIDE_CLASSIFIER_ONNX_PATH
+    with self._lock:
+      status = self._status
+    if status.startswith("Downloading"):
+      return tr("Downloading Wide Classifier...")
+    if status.startswith("error"):
+      return tr("Retry Wide Classifier Download")
+    if os.path.exists(WIDE_CLASSIFIER_ONNX_PATH):
+      return tr("Re-download Wide Classifier")
+    return tr("Download Wide Classifier")
+
+  def _download_wide_classifier_description(self) -> str:
+    from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import (
+      WIDE_CLASSIFIER_ONNX_PATH, WIDE_CLASSIFIER_PKL_PATH, MODEL_CONFIG_PATH,
+    )
+    with self._lock:
+      status = self._status
+    if status:
+      return status
+    onnx = "yes" if os.path.exists(WIDE_CLASSIFIER_ONNX_PATH) else "no"
+    pkl = "yes" if os.path.exists(WIDE_CLASSIFIER_PKL_PATH) else "no"
+    cfg = "yes" if os.path.exists(MODEL_CONFIG_PATH) else "no"
+    return tr("Downloads the hosted wide-cam car classifier (320x128 MobileNetV3-Small, single-zone) and the "
+              "model_config.json. Used only when the Wide camera is selected; replaces YOLO there. Tune the wide "
+              "crop to 854x280. ONNX: {}  PKL: {}  Config: {}").format(onnx, pkl, cfg)
+
+  def _run_download_wide_classifier(self) -> None:
+    try:
+      from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import ensure_wide_classifier_onnx
+      self._set_status("Downloading wide classifier ONNX...")
+      ensure_wide_classifier_onnx()
+      self._set_status(self._load_status_message())
+    except Exception as e:
+      self._set_status(f"error: download failed: {e}")
+    finally:
+      with self._lock:
+        self._worker = None
+
+  def _trigger_download_wide_classifier(self) -> None:
+    self._start_worker(self._run_download_wide_classifier)
+
+  def _compile_wide_classifier_button_label(self) -> str:
+    from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import WIDE_CLASSIFIER_PKL_PATH
+    with self._lock:
+      status = self._status
+    if status.startswith("Compiling"):
+      return tr("Compiling Wide Classifier PKL...")
+    if status.startswith("error"):
+      return tr("Retry Wide Classifier Compile")
+    if os.path.exists(WIDE_CLASSIFIER_PKL_PATH):
+      return tr("Recompile Wide Classifier PKL")
+    return tr("Compile Wide Classifier PKL")
+
+  def _compile_wide_classifier_description(self) -> str:
+    from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import WIDE_CLASSIFIER_ONNX_PATH, WIDE_CLASSIFIER_PKL_PATH
+    with self._lock:
+      status = self._status
+    if status:
+      return status
+    if os.path.exists(WIDE_CLASSIFIER_PKL_PATH):
+      return tr("Wide classifier PKL present. Tap to rebuild it on this device.")
+    if os.path.exists(WIDE_CLASSIFIER_ONNX_PATH):
+      return tr("Compiles the wide classifier ONNX to its tinygrad PKL on this device. Keep the car offroad.")
+    return tr("Download the wide classifier ONNX first, then compile it.")
+
+  def _run_compile_wide_classifier(self) -> None:
+    try:
+      from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import WIDE_CLASSIFIER_ONNX_PATH, compile_wide_classifier_pkl
+      if not os.path.exists(WIDE_CLASSIFIER_ONNX_PATH):
+        self._set_status("error: wide classifier ONNX is missing")
+        return
+      self._set_status("Compiling Wide Classifier PKL...")
+      compile_wide_classifier_pkl()
+      self._set_status(self._load_status_message())
+    except Exception as e:
+      self._set_status(f"error: compile failed: {e}")
+    finally:
+      with self._lock:
+        self._worker = None
+
+  def _trigger_compile_wide_classifier(self) -> None:
+    self._start_worker(self._run_compile_wide_classifier)
+
   def _download_description(self) -> str:
     from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import ONNX_PATH, PKL_PATH
     with self._lock:
@@ -509,6 +595,29 @@ class VisualVehicleSettingsLayout(Widget):
       ),
     )
 
+    self._download_wide_classifier = ListItemSP(
+      title=lambda: tr("Wide Classifier ONNX (320x128)"),
+      description=lambda: self._download_wide_classifier_description(),
+      description_visible=True,
+      inline=False,
+      action_item=SimpleButtonActionSP(
+        button_text=lambda: self._download_wide_classifier_button_label(),
+        button_width=800,
+        callback=lambda: self._trigger_download_wide_classifier(),
+      ),
+    )
+    self._compile_wide_classifier = ListItemSP(
+      title=lambda: tr("Wide Classifier PKL"),
+      description=lambda: self._compile_wide_classifier_description(),
+      description_visible=True,
+      inline=False,
+      action_item=SimpleButtonActionSP(
+        button_text=lambda: self._compile_wide_classifier_button_label(),
+        button_width=800,
+        callback=lambda: self._trigger_compile_wide_classifier(),
+      ),
+    )
+
     self._camera_source = multiple_button_item_sp(
       title=lambda: tr("Camera Source"),
       description=lambda: tr("Which camera the detector runs on. Each camera keeps its own crop / ROI / gate "
@@ -610,6 +719,8 @@ class VisualVehicleSettingsLayout(Widget):
       self._compile_driver_model,
       self._download_classifier,
       self._compile_classifier,
+      self._download_wide_classifier,
+      self._compile_wide_classifier,
       self._camera_source,
       self._readout,
       self._allow_onnx,

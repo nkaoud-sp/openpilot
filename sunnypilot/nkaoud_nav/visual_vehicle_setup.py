@@ -37,6 +37,19 @@ CLASSIFIER_PKL_PATH = MODEL_DIR / "visual_vehicle_classifier_driver_tinygrad.pkl
 CLASSIFIER_META_PATH = MODEL_DIR / "visual_vehicle_classifier_driver_tinygrad.json"
 DEFAULT_CLASSIFIER_URL = "https://github.com/nkaoud-sp/resources/raw/refs/heads/main/mobilenet_v3_dm_320x320.onnx"
 
+# Wide-camera car classifier (MobileNetV3-Small, 320x128, single-zone). Replaces
+# YOLO on the wide cam. Self-contained ONNX; the detector loads its preprocessing
+# recipe from MODEL_CONFIG (models["wide"]).
+WIDE_CLASSIFIER_ONNX_PATH = MODEL_DIR / "visual_vehicle_classifier_wide.onnx"
+WIDE_CLASSIFIER_PKL_PATH = MODEL_DIR / "visual_vehicle_classifier_wide_tinygrad.pkl"
+WIDE_CLASSIFIER_META_PATH = MODEL_DIR / "visual_vehicle_classifier_wide_tinygrad.json"
+DEFAULT_WIDE_CLASSIFIER_URL = "https://github.com/nkaoud-sp/resources/raw/refs/heads/main/mobilenet_v3_wide_320x128.onnx"
+
+# Combined per-camera preprocessing config (models[<camera>]); the detector reads
+# it from here.
+MODEL_CONFIG_PATH = MODEL_DIR / "model_config.json"
+DEFAULT_MODEL_CONFIG_URL = "https://github.com/nkaoud-sp/resources/raw/refs/heads/main/model_config.json"
+
 DEFAULT_MODEL_640_URL = "https://github.com/ultralytics/yolov5/releases/download/v7.0/yolov5n.onnx"
 DEFAULT_MODEL_480_URL = "https://github.com/nkaoud-sp/resources/raw/refs/heads/main/yolov5n_480x480_v7.0.onnx"
 DEFAULT_MODEL_480X224_URL = "https://github.com/nkaoud-sp/resources/raw/refs/heads/main/yolov5n_480x224_v7.0.onnx"
@@ -192,3 +205,53 @@ def compile_classifier_pkl(warmup: int = 2) -> None:
   has a fixed 320x320 input, so imgsz is left to the model's own shape."""
   compile_pkl(imgsz=None, warmup=warmup, onnx_path=CLASSIFIER_ONNX_PATH,
               pkl_path=CLASSIFIER_PKL_PATH, meta_path=CLASSIFIER_META_PATH, label="DM Classifier PKL")
+
+
+def ensure_model_config(url: str = DEFAULT_MODEL_CONFIG_URL) -> None:
+  """Download the combined per-camera preprocessing config (models[<camera>])."""
+  migrate_legacy_artifacts()
+  MODEL_DIR.mkdir(parents=True, exist_ok=True)
+  if not url:
+    write_status("error", "No model_config URL configured.")
+    raise RuntimeError("No model_config URL configured")
+  write_status("downloading", "Downloading model_config.json...", url=url)
+  try:
+    if MODEL_CONFIG_PATH.exists():
+      MODEL_CONFIG_PATH.unlink()
+    urllib.request.urlretrieve(url, MODEL_CONFIG_PATH)
+    write_status("downloaded", "model_config.json download complete.", url=url)
+  except Exception as e:
+    write_status("error", f"model_config download failed: {e}", url=url)
+    raise
+
+
+def ensure_wide_classifier_onnx(url: str = DEFAULT_WIDE_CLASSIFIER_URL) -> None:
+  """Download the hosted wide-cam classifier ONNX, plus the combined config it
+  needs (best-effort)."""
+  migrate_legacy_artifacts()
+  MODEL_DIR.mkdir(parents=True, exist_ok=True)
+  if not url:
+    write_status("error", "No wide classifier URL configured.")
+    raise RuntimeError("No wide classifier URL configured")
+  write_status("downloading", "Downloading wide classifier ONNX...", url=url)
+  try:
+    if WIDE_CLASSIFIER_ONNX_PATH.exists():
+      WIDE_CLASSIFIER_ONNX_PATH.unlink()
+    urllib.request.urlretrieve(url, WIDE_CLASSIFIER_ONNX_PATH)
+    write_status("downloaded", "Wide classifier ONNX download complete.", url=url,
+                 wide_classifier_onnx_mb=_size_mb(WIDE_CLASSIFIER_ONNX_PATH))
+  except Exception as e:
+    write_status("error", f"wide classifier download failed: {e}", url=url)
+    raise
+  try:
+    ensure_model_config()
+  except Exception:
+    pass  # config is best-effort; the detector falls back to baked-in defaults
+
+
+def compile_wide_classifier_pkl(warmup: int = 2) -> None:
+  """Compile the downloaded wide classifier ONNX into its tinygrad PKL (the
+  model's own fixed 320x128 input is used)."""
+  compile_pkl(imgsz=None, warmup=warmup, onnx_path=WIDE_CLASSIFIER_ONNX_PATH,
+              pkl_path=WIDE_CLASSIFIER_PKL_PATH, meta_path=WIDE_CLASSIFIER_META_PATH,
+              label="Wide Classifier PKL")
