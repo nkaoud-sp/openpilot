@@ -252,8 +252,14 @@ TUNING_PATH = str(ARTIFACT_DIR / "vvd_tuning.json")
 
 # Selectable camera sources (index matches the VisualVehicleDetectorCamera param
 # and the UI selector order).
-CAMERAS = ["road", "wide", "driver"]
+CAMERAS = ["road", "wide", "driver", "wide+driver"]
 CAMERA_PARAM = "VisualVehicleDetectorCamera"
+
+# "wide+driver" runs both classifier cameras concurrently, cycling one
+# (camera, side) per frame so it stays at one inference/frame (GPU unchanged);
+# each zone refreshes at ~1/4 the loop rate, each camera's L/R at ~1/2.
+DUAL_CAMERA = "wide+driver"
+DUAL_CAMERAS = ("wide", "driver")
 
 
 def active_camera(params: Params | None = None) -> str:
@@ -514,6 +520,9 @@ class VisualVehicleDetector:
     self.classifier_input_device = None
     self._classifier_loaded: str | None = None
     self._classifier_mtime = -1.0
+    # Resident per-camera classifier runtimes so wide+driver can both stay loaded
+    # (no reload on the rotation). camera -> captured runtime slot.
+    self._cls_cache: dict[str, dict[str, Any]] = {}
     self.blocked_threshold = float(os.getenv("NKAOUD_VISUAL_VEHICLE_BLOCKED_THRESHOLD", str(DEFAULT_BLOCKED_THRESHOLD)))
 
     # Throughput / latency measurement. _proc_ts holds the wall-clock time of
@@ -525,17 +534,17 @@ class VisualVehicleDetector:
     self._infer_ms = 0.0
 
     self.input_shape: tuple[int, int] = (320, 320)  # width, height
-    # Classifier input buffer, (re)allocated to the active model's res.
-    self._classifier_input_buf: np.ndarray | None = None
+    # Classifier input buffers, one per model input shape (reused across frames;
+    # keyed by shape so driver 320x320 and wide 320x128 don't thrash each other).
+    self._classifier_input_bufs: dict[tuple[int, ...], np.ndarray] = {}
     self.left_flag = DebouncedFlag()
     self.right_flag = DebouncedFlag()
-    # Per-zone classifier state (zones come from the model recipe: left/right for
-    # the driver, a single 'center' for the wide cam). Snappier debounce than the
-    # YOLO flags: each per-zone sample is already ~half-rate (~0.12s), so 1 sample
-    # asserts; maximum=2 keeps the clear quick. Rebuilt when the zone set changes.
-    self._classifier_side = "right"  # which of left/right is evaluated this frame
-    self._cls_flags: dict[str, DebouncedFlag] = {}
-    self._cls_probs: dict[str, float | None] = {}
+    # Per-camera, per-zone classifier state (zones come from the model recipe:
+    # left/right for driver and wide, a single 'center' for a single-zone model).
+    # Snappy debounce (threshold=1, maximum=2): each per-zone sample is already
+    # ~half/quarter-rate, so 1 sample asserts; maximum=2 keeps the clear quick.
+    self._cls_flags: dict[str, dict[str, DebouncedFlag]] = {}
+    self._cls_probs: dict[str, dict[str, float | None]] = {}
     self._recipes: dict[str, ClassifierRecipe] = {}
     self._recipe_mtime = -2.0
     self.startup_debug: dict[str, Any] = {"reason": "not_started", "runtime": self.runtime}
@@ -558,9 +567,10 @@ class VisualVehicleDetector:
     self._tuning_mtime = -1.0
     self._refresh_tuning()
 
-  def _refresh_tuning(self) -> None:
-    """Re-read tuning for the active camera if file or selection changed."""
-    cam = active_camera(self.params)
+  def _refresh_tuning(self, camera: str | None = None) -> None:
+    """Re-read tuning for `camera` (or the active selection) if file/selection
+    changed. The dual rotation passes the camera being processed this tick."""
+    cam = camera if camera is not None else active_camera(self.params)
     try:
       mtime = os.path.getmtime(TUNING_PATH)
     except OSError:
@@ -769,30 +779,43 @@ class VisualVehicleDetector:
 
   def _classifier_buf(self, recipe: ClassifierRecipe) -> np.ndarray:
     shape = (1, 3, recipe.res_h, recipe.res_w)
-    if self._classifier_input_buf is None or self._classifier_input_buf.shape != shape:
-      self._classifier_input_buf = np.empty(shape, dtype=np.float32)
-    return self._classifier_input_buf
+    buf = self._classifier_input_bufs.get(shape)
+    if buf is None:
+      buf = np.empty(shape, dtype=np.float32)
+      self._classifier_input_bufs[shape] = buf
+    return buf
 
   def _ensure_classifier(self, camera: str) -> None:
     """Load (and hot-reload on file change / camera switch) the classifier model
     for `camera`. Prefers the compiled tinygrad pkl; falls back to ONNX when
     VisualVehicleDetectorAllowOnnx is set, mirroring the YOLO runtime selection."""
-    self.classifier_pkl_path = self.classifier_pkl_paths.get(camera, self.classifier_pkl_paths["driver"])
-    self.classifier_onnx_path = self.classifier_onnx_paths.get(camera, self.classifier_onnx_paths["driver"])
-    pkl = self.classifier_pkl_path
+    self.classifier_pkl_path = pkl = self.classifier_pkl_paths.get(camera, self.classifier_pkl_paths["driver"])
+    self.classifier_onnx_path = onnx = self.classifier_onnx_paths.get(camera, self.classifier_onnx_paths["driver"])
+    allow_onnx = self.params.get_bool("VisualVehicleDetectorAllowOnnx")
     if os.path.exists(pkl):
-      mtime = os.path.getmtime(pkl)
-      if not (self._classifier_loaded == pkl and self.classifier_pkl_run is not None and mtime == self._classifier_mtime):
-        if self._load_classifier_pkl(pkl):
-          self._classifier_loaded, self._classifier_mtime = pkl, mtime
+      desired, mtime = pkl, os.path.getmtime(pkl)
+    elif allow_onnx and os.path.exists(onnx):
+      desired, mtime = onnx, os.path.getmtime(onnx)
+    else:
+      desired, mtime = None, -1.0
+
+    # If this camera's runtime is already resident and current, just re-activate
+    # it (cheap) -- no reload. This is what lets wide+driver both stay loaded.
+    slot = self._cls_cache.get(camera)
+    if slot is not None and slot.get("loaded") == desired and slot.get("mtime") == mtime \
+       and (slot.get("pkl_run") is not None or slot.get("session") is not None):
+      self._restore_cls_slot(slot)
       return
 
-    if self.params.get_bool("VisualVehicleDetectorAllowOnnx") and os.path.exists(self.classifier_onnx_path):
-      onnx = self.classifier_onnx_path
-      mtime = os.path.getmtime(onnx)
-      if not (self._classifier_loaded == onnx and self.classifier_session is not None and mtime == self._classifier_mtime):
-        if self._load_classifier_onnx(onnx):
-          self._classifier_loaded, self._classifier_mtime = onnx, mtime
+    if desired == pkl:
+      if self._load_classifier_pkl(pkl):
+        self._classifier_loaded, self._classifier_mtime = pkl, mtime
+      self._cls_cache[camera] = self._capture_cls_slot()
+      return
+    if desired == onnx:
+      if self._load_classifier_onnx(onnx):
+        self._classifier_loaded, self._classifier_mtime = onnx, mtime
+      self._cls_cache[camera] = self._capture_cls_slot()
       return
 
     # Nothing loadable -- drop any stale runtime so the readout shows "missing".
@@ -800,6 +823,23 @@ class VisualVehicleDetector:
     self.classifier_pkl_run = None
     self.classifier_session = None
     self._classifier_loaded = None
+    self._cls_cache.pop(camera, None)
+
+  def _capture_cls_slot(self) -> dict[str, Any]:
+    return {"pkl_run": self.classifier_pkl_run, "session": self.classifier_session,
+            "input_name": self.classifier_input_name, "input_dtype": self.classifier_input_dtype,
+            "input_device": self.classifier_input_device, "runtime": self.classifier_runtime,
+            "loaded": self._classifier_loaded, "mtime": self._classifier_mtime}
+
+  def _restore_cls_slot(self, slot: dict[str, Any]) -> None:
+    self.classifier_pkl_run = slot["pkl_run"]
+    self.classifier_session = slot["session"]
+    self.classifier_input_name = slot["input_name"]
+    self.classifier_input_dtype = slot["input_dtype"]
+    self.classifier_input_device = slot["input_device"]
+    self.classifier_runtime = slot["runtime"]
+    self._classifier_loaded = slot["loaded"]
+    self._classifier_mtime = slot["mtime"]
 
   def _load_classifier_pkl(self, path: str) -> bool:
     try:
@@ -893,30 +933,33 @@ class VisualVehicleDetector:
     e = np.exp(l - l.max())
     return float((e / e.sum())[pos_index])
 
-  def _ensure_cls_zones(self, sides: tuple[str, ...]) -> None:
-    """(Re)build the per-zone debounce flags when the zone set changes (e.g. a
-    driver left/right model vs a wide single-zone model)."""
-    if tuple(self._cls_flags) != tuple(sides):
-      self._cls_flags = {s: DebouncedFlag(threshold=1, maximum=2) for s in sides}
-      self._cls_probs = dict.fromkeys(sides)
+  def _ensure_cls_zones(self, camera: str, sides: tuple[str, ...]) -> None:
+    """(Re)build the per-camera per-zone debounce flags when the zone set changes
+    (e.g. a left/right model vs a single-zone model). Per-camera so wide and
+    driver keep independent left/right state in the dual rotation."""
+    if tuple(self._cls_flags.get(camera, {})) != tuple(sides):
+      self._cls_flags[camera] = {s: DebouncedFlag(threshold=1, maximum=2) for s in sides}
+      self._cls_probs[camera] = dict.fromkeys(sides)
 
-  def _classifier_zones(self) -> list[dict[str, Any]]:
+  def _classifier_zones(self, camera: str) -> list[dict[str, Any]]:
+    flags = self._cls_flags.get(camera, {})
+    probs = self._cls_probs.get(camera, {})
     return [{"name": s, "blocked": bool(f.value()),
-             "p": round(self._cls_probs[s], 4) if self._cls_probs.get(s) is not None else None}
-            for s, f in self._cls_flags.items()]
+             "p": round(probs[s], 4) if probs.get(s) is not None else None}
+            for s, f in flags.items()]
 
   def _update_classifier(self, rgb_full: np.ndarray, detector_rgb: np.ndarray,
                          crop_debug: dict[str, int | str], side: str | None,
-                         recipe: ClassifierRecipe) -> tuple[bool, bool, dict[str, Any]]:
+                         recipe: ClassifierRecipe, camera: str) -> tuple[bool, bool, dict[str, Any]]:
     """Classifier path: whole-crop car/no-car. Per-frame it evaluates one `side`
-    (zone); the others hold their last debounced state. Zones come from the model
-    recipe -- left/right (driver) or a single 'center' (wide). Returns the
+    (zone) of `camera`; the others hold their last debounced state. Zones come
+    from the model recipe -- left/right or a single 'center'. Returns the
     (left, right) top-level flags mapped from the zone states."""
-    self._ensure_cls_zones(recipe.sides)
-    side = side if side in self._cls_flags else recipe.sides[0]
+    self._ensure_cls_zones(camera, recipe.sides)
+    side = side if side in self._cls_flags.get(camera, {}) else recipe.sides[0]
 
     def _topline() -> tuple[bool, bool]:
-      blk = {z["name"]: z["blocked"] for z in self._classifier_zones()}
+      blk = {z["name"]: z["blocked"] for z in self._classifier_zones(camera)}
       left = blk.get("left", blk.get("center", False))
       right = blk.get("right", blk.get("center", False))
       return left, right
@@ -951,13 +994,13 @@ class VisualVehicleDetector:
         cloudlog.exception("visual vehicle classifier preview write failed")
 
     # Update only the zone evaluated this frame; the others persist.
-    self._cls_flags[side].update(p_car >= self.blocked_threshold)
-    self._cls_probs[side] = p_car
+    self._cls_flags[camera][side].update(p_car >= self.blocked_threshold)
+    self._cls_probs[camera][side] = p_car
     left_blocked, right_blocked = _topline()
     base["classifier"] = {
       "active": True,
       "side": side,
-      "zones": self._classifier_zones(),
+      "zones": self._classifier_zones(camera),
       "left_blocked": bool(left_blocked),
       "right_blocked": bool(right_blocked),
       "threshold": round(self.blocked_threshold, 3),
@@ -1606,36 +1649,29 @@ class VisualVehicleDetector:
     self.last_timing["measured_hz"] = round(self._measured_hz, 1)
     self.last_timing["infer_ms"] = round(self._infer_ms, 1)
 
-  def update(self, buf: VisionBuf) -> tuple[bool, bool, dict[str, Any]]:
-    self._refresh_tuning()
+  def update(self, buf: VisionBuf, camera: str, side: str | None) -> tuple[bool, bool, dict[str, Any]]:
+    """Process one (camera, side) rotation step. `side` is the zone for classifier
+    cameras (left/right/center, driven by the run loop) or None for YOLO road."""
+    self._refresh_tuning(camera)
     self._record_proc()
     # Classifier cameras (driver, wide) run the car classifier; road runs YOLO.
-    # Hot-reload the relevant model if its file changed (recompiled) / camera
-    # switched -- cheap mtime stat.
+    # Re-activate the camera's resident model (cheap) / hot-reload on file change.
     recipe = None
-    if self.camera in CLASSIFIER_CAMERAS:
-      self._ensure_classifier(self.camera)
-      recipe = self._recipe(self.camera)
+    if camera in CLASSIFIER_CAMERAS:
+      self._ensure_classifier(camera)
+      recipe = self._recipe(camera)
     else:
-      self._ensure_model_for(self.camera)
+      self._ensure_model_for(camera)
     frame_w, frame_h = int(buf.width), int(buf.height)
     rect = self._crop_rect(frame_w, frame_h)
     crop_debug = self._crop_debug(frame_w, frame_h, rect)
-    mirror = self.camera == "driver"
-    # Multi-zone classifier (driver left/right): alternate sides each frame. The
-    # driver cam is a symmetric selfie, so the SAME crop read with the un-mirror
-    # flip is the right lane (world-oriented, as trained) and read WITHOUT it is
-    # the left lane already in right-looking orientation -- so we just toggle
-    # `mirror`. Single-zone models (wide) don't alternate.
-    classifier_side = None
-    if recipe is not None:
-      if len(recipe.sides) > 1:
-        self._classifier_side = "left" if self._classifier_side == "right" else "right"
-        classifier_side = self._classifier_side
-        if classifier_side == "left" and recipe.mirror_left:
-          mirror = not mirror
-      else:
-        classifier_side = recipe.sides[0]
+    # The driver cam is a selfie, so base mirror un-mirrors it. For the LEFT zone,
+    # mirror_left toggles the read so the same crop yields the opposite lane in
+    # right-looking orientation -- works for the driver's selfie symmetry and the
+    # wide cam's road symmetry alike.
+    mirror = camera == "driver"
+    if recipe is not None and side == "left" and recipe.mirror_left:
+      mirror = not mirror
     # Extracting + converting the whole ~2MP frame every tick is the bottleneck,
     # and the model only sees the crop, so read just the crop's bytes from the
     # NV12 buffer on the hot path. A portal preview needs the whole oriented
@@ -1667,11 +1703,11 @@ class VisualVehicleDetector:
       right = self.right_flag.update(False)
       return left, right, {"reason": "frame_convert_failed", "runtime": self.runtime}
 
-    self._maybe_capture(detector_rgb, classifier_side)
+    self._maybe_capture(detector_rgb, side)
 
     # Classifier cameras: whole-crop car/no-car, not YOLO boxes.
     if recipe is not None:
-      return self._update_classifier(rgb, detector_rgb, crop_debug, classifier_side, recipe)
+      return self._update_classifier(rgb, detector_rgb, crop_debug, side, recipe, camera)
 
     # Run YOLO on the fixed crop only, not on the full camera frame.
     detections = self._run_model(detector_rgb)
@@ -1743,11 +1779,52 @@ class VisualVehicleDetector:
       "driver": VisionStreamType.VISION_STREAM_DRIVER,
     }.get(camera, VisionStreamType.VISION_STREAM_ROAD)
 
+  def _cameras_for_mode(self, mode: str) -> list[str]:
+    return list(DUAL_CAMERAS) if mode == DUAL_CAMERA else [mode]
+
+  def _rotation_for(self, cams: list[str]) -> list[tuple[str, str | None]]:
+    """Ordered (camera, side) steps. Classifier cams contribute one step per zone
+    (left/right, or a single center); the YOLO road cam contributes one step with
+    side=None. wide+driver -> wide-L, wide-R, driver-L, driver-R."""
+    rot: list[tuple[str, str | None]] = []
+    for c in cams:
+      if c in CLASSIFIER_CAMERAS:
+        rot.extend((c, s) for s in self._recipe(c).sides)
+      else:
+        rot.append((c, None))
+    return rot
+
+  def _write_dual_state(self, cam_debug: dict[str, dict], active_cam: str, active_side: str | None) -> None:
+    """Combined state for wide+driver: each camera's zones under debug['cameras'],
+    with top-level left/right = OR across cameras."""
+    cams: dict[str, Any] = {}
+    any_left = any_right = False
+    for c in DUAL_CAMERAS:
+      cls = (cam_debug.get(c, {}) or {}).get("classifier", {}) or {}
+      cams[c] = cls
+      any_left = any_left or bool(cls.get("left_blocked"))
+      any_right = any_right or bool(cls.get("right_blocked"))
+    ad = cam_debug.get(active_cam, {}) or {}
+    debug = {
+      "dual": True,
+      "reason": ad.get("reason", "ok"),
+      "runtime": self.classifier_runtime,
+      "cameras": cams,
+      "camera": active_cam,
+      "side": f"{active_cam}-{active_side}" if active_side else active_cam,
+      "hz": MAX_DETECTOR_HZ,
+      "timing": ad.get("timing", dict(self.last_timing)),
+      "capture": ad.get("capture", {}),
+      "frame_id": ad.get("frame_id"),
+    }
+    self._write_state(any_left, any_right, debug)
+
   def run(self) -> None:
     self.log_debug = self.params.get_bool("VisualVehicleDetectorLogDebug")
     runtime_ok = self._load_runtime()
-    if self.camera in CLASSIFIER_CAMERAS:
-      self._ensure_classifier(self.camera)  # classifier cameras run without a YOLO model
+    for c in self._cameras_for_mode(active_camera(self.params)):
+      if c in CLASSIFIER_CAMERAS:
+        self._ensure_classifier(c)  # classifier cameras run without a YOLO model
     if not runtime_ok and not self.classifier_available():
       rk = Ratekeeper(1.0)
       while True:
@@ -1756,86 +1833,101 @@ class VisualVehicleDetector:
         self._write_state(False, False, self.startup_debug)
         rk.keep_time()
 
-    # Always consume only the freshest frame; this detector should drop old
-    # frames instead of competing with modeld by trying to catch up.
-    vipc_client = None
-    stream = None
-    connected_camera = None
+    # Multi-camera rotation: one (camera, side) per tick, so the GPU still does
+    # one inference per frame. Single modes have a 1-2 step rotation; "wide+driver"
+    # cycles wide-L, wide-R, driver-L, driver-R. Both classifier models stay
+    # resident (see the _ensure_classifier cache), so the rotation never reloads.
+    clients: dict[str, Any] = {}
+    last_frame_id: dict[tuple[str, str | None], int] = {}
+    cam_debug: dict[str, dict] = {}
+    rotation: list[tuple[str, str | None]] = []
+    rot_idx = 0
+    active_mode = None
     rk = Ratekeeper(float(self.detector_hz))
     current_hz = self.detector_hz
-    last_frame_id = -1
+
     while True:
-      # (Re)connect when the selected camera changes or we are not connected.
-      desired_camera = active_camera(self.params)
-      if vipc_client is None or desired_camera != connected_camera:
-        stream = self._stream_for(desired_camera)
-        if stream not in VisionIpcClient.available_streams("camerad", block=False):
-          self._write_state(False, False, {"reason": "camera_unavailable", "camera": desired_camera,
-                                            "runtime": self.runtime})
-          time.sleep(0.2)
-          continue
-        # Time the camera (re)connect on its own -- this is the "camera switch"
-        # cost, independent of any model reload below.
-        conn_t0 = time.monotonic()
-        vipc_client = VisionIpcClient("camerad", stream, True)
-        if not vipc_client.connect(False):
-          vipc_client = None
-          self._write_state(False, False, {"reason": "waiting_for_vipc", "camera": desired_camera,
-                                            "runtime": self.runtime})
-          time.sleep(0.1)
-          continue
-        conn_ms = round((time.monotonic() - conn_t0) * 1000.0, 1)
-        self.last_timing["cam_connect_ms"] = conn_ms
-        # Switch this camera's model (timed inside _load_tinygrad_pkl). The
-        # model_load_ms / first_inf_ms in last_timing are the "model switch"
-        # cost; sum with cam_connect_ms for "model+camera switch".
-        prev_loaded = self._loaded_pkl
-        if desired_camera in CLASSIFIER_CAMERAS:
-          self._ensure_classifier(desired_camera)
-        else:
-          self._ensure_model_for(desired_camera)
-        model_switched = self._loaded_pkl != prev_loaded
-        connected_camera = desired_camera
-        last_frame_id = -1
+      mode = active_camera(self.params)
+      cams = self._cameras_for_mode(mode)
+      if mode != active_mode:
+        active_mode = mode
+        for c in list(clients):
+          if c not in cams:
+            clients.pop(c, None)
+        last_frame_id = {}
+        cam_debug = {}
+        rotation = self._rotation_for(cams)
+        rot_idx = 0
         self.left_flag = DebouncedFlag()
         self.right_flag = DebouncedFlag()
-        self._cls_flags = {}  # rebuilt for the new camera's zones on next update()
+        self._cls_flags = {}
         self._cls_probs = {}
-        self._classifier_side = "right"
         self._proc_ts.clear()  # don't carry the switch gap into the measured rate
-        cloudlog.warning("visual vehicle detector switch camera=%s stream=%s size=%sx%s "
-                         "cam_connect_ms=%.1f model_switched=%s model_load_ms=%s runtime=%s",
-                         desired_camera, stream, vipc_client.width, vipc_client.height, conn_ms,
-                         model_switched, self.last_timing.get("model_load_ms") if model_switched else "n/a",
-                         self.runtime)
 
+      # Connect any camera in the current mode that isn't connected yet, and
+      # preload+cache its model so the rotation never pays a reload.
+      waiting = False
+      for c in cams:
+        if c in clients:
+          continue
+        stream = self._stream_for(c)
+        if stream not in VisionIpcClient.available_streams("camerad", block=False):
+          self._write_state(False, False, {"reason": "camera_unavailable", "camera": c, "runtime": self.runtime})
+          waiting = True
+          break
+        conn_t0 = time.monotonic()
+        vc = VisionIpcClient("camerad", stream, True)
+        if not vc.connect(False):
+          self._write_state(False, False, {"reason": "waiting_for_vipc", "camera": c, "runtime": self.runtime})
+          waiting = True
+          break
+        clients[c] = vc
+        self.last_timing["cam_connect_ms"] = round((time.monotonic() - conn_t0) * 1000.0, 1)
+        if c in CLASSIFIER_CAMERAS:
+          self._ensure_classifier(c)
+        else:
+          self._ensure_model_for(c)
+        cloudlog.warning("visual vehicle detector connect camera=%s stream=%s size=%sx%s runtime=%s",
+                         c, stream, vc.width, vc.height, self.runtime)
+      if waiting or not rotation:
+        time.sleep(0.1)
+        continue
+
+      # Dual rotation runs at a fixed cap so the loop rate doesn't oscillate
+      # between the two cameras' per-camera Hz; single modes follow their slider.
+      target_hz = MAX_DETECTOR_HZ if mode == DUAL_CAMERA else self.detector_hz
+      if target_hz != current_hz:
+        current_hz = target_hz
+        rk = Ratekeeper(float(current_hz))
       new_log_debug = self.params.get_bool("VisualVehicleDetectorLogDebug")
       if new_log_debug != self.log_debug:
         self.log_debug = new_log_debug
 
-      # self.detector_hz can change live via the tuning file (applied in update()).
-      if self.detector_hz != current_hz:
-        current_hz = self.detector_hz
-        rk = Ratekeeper(float(current_hz))
-
-      buf = vipc_client.recv()
-      if buf is None:
-        self._write_state(False, False, {"reason": "no_frame", "camera": connected_camera,
-                                          "runtime": self.runtime})
+      # Advance the rotation and process that (camera, side). Dedup per step so a
+      # camera's left and right can share one frame (different crops) but a stale
+      # frame isn't re-run for the same step.
+      cam, side = rotation[rot_idx]
+      rot_idx = (rot_idx + 1) % len(rotation)
+      vc = clients.get(cam)
+      if vc is None:
         rk.keep_time()
         continue
-      if vipc_client.frame_id == last_frame_id:
+      buf = vc.recv()
+      if buf is None or vc.frame_id == last_frame_id.get((cam, side)):
         rk.keep_time()
         continue
-      last_frame_id = vipc_client.frame_id
+      last_frame_id[(cam, side)] = vc.frame_id
       try:
-        left, right, debug = self.update(buf)
-        debug["frame_id"] = int(vipc_client.frame_id)
-        debug["stream"] = str(stream)
-        debug["camera"] = connected_camera
-        self._write_state(left, right, debug)
+        left, right, debug = self.update(buf, cam, side)
+        debug["frame_id"] = int(vc.frame_id)
+        debug["camera"] = cam
+        cam_debug[cam] = debug
+        if len(cams) > 1:
+          self._write_dual_state(cam_debug, cam, side)
+        else:
+          self._write_state(left, right, debug)
         if self.log_debug:
-          cloudlog.info("visual_vehicle_detector left=%s right=%s debug=%s", left, right, debug)
+          cloudlog.info("visual_vehicle_detector cam=%s side=%s left=%s right=%s", cam, side, left, right)
       except Exception as e:
         cloudlog.exception("visual vehicle detector update failed")
         self._write_state(False, False, {"reason": "exception", "runtime": self.runtime, "error": str(e)})

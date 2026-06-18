@@ -622,8 +622,9 @@ class VisualVehicleSettingsLayout(Widget):
       title=lambda: tr("Camera Source"),
       description=lambda: tr("Which camera the detector runs on. Each camera keeps its own crop / ROI / gate "
                              "profile, and the tuning portals edit whichever camera is selected here. "
-                             "Road = normal forward, Wide = wide angle, Driver = cabin / driver-monitoring."),
-      buttons=[lambda: tr("Road"), lambda: tr("Wide"), lambda: tr("Driver")],
+                             "Road = normal forward, Wide = wide angle, Driver = cabin. Wide+Driver runs both "
+                             "classifier cams at once (wide-L/R + driver-L/R), one inference per frame."),
+      buttons=[lambda: tr("Road"), lambda: tr("Wide"), lambda: tr("Driver"), lambda: tr("Wide+Driver")],
       param="VisualVehicleDetectorCamera",
     )
     self._readout = toggle_item_sp(

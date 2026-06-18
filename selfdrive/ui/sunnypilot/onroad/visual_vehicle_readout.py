@@ -89,6 +89,43 @@ class VisualVehicleReadout:
     cap_on = bool(capture.get("on"))
     classifier = debug.get("classifier", {}) or {}
 
+    if debug.get("dual"):
+      # wide+driver: one combined panel, both cameras' zones (WIDE-L/R, DM-L/R).
+      cameras = debug.get("cameras", {}) or {}
+
+      def _zcolor(blk: bool) -> rl.Color:
+        if stale or reason != "ok":
+          return _AMBER
+        return _RED if blk else _GREEN
+
+      def _pp(v) -> str:
+        return f"{v:.2f}" if isinstance(v, (int, float)) else "--"
+
+      labels = {"wide": "WIDE", "driver": "DM"}
+      rows = [
+        ("MODE", "WIDE+DRIVER", _WHITE),
+        ("CAPTURE", (f"REC {capture.get('saved', 0)}" if cap_on else "OFF"), _RED if cap_on else _DIM),
+      ]
+      probs = []
+      for cam in ("wide", "driver"):
+        for z in (cameras.get(cam, {}) or {}).get("zones", []) or []:
+          zn = str(z.get("name", "?"))
+          label = labels.get(cam, cam.upper()) + ("" if zn == "center" else f"-{zn[:1].upper()}")
+          rows.append((label, ("BLOCKED" if z.get("blocked") else "CLEAR"), _zcolor(bool(z.get("blocked")))))
+          probs.append(_pp(z.get("p")))
+      rows.append(("P", " ".join(probs) or "--", _WHITE))
+      rows.extend([
+        ("EVAL", str(debug.get("side", "--")).upper(), _DIM),
+        ("STATUS", "STALE" if stale else reason.upper(), _AMBER if stale or reason != "ok" else _GREEN),
+        ("RUNTIME", runtime.upper(), _GREEN if runtime == "tinygrad_pkl" else (_AMBER if runtime == "onnx_cpu" else _DIM)),
+        ("RATE", f"{timing.get('measured_hz', '--')} / {debug.get('hz', '--')} Hz", _WHITE),
+        ("TIMING", self._timing_breakdown(timing), _WHITE),
+        ("AGE", f"{age:.1f}s", _AMBER if stale else _WHITE),
+        ("FRAME", str(debug.get("frame_id", "--")), _DIM),
+      ])
+      self._render_panel(rect, rows, "CAR OCCUPANCY (DUAL)", side="right")
+      return
+
     if classifier.get("active") or reason in ("classifier_missing", "classifier_error"):
       # Car classifier: per-zone occupancy. Zones come from the model recipe --
       # left/right (driver, alternating) or a single 'center' (wide).
