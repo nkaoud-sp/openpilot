@@ -103,6 +103,80 @@ IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 # differs: NKAOUD_VISUAL_VEHICLE_CLASSIFIER_POS_INDEX=1.
 CLASSIFIER_POS_INDEX = int(os.getenv("NKAOUD_VISUAL_VEHICLE_CLASSIFIER_POS_INDEX", "0"))
 
+# Per-camera classifier models. Each camera that uses a classifier (instead of
+# YOLO) carries its own model + preprocessing recipe. The recipe is read from a
+# combined model_config.json shipped alongside the models (models[<camera>]),
+# falling back to the baked-in defaults below if the file is absent.
+CLASSIFIER_CAMERAS = ("driver", "wide")
+MODEL_CONFIG_PATH = str(ARTIFACT_DIR / "model_config.json")
+DEFAULT_WIDE_CLASSIFIER_PKL_PATH = str(ARTIFACT_DIR / "visual_vehicle_classifier_wide_tinygrad.pkl")
+DEFAULT_WIDE_CLASSIFIER_ONNX_PATH = str(ARTIFACT_DIR / "visual_vehicle_classifier_wide.onnx")
+
+
+@dataclass
+class ClassifierRecipe:
+  """Per-model preprocessing recipe. crop_mode is either 'roi_inset' (cut a fixed
+  inner ROI, as the driver model wants) or 'remove_left_keep_rest' (chop N px off
+  the left, as the wide model wants). sides drives left/right alternation
+  ('left','right') vs a single forward bit ('center')."""
+  res_w: int
+  res_h: int
+  crop_mode: str
+  roi_frac: tuple[float, float, float, float]
+  left_crop_px: int
+  src_w: int
+  src_h: int
+  sides: tuple[str, ...]
+  mirror_left: bool
+  mean: np.ndarray
+  std: np.ndarray
+  pos_index: int
+
+
+DEFAULT_RECIPES = {
+  "driver": ClassifierRecipe(
+    res_w=CLASSIFIER_IMG_SIZE, res_h=CLASSIFIER_IMG_SIZE, crop_mode="roi_inset",
+    roi_frac=CLASSIFIER_ROI_FRAC, left_crop_px=0, src_w=CLASSIFIER_SRC_W, src_h=CLASSIFIER_SRC_H,
+    sides=("left", "right"), mirror_left=True, mean=IMAGENET_MEAN, std=IMAGENET_STD,
+    pos_index=CLASSIFIER_POS_INDEX),
+  "wide": ClassifierRecipe(
+    res_w=320, res_h=128, crop_mode="remove_left_keep_rest",
+    roi_frac=(0.0, 0.0, 1.0, 1.0), left_crop_px=90, src_w=854, src_h=280,
+    sides=("center",), mirror_left=False, mean=IMAGENET_MEAN, std=IMAGENET_STD,
+    pos_index=CLASSIFIER_POS_INDEX),
+}
+
+
+def load_classifier_recipe(camera: str) -> ClassifierRecipe:
+  """Recipe for `camera`: baked-in default overlaid with models[camera] from the
+  combined model_config.json when present."""
+  base = DEFAULT_RECIPES.get(camera, DEFAULT_RECIPES["driver"])
+  try:
+    models = (json.loads(Path(MODEL_CONFIG_PATH).read_text()).get("models", {}) or {})
+    m = models.get(camera)
+  except Exception:
+    m = None
+  if not isinstance(m, dict):
+    return base
+  res_w = int(m.get("res_width", base.res_w))
+  res_h = int(m.get("res_height", base.res_h))
+  src_w = int(m.get("source_width", base.src_w))
+  src_h = int(m.get("source_height", base.src_h))
+  roi = m.get("roi_abs")
+  if isinstance(roi, (list, tuple)) and len(roi) == 4 and src_w > 0 and src_h > 0:
+    roi_frac = (roi[0] / src_w, roi[1] / src_h, roi[2] / src_w, roi[3] / src_h)
+  else:
+    roi_frac = base.roi_frac
+  sides = tuple(str(s) for s in m.get("sides", base.sides)) or base.sides
+  car_idx = (m.get("class_to_idx", {}) or {}).get("car")
+  return ClassifierRecipe(
+    res_w=res_w, res_h=res_h, crop_mode=str(m.get("crop_mode", base.crop_mode)),
+    roi_frac=roi_frac, left_crop_px=int(m.get("left_crop_px", base.left_crop_px)),
+    src_w=src_w, src_h=src_h, sides=sides, mirror_left=bool(m.get("mirror_left", base.mirror_left)),
+    mean=np.array(m.get("normalization_mean", base.mean.tolist()), dtype=np.float32),
+    std=np.array(m.get("normalization_std", base.std.tolist()), dtype=np.float32),
+    pos_index=int(car_idx) if car_idx is not None else base.pos_index)
+
 # COCO class IDs from Ultralytics YOLO exports.
 VEHICLE_CLASS_IDS = {1, 2, 3, 5, 7}  # bicycle, car, motorcycle, bus, truck
 
@@ -419,9 +493,19 @@ class VisualVehicleDetector:
     self.onnx_session = None
     self.onnx_input_name = ""
 
-    # Driver-camera classifier runtime (separate from the YOLO runtime above).
-    self.classifier_pkl_path = os.getenv("NKAOUD_VISUAL_VEHICLE_CLASSIFIER_PKL", DEFAULT_CLASSIFIER_PKL_PATH)
-    self.classifier_onnx_path = os.getenv("NKAOUD_VISUAL_VEHICLE_CLASSIFIER_ONNX", DEFAULT_CLASSIFIER_ONNX_PATH)
+    # Per-camera classifier runtime (separate from the YOLO runtime above). Each
+    # classifier camera has its own model file; the active one is loaded on
+    # demand (swapped on camera switch) by _ensure_classifier.
+    self.classifier_pkl_paths = {
+      "driver": os.getenv("NKAOUD_VISUAL_VEHICLE_CLASSIFIER_PKL", DEFAULT_CLASSIFIER_PKL_PATH),
+      "wide": os.getenv("NKAOUD_VISUAL_VEHICLE_CLASSIFIER_PKL_WIDE", DEFAULT_WIDE_CLASSIFIER_PKL_PATH),
+    }
+    self.classifier_onnx_paths = {
+      "driver": os.getenv("NKAOUD_VISUAL_VEHICLE_CLASSIFIER_ONNX", DEFAULT_CLASSIFIER_ONNX_PATH),
+      "wide": os.getenv("NKAOUD_VISUAL_VEHICLE_CLASSIFIER_ONNX_WIDE", DEFAULT_WIDE_CLASSIFIER_ONNX_PATH),
+    }
+    self.classifier_pkl_path = self.classifier_pkl_paths["driver"]
+    self.classifier_onnx_path = self.classifier_onnx_paths["driver"]
     self.classifier_runtime = "none"
     self.classifier_pkl_run = None
     self.classifier_session = None
@@ -441,18 +525,19 @@ class VisualVehicleDetector:
     self._infer_ms = 0.0
 
     self.input_shape: tuple[int, int] = (320, 320)  # width, height
-    self._classifier_input_buf = np.empty((1, 3, CLASSIFIER_IMG_SIZE, CLASSIFIER_IMG_SIZE), dtype=np.float32)
+    # Classifier input buffer, (re)allocated to the active model's res.
+    self._classifier_input_buf: np.ndarray | None = None
     self.left_flag = DebouncedFlag()
     self.right_flag = DebouncedFlag()
-    # Driver-cam classifier: alternate left/right each frame (one inference per
-    # frame, ~half rate per side). Each side keeps its own debounce + last prob.
-    # Snappier debounce than the YOLO flags: each per-side sample is already
-    # ~half-rate (~0.12s), so 1 sample asserts; maximum=2 keeps the clear quick.
-    self._classifier_side = "right"
-    self._cls_left_flag = DebouncedFlag(threshold=1, maximum=2)
-    self._cls_right_flag = DebouncedFlag(threshold=1, maximum=2)
-    self._cls_p_left: float | None = None
-    self._cls_p_right: float | None = None
+    # Per-zone classifier state (zones come from the model recipe: left/right for
+    # the driver, a single 'center' for the wide cam). Snappier debounce than the
+    # YOLO flags: each per-zone sample is already ~half-rate (~0.12s), so 1 sample
+    # asserts; maximum=2 keeps the clear quick. Rebuilt when the zone set changes.
+    self._classifier_side = "right"  # which of left/right is evaluated this frame
+    self._cls_flags: dict[str, DebouncedFlag] = {}
+    self._cls_probs: dict[str, float | None] = {}
+    self._recipes: dict[str, ClassifierRecipe] = {}
+    self._recipe_mtime = -2.0
     self.startup_debug: dict[str, Any] = {"reason": "not_started", "runtime": self.runtime}
     self.last_model_debug: dict[str, Any] = {}
     self._preproc_dumped = False
@@ -577,8 +662,8 @@ class VisualVehicleDetector:
     """Load the model matching the camera, reloading (and timing) on change.
     Also hot-reloads when the model file itself changes (e.g. recompiled),
     so no camera toggle is needed. Only applies to the tinygrad runtime."""
-    if camera == CLASSIFIER_CAMERA:
-      return  # driver cam uses the classifier, not a YOLO pkl
+    if camera in CLASSIFIER_CAMERAS:
+      return  # classifier cameras don't use a YOLO pkl
     if self.runtime == "onnx_cpu":
       return
     desired = self._model_path_for(camera)
@@ -663,15 +748,37 @@ class VisualVehicleDetector:
       cloudlog.exception("visual vehicle detector failed to initialize ONNX fallback")
       return False
 
-  # ---- Driver-camera occupancy classifier (replaces YOLO for the driver cam) ----
+  # ---- Camera occupancy classifier (replaces YOLO for classifier cameras) ----
 
   def classifier_available(self) -> bool:
     return self.classifier_runtime in ("tinygrad_pkl", "onnx_cpu")
 
-  def _ensure_classifier(self) -> None:
-    """Load (and hot-reload on file change) the driver classifier. Prefers the
-    compiled tinygrad pkl; falls back to ONNX when VisualVehicleDetectorAllowOnnx
-    is set, mirroring the YOLO runtime selection."""
+  def _recipe(self, camera: str) -> ClassifierRecipe:
+    """Per-camera preprocessing recipe, cached and reloaded when the combined
+    model_config.json changes on disk."""
+    try:
+      mtime = os.path.getmtime(MODEL_CONFIG_PATH)
+    except OSError:
+      mtime = -1.0
+    if mtime != self._recipe_mtime:
+      self._recipe_mtime = mtime
+      self._recipes = {}
+    if camera not in self._recipes:
+      self._recipes[camera] = load_classifier_recipe(camera)
+    return self._recipes[camera]
+
+  def _classifier_buf(self, recipe: ClassifierRecipe) -> np.ndarray:
+    shape = (1, 3, recipe.res_h, recipe.res_w)
+    if self._classifier_input_buf is None or self._classifier_input_buf.shape != shape:
+      self._classifier_input_buf = np.empty(shape, dtype=np.float32)
+    return self._classifier_input_buf
+
+  def _ensure_classifier(self, camera: str) -> None:
+    """Load (and hot-reload on file change / camera switch) the classifier model
+    for `camera`. Prefers the compiled tinygrad pkl; falls back to ONNX when
+    VisualVehicleDetectorAllowOnnx is set, mirroring the YOLO runtime selection."""
+    self.classifier_pkl_path = self.classifier_pkl_paths.get(camera, self.classifier_pkl_paths["driver"])
+    self.classifier_onnx_path = self.classifier_onnx_paths.get(camera, self.classifier_onnx_paths["driver"])
     pkl = self.classifier_pkl_path
     if os.path.exists(pkl):
       mtime = os.path.getmtime(pkl)
@@ -734,36 +841,43 @@ class VisualVehicleDetector:
       cloudlog.exception("visual vehicle classifier failed to load ONNX")
       return False
 
-  def _preprocess_classifier(self, detector_rgb: np.ndarray) -> tuple[np.ndarray, dict[str, int]]:
-    """Reproduce training preprocessing: cut the fixed ROI from the driver crop,
-    stretch (no letterbox) to img_size, normalize per CLASSIFIER_NORM, NCHW."""
+  def _preprocess_classifier(self, detector_rgb: np.ndarray,
+                             recipe: ClassifierRecipe) -> tuple[np.ndarray, dict[str, int], np.ndarray]:
+    """Reproduce the model's training preprocessing, driven by its recipe:
+    cut the region (roi_inset = fixed inner ROI; remove_left_keep_rest = chop N px
+    off the left), bilinear-resize to res_w x res_h, normalize, NCHW. Verified
+    byte-identical to the per-model training preprocess for both models."""
     h, w = detector_rgb.shape[:2]
-    fx1, fy1, fx2, fy2 = CLASSIFIER_ROI_FRAC
-    x1 = int(np.clip(round(fx1 * w), 0, w - 1))
-    y1 = int(np.clip(round(fy1 * h), 0, h - 1))
-    x2 = int(np.clip(round(fx2 * w), x1 + 1, w))
-    y2 = int(np.clip(round(fy2 * h), y1 + 1, h))
+    if recipe.crop_mode == "remove_left_keep_rest":
+      x1 = int(np.clip(recipe.left_crop_px, 0, w - 1))
+      y1, x2, y2 = 0, w, h
+    else:  # roi_inset
+      fx1, fy1, fx2, fy2 = recipe.roi_frac
+      x1 = int(np.clip(round(fx1 * w), 0, w - 1))
+      y1 = int(np.clip(round(fy1 * h), 0, h - 1))
+      x2 = int(np.clip(round(fx2 * w), x1 + 1, w))
+      y2 = int(np.clip(round(fy2 * h), y1 + 1, h))
     roi = detector_rgb[y1:y2, x1:x2]
     # Bilinear stretch to match the training resize (PIL is already a dep here).
     from PIL import Image
     resized = np.asarray(
-      Image.fromarray(roi, "RGB").resize((CLASSIFIER_IMG_SIZE, CLASSIFIER_IMG_SIZE), Image.BILINEAR)
+      Image.fromarray(roi, "RGB").resize((recipe.res_w, recipe.res_h), Image.BILINEAR)
     )
-    x = self._classifier_input_buf
+    x = self._classifier_buf(recipe)
     np.copyto(x[0], resized.transpose(2, 0, 1), casting="unsafe")
     if CLASSIFIER_NORM == "signed":
       x[0] /= 127.5
       x[0] -= 1.0                                           # [-1, 1] (old TinyCNN)
     elif CLASSIFIER_NORM == "unit":
       x[0] /= 255.0                                         # [0, 1]
-    else:  # "imagenet" (default, MobileNetV3-Small standard)
+    else:  # "imagenet" (default) -- per-model mean/std from the recipe
       x[0] /= 255.0
-      x[0] -= IMAGENET_MEAN[:, None, None]
-      x[0] /= IMAGENET_STD[:, None, None]
+      x[0] -= recipe.mean[:, None, None]
+      x[0] /= recipe.std[:, None, None]
     return x, {"roi_x1": x1, "roi_y1": y1, "roi_x2": x2, "roi_y2": y2}, resized
 
-  def _run_classifier(self, inp: np.ndarray) -> float:
-    """Return p_blocked = softmax(logits)[CLASSIFIER_POS_INDEX]."""
+  def _run_classifier(self, inp: np.ndarray, pos_index: int) -> float:
+    """Return p_car = softmax(logits)[pos_index]."""
     if self.classifier_runtime == "tinygrad_pkl" and self.classifier_pkl_run is not None and self.Tensor is not None:
       tensor = self.Tensor(inp, device=self.classifier_input_device).realize() if self.classifier_input_device \
         else self.Tensor(inp).realize()
@@ -777,71 +891,82 @@ class VisualVehicleDetector:
       raise RuntimeError("classifier runtime not loaded")
     l = np.asarray(logits, dtype=np.float32).reshape(-1)[:2]  # 2-class logits
     e = np.exp(l - l.max())
-    return float((e / e.sum())[CLASSIFIER_POS_INDEX])
+    return float((e / e.sum())[pos_index])
+
+  def _ensure_cls_zones(self, sides: tuple[str, ...]) -> None:
+    """(Re)build the per-zone debounce flags when the zone set changes (e.g. a
+    driver left/right model vs a wide single-zone model)."""
+    if tuple(self._cls_flags) != tuple(sides):
+      self._cls_flags = {s: DebouncedFlag(threshold=1, maximum=2) for s in sides}
+      self._cls_probs = dict.fromkeys(sides)
+
+  def _classifier_zones(self) -> list[dict[str, Any]]:
+    return [{"name": s, "blocked": bool(f.value()),
+             "p": round(self._cls_probs[s], 4) if self._cls_probs.get(s) is not None else None}
+            for s, f in self._cls_flags.items()]
 
   def _update_classifier(self, rgb_full: np.ndarray, detector_rgb: np.ndarray,
-                         crop_debug: dict[str, int | str], side: str | None) -> tuple[bool, bool, dict[str, Any]]:
-    """Driver-camera path: whole-crop car/no-car classifier. Alternates sides
-    each frame (`side` is the one evaluated now); the other side holds its last
-    debounced state. Returns (left_blocked, right_blocked)."""
-    side = side or "right"
+                         crop_debug: dict[str, int | str], side: str | None,
+                         recipe: ClassifierRecipe) -> tuple[bool, bool, dict[str, Any]]:
+    """Classifier path: whole-crop car/no-car. Per-frame it evaluates one `side`
+    (zone); the others hold their last debounced state. Zones come from the model
+    recipe -- left/right (driver) or a single 'center' (wide). Returns the
+    (left, right) top-level flags mapped from the zone states."""
+    self._ensure_cls_zones(recipe.sides)
+    side = side if side in self._cls_flags else recipe.sides[0]
+
+    def _topline() -> tuple[bool, bool]:
+      blk = {z["name"]: z["blocked"] for z in self._classifier_zones()}
+      left = blk.get("left", blk.get("center", False))
+      right = blk.get("right", blk.get("center", False))
+      return left, right
+
     base = {"runtime": self.classifier_runtime, "crop": crop_debug, "side": side,
-            "input_shape": [CLASSIFIER_IMG_SIZE, CLASSIFIER_IMG_SIZE],
+            "input_shape": [1, 3, recipe.res_h, recipe.res_w],
             "hz": self.detector_hz, "timing": dict(self.last_timing),
             "capture": {"on": capture_requested(), "saved": self._capture_count}}
     if not self.classifier_available():
-      return self._cls_left_flag.value(), self._cls_right_flag.value(), {
-        **base, "reason": "classifier_missing",
-        "classifier": {"active": False, "model": self.classifier_pkl_path,
-                       "allow_onnx": self.params.get_bool("VisualVehicleDetectorAllowOnnx")}}
+      return *_topline(), {**base, "reason": "classifier_missing",
+                           "classifier": {"active": False, "model": self.classifier_pkl_path,
+                                          "allow_onnx": self.params.get_bool("VisualVehicleDetectorAllowOnnx")}}
     try:
       t0 = time.monotonic()
-      inp, roi, model_input = self._preprocess_classifier(detector_rgb)
+      inp, roi, model_input = self._preprocess_classifier(detector_rgb, recipe)
       self.last_timing["preprocess_ms"] = round((time.monotonic() - t0) * 1000.0, 1)
       t0 = time.monotonic()
-      p_blocked = self._run_classifier(inp)
+      p_car = self._run_classifier(inp, recipe.pos_index)
       self._infer_ms = (time.monotonic() - t0) * 1000.0
       self.last_timing["infer_ms"] = round(self._infer_ms, 1)
       base["timing"] = dict(self.last_timing)  # refresh: base snapshotted pre-inference
     except Exception as e:
       cloudlog.exception("visual vehicle classifier inference failed")
-      return self._cls_left_flag.value(), self._cls_right_flag.value(), {
-        **base, "reason": "classifier_error", "error": str(e)}
+      return *_topline(), {**base, "reason": "classifier_error", "error": str(e)}
 
     # Live preview (Crop & Rate / classifier input), only while a portal holds
-    # the sentinel: full frame + crop box, the crop with the ROI box, and the
-    # exact 320x320 the model sees. rgb_full is None on the hot path (no portal).
+    # the sentinel. rgb_full is None on the hot path (no portal).
     if rgb_full is not None and os.path.exists(PREVIEW_REQUEST_PATH):
       try:
         self._write_classifier_previews(rgb_full, detector_rgb, crop_debug, roi, model_input)
       except Exception:
         cloudlog.exception("visual vehicle classifier preview write failed")
 
-    # Update only the side evaluated this frame; the other side persists.
-    raw = p_blocked >= self.blocked_threshold
-    if side == "left":
-      self._cls_left_flag.update(raw)
-      self._cls_p_left = p_blocked
-    else:
-      self._cls_right_flag.update(raw)
-      self._cls_p_right = p_blocked
-    left_blocked = self._cls_left_flag.value()
-    right_blocked = self._cls_right_flag.value()
+    # Update only the zone evaluated this frame; the others persist.
+    self._cls_flags[side].update(p_car >= self.blocked_threshold)
+    self._cls_probs[side] = p_car
+    left_blocked, right_blocked = _topline()
     base["classifier"] = {
       "active": True,
       "side": side,
+      "zones": self._classifier_zones(),
       "left_blocked": bool(left_blocked),
       "right_blocked": bool(right_blocked),
-      "p_left": round(self._cls_p_left, 4) if self._cls_p_left is not None else None,
-      "p_right": round(self._cls_p_right, 4) if self._cls_p_right is not None else None,
       "threshold": round(self.blocked_threshold, 3),
-      "left_score": self._cls_left_flag.score,
-      "right_score": self._cls_right_flag.score,
       "roi": [roi["roi_x1"], roi["roi_y1"], roi["roi_x2"], roi["roi_y2"]],
       "src_crop": [int(detector_rgb.shape[1]), int(detector_rgb.shape[0])],
-      "expected_src": [CLASSIFIER_SRC_W, CLASSIFIER_SRC_H],
+      "expected_src": [recipe.src_w, recipe.src_h],
+      "crop_mode": recipe.crop_mode,
       "norm": CLASSIFIER_NORM,
-      "pos_index": CLASSIFIER_POS_INDEX,
+      "pos_index": recipe.pos_index,
     }
     base["reason"] = "ok"
     return left_blocked, right_blocked, base
@@ -1484,26 +1609,33 @@ class VisualVehicleDetector:
   def update(self, buf: VisionBuf) -> tuple[bool, bool, dict[str, Any]]:
     self._refresh_tuning()
     self._record_proc()
-    # Driver cam runs the occupancy classifier; road/wide run YOLO. Hot-reload
-    # the relevant model if its file changed (recompiled) -- cheap mtime stat.
-    if self.camera == CLASSIFIER_CAMERA:
-      self._ensure_classifier()
+    # Classifier cameras (driver, wide) run the car classifier; road runs YOLO.
+    # Hot-reload the relevant model if its file changed (recompiled) / camera
+    # switched -- cheap mtime stat.
+    recipe = None
+    if self.camera in CLASSIFIER_CAMERAS:
+      self._ensure_classifier(self.camera)
+      recipe = self._recipe(self.camera)
     else:
       self._ensure_model_for(self.camera)
     frame_w, frame_h = int(buf.width), int(buf.height)
     rect = self._crop_rect(frame_w, frame_h)
     crop_debug = self._crop_debug(frame_w, frame_h, rect)
     mirror = self.camera == "driver"
-    # Driver classifier: alternate sides each frame. The driver cam is a
-    # symmetric selfie, so the SAME crop read with the un-mirror flip is the
-    # right lane (world-oriented, as trained) and read WITHOUT it is the left
-    # lane already in right-looking orientation -- so we just toggle `mirror`.
+    # Multi-zone classifier (driver left/right): alternate sides each frame. The
+    # driver cam is a symmetric selfie, so the SAME crop read with the un-mirror
+    # flip is the right lane (world-oriented, as trained) and read WITHOUT it is
+    # the left lane already in right-looking orientation -- so we just toggle
+    # `mirror`. Single-zone models (wide) don't alternate.
     classifier_side = None
-    if self.camera == CLASSIFIER_CAMERA:
-      self._classifier_side = "left" if self._classifier_side == "right" else "right"
-      classifier_side = self._classifier_side
-      if classifier_side == "left":
-        mirror = not mirror
+    if recipe is not None:
+      if len(recipe.sides) > 1:
+        self._classifier_side = "left" if self._classifier_side == "right" else "right"
+        classifier_side = self._classifier_side
+        if classifier_side == "left" and recipe.mirror_left:
+          mirror = not mirror
+      else:
+        classifier_side = recipe.sides[0]
     # Extracting + converting the whole ~2MP frame every tick is the bottleneck,
     # and the model only sees the crop, so read just the crop's bytes from the
     # NV12 buffer on the hot path. A portal preview needs the whole oriented
@@ -1537,9 +1669,9 @@ class VisualVehicleDetector:
 
     self._maybe_capture(detector_rgb, classifier_side)
 
-    # Driver cam: whole-crop blocked/clear classifier, not YOLO boxes.
-    if self.camera == CLASSIFIER_CAMERA:
-      return self._update_classifier(rgb, detector_rgb, crop_debug, classifier_side)
+    # Classifier cameras: whole-crop car/no-car, not YOLO boxes.
+    if recipe is not None:
+      return self._update_classifier(rgb, detector_rgb, crop_debug, classifier_side, recipe)
 
     # Run YOLO on the fixed crop only, not on the full camera frame.
     detections = self._run_model(detector_rgb)
@@ -1614,7 +1746,8 @@ class VisualVehicleDetector:
   def run(self) -> None:
     self.log_debug = self.params.get_bool("VisualVehicleDetectorLogDebug")
     runtime_ok = self._load_runtime()
-    self._ensure_classifier()  # driver-cam path can run even without a YOLO model
+    if self.camera in CLASSIFIER_CAMERAS:
+      self._ensure_classifier(self.camera)  # classifier cameras run without a YOLO model
     if not runtime_ok and not self.classifier_available():
       rk = Ratekeeper(1.0)
       while True:
@@ -1657,8 +1790,8 @@ class VisualVehicleDetector:
         # model_load_ms / first_inf_ms in last_timing are the "model switch"
         # cost; sum with cam_connect_ms for "model+camera switch".
         prev_loaded = self._loaded_pkl
-        if desired_camera == CLASSIFIER_CAMERA:
-          self._ensure_classifier()
+        if desired_camera in CLASSIFIER_CAMERAS:
+          self._ensure_classifier(desired_camera)
         else:
           self._ensure_model_for(desired_camera)
         model_switched = self._loaded_pkl != prev_loaded
@@ -1666,10 +1799,8 @@ class VisualVehicleDetector:
         last_frame_id = -1
         self.left_flag = DebouncedFlag()
         self.right_flag = DebouncedFlag()
-        self._cls_left_flag = DebouncedFlag(threshold=1, maximum=2)
-        self._cls_right_flag = DebouncedFlag(threshold=1, maximum=2)
-        self._cls_p_left = None
-        self._cls_p_right = None
+        self._cls_flags = {}  # rebuilt for the new camera's zones on next update()
+        self._cls_probs = {}
         self._classifier_side = "right"
         self._proc_ts.clear()  # don't carry the switch gap into the measured rate
         cloudlog.warning("visual vehicle detector switch camera=%s stream=%s size=%sx%s "

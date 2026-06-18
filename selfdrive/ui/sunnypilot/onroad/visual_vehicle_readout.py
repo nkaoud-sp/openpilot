@@ -90,13 +90,8 @@ class VisualVehicleReadout:
     classifier = debug.get("classifier", {}) or {}
 
     if classifier.get("active") or reason in ("classifier_missing", "classifier_error"):
-      # Driver-cam car classifier: left/right occupancy (sides alternate frames).
-      left_blk = bool(classifier.get("left_blocked"))
-      right_blk = bool(classifier.get("right_blocked"))
-      p_left = classifier.get("p_left")
-      p_right = classifier.get("p_right")
-      side = str(classifier.get("side", "--")).upper()
-
+      # Car classifier: per-zone occupancy. Zones come from the model recipe --
+      # left/right (driver, alternating) or a single 'center' (wide).
       def _side_color(blk: bool) -> rl.Color:
         if stale or reason != "ok":
           return _AMBER
@@ -105,13 +100,18 @@ class VisualVehicleReadout:
       def _p(v) -> str:
         return f"{v:.2f}" if isinstance(v, (int, float)) else "--"
 
+      zones = classifier.get("zones") or []
       rows = [
         ("CAMERA", str(debug.get("camera", "--")).upper(), _WHITE),
         ("CAPTURE", (f"REC {capture.get('saved', 0)}" if cap_on else "OFF"), _RED if cap_on else _DIM),
-        ("LEFT", "BLOCKED" if left_blk else "CLEAR", _side_color(left_blk)),
-        ("RIGHT", "BLOCKED" if right_blk else "CLEAR", _side_color(right_blk)),
-        ("P L/R", f"{_p(p_left)} / {_p(p_right)}", _WHITE),
-        ("EVAL", side, _DIM),
+      ]
+      for z in zones:
+        label = "CAR" if z.get("name") == "center" else str(z.get("name", "?")).upper()
+        blk = bool(z.get("blocked"))
+        rows.append((label, ("BLOCKED" if blk else "CLEAR"), _side_color(blk)))
+      rows.append(("P", " / ".join(_p(z.get("p")) for z in zones) or "--", _WHITE))
+      rows.extend([
+        ("EVAL", str(classifier.get("side", "--")).upper(), _DIM),
         ("THRESH", str(classifier.get("threshold", "--")), _DIM),
         ("STATUS", "STALE" if stale else reason.upper(), _AMBER if stale or reason != "ok" else _GREEN),
         ("RUNTIME", runtime.upper(), _GREEN if runtime == "tinygrad_pkl" else (_AMBER if runtime == "onnx_cpu" else _DIM)),
@@ -120,8 +120,8 @@ class VisualVehicleReadout:
         ("TIMING", self._timing_breakdown(timing), _WHITE),
         ("AGE", f"{age:.1f}s", _AMBER if stale else _WHITE),
         ("FRAME", str(debug.get("frame_id", "--")), _DIM),
-      ]
-      self._render_panel(rect, rows, "DM LANE OCCUPANCY", side="right")
+      ])
+      self._render_panel(rect, rows, "CAR OCCUPANCY", side="right")
       return
 
     rows = [
