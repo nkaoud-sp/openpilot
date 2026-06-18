@@ -18,6 +18,12 @@ _RED = rl.Color(255, 70, 70, 255)
 _WHITE = rl.Color(255, 255, 255, 255)
 _DIM = rl.Color(190, 190, 190, 255)
 _BG = rl.Color(0, 0, 0, 175)
+_SOFT_GREY = rl.Color(216, 216, 216, 210)
+_MID_GREY = rl.Color(148, 148, 148, 220)
+_DARK_GREY = rl.Color(78, 78, 78, 220)
+_CAR_FILL = rl.Color(224, 229, 232, 255)
+_CAR_EDGE = rl.Color(86, 94, 102, 255)
+_GLASS = rl.Color(30, 36, 42, 225)
 
 
 class VisualVehicleReadout:
@@ -84,6 +90,11 @@ class VisualVehicleReadout:
       input_shape_text = "--"
     left = bool(state.get("left", False))
     right = bool(state.get("right", False))
+    widget_mode = bool(getattr(ui_state, "visual_vehicle_detector_car_widget", False))
+
+    if widget_mode:
+      self._render_car_widget(rect, state, debug, stale, reason)
+      return
 
     capture = debug.get("capture", {}) or {}
     cap_on = bool(capture.get("on"))
@@ -263,3 +274,136 @@ class VisualVehicleReadout:
       val_y = row_y + (row_h - val_size) / 2
       rl.draw_text_ex(self._cap_font, cap, rl.Vector2(int(x + pad), int(cap_y)), cap_size, 0, fade(_DIM))
       rl.draw_text_ex(self._val_font, val, rl.Vector2(int(x + pad + cap_w + col_gap), int(val_y)), val_size, 0, fade(color))
+
+  def _render_car_widget(self, rect: rl.Rectangle, state: dict, debug: dict, stale: bool, reason: str) -> None:
+    a = self._alpha
+    panel_w = min(540.0, rect.width * 0.42)
+    panel_h = min(920.0, rect.height * 0.74)
+    x = rect.x + rect.width - panel_w - 56
+    y = rect.y + max(110.0, (rect.height - panel_h) * 0.48)
+    panel = rl.Rectangle(x, y, panel_w, panel_h)
+
+    def fade(c: rl.Color, alpha_scale: float = 1.0) -> rl.Color:
+      return rl.Color(c.r, c.g, c.b, int(c.a * a * alpha_scale))
+
+    rl.draw_rectangle_rounded(panel, 0.14, 12, fade(_BG, 0.92))
+    rl.draw_rectangle_rounded_lines_ex(panel, 0.14, 12, 3, fade(_DIM, 0.7))
+
+    status_text = "STALE" if stale else reason.upper()
+    status_color = _AMBER if stale or reason != "ok" else _GREEN
+    rl.draw_text_ex(self._title_font, "VEHICLE VIEW", rl.Vector2(int(x + 28), int(y + 24)), 30, 0, fade(_WHITE))
+    rl.draw_text_ex(self._cap_font, status_text, rl.Vector2(int(x + panel_w - 170), int(y + 28)), 24, 0, fade(status_color))
+
+    zones = self._widget_zones(state, debug)
+    center = rl.Vector2(panel.x + panel.width / 2, panel.y + panel.height / 2 + 18)
+    ring_outer = min(panel.width * 0.43, panel.height * 0.28)
+    ring_inner = ring_outer * 0.52
+    gap = 14
+    zone_specs = [
+      ("front_left", 186, 264),
+      ("front_right", 276, 354),
+      ("rear_right", 6, 84),
+      ("rear_left", 96, 174),
+    ]
+    base_zone = fade(_SOFT_GREY, 0.78)
+    alert_zone = fade(_RED, 0.96)
+    for name, start, end in zone_specs:
+      color = alert_zone if zones[name] else base_zone
+      rl.draw_ring(center, ring_inner, ring_outer, start + gap / 2, end - gap / 2, 40, color)
+
+    self._draw_car_body(center, panel.width * 0.28, panel.height * 0.58, fade)
+    self._draw_zone_labels(panel, zones, fade)
+
+    active_count = sum(1 for active in zones.values() if active)
+    footer = f"{active_count} BLOCKED" if active_count else "CLEAR"
+    footer_color = _RED if active_count else (_AMBER if stale or reason != "ok" else _GREEN)
+    rl.draw_text_ex(self._val_font, footer, rl.Vector2(int(x + 28), int(y + panel.height - 60)), 34, 0, fade(footer_color))
+
+  @staticmethod
+  def _zone_blocked(zone: dict | None) -> bool:
+    return bool((zone or {}).get("blocked", False))
+
+  def _widget_zones(self, state: dict, debug: dict) -> dict[str, bool]:
+    zones = {
+      "front_left": False,
+      "front_right": False,
+      "rear_left": False,
+      "rear_right": False,
+    }
+    camera = str(debug.get("camera", "") or "")
+
+    if debug.get("dual"):
+      cameras = debug.get("cameras", {}) or {}
+      wide_zones = {str(z.get("name")): z for z in (cameras.get("wide", {}) or {}).get("zones", []) or []}
+      driver_zones = {str(z.get("name")): z for z in (cameras.get("driver", {}) or {}).get("zones", []) or []}
+      zones["front_left"] = self._zone_blocked(wide_zones.get("left"))
+      zones["front_right"] = self._zone_blocked(wide_zones.get("right"))
+      zones["rear_left"] = self._zone_blocked(driver_zones.get("left"))
+      zones["rear_right"] = self._zone_blocked(driver_zones.get("right"))
+      return zones
+
+    classifier = debug.get("classifier", {}) or {}
+    classifier_zones = {str(z.get("name")): z for z in classifier.get("zones", []) or []}
+    if classifier.get("active"):
+      if camera == "driver":
+        zones["rear_left"] = self._zone_blocked(classifier_zones.get("left"))
+        zones["rear_right"] = self._zone_blocked(classifier_zones.get("right"))
+        if "center" in classifier_zones:
+          blocked = self._zone_blocked(classifier_zones.get("center"))
+          zones["rear_left"] = blocked
+          zones["rear_right"] = blocked
+      else:
+        zones["front_left"] = self._zone_blocked(classifier_zones.get("left"))
+        zones["front_right"] = self._zone_blocked(classifier_zones.get("right"))
+        if "center" in classifier_zones:
+          blocked = self._zone_blocked(classifier_zones.get("center"))
+          zones["front_left"] = blocked
+          zones["front_right"] = blocked
+      return zones
+
+    left = bool(state.get("left", False))
+    right = bool(state.get("right", False))
+    if camera == "driver":
+      zones["rear_left"] = left
+      zones["rear_right"] = right
+    else:
+      zones["front_left"] = left
+      zones["front_right"] = right
+    return zones
+
+  def _draw_car_body(self, center: rl.Vector2, width: float, height: float, fade) -> None:
+    body = rl.Rectangle(center.x - width / 2, center.y - height / 2, width, height)
+    rl.draw_rectangle_rounded(body, 0.34, 18, fade(_CAR_FILL))
+    rl.draw_rectangle_rounded_lines_ex(body, 0.34, 18, 3, fade(_CAR_EDGE))
+
+    roof = rl.Rectangle(body.x + width * 0.18, body.y + height * 0.15, width * 0.64, height * 0.48)
+    rl.draw_rectangle_rounded(roof, 0.26, 16, fade(_GLASS))
+    hood = rl.Rectangle(body.x + width * 0.17, body.y + height * 0.02, width * 0.66, height * 0.12)
+    rear = rl.Rectangle(body.x + width * 0.17, body.y + height * 0.84, width * 0.66, height * 0.08)
+    rl.draw_rectangle_rounded(hood, 0.4, 12, fade(_MID_GREY, 0.55))
+    rl.draw_rectangle_rounded(rear, 0.4, 12, fade(_MID_GREY, 0.55))
+
+    mirror_w = width * 0.12
+    mirror_h = height * 0.08
+    left_mirror = rl.Rectangle(body.x - mirror_w * 0.55, body.y + height * 0.36, mirror_w, mirror_h)
+    right_mirror = rl.Rectangle(body.x + width - mirror_w * 0.45, body.y + height * 0.36, mirror_w, mirror_h)
+    rl.draw_rectangle_rounded(left_mirror, 0.5, 10, fade(_CAR_EDGE, 0.85))
+    rl.draw_rectangle_rounded(right_mirror, 0.5, 10, fade(_CAR_EDGE, 0.85))
+
+    rl.draw_line_ex(rl.Vector2(body.x + width * 0.14, body.y + height * 0.74),
+                    rl.Vector2(body.x + width * 0.86, body.y + height * 0.74), 2, fade(_DARK_GREY))
+    rl.draw_line_ex(rl.Vector2(body.x + width * 0.32, body.y + height * 0.16),
+                    rl.Vector2(body.x + width * 0.32, body.y + height * 0.62), 2, fade(_MID_GREY))
+    rl.draw_line_ex(rl.Vector2(body.x + width * 0.68, body.y + height * 0.16),
+                    rl.Vector2(body.x + width * 0.68, body.y + height * 0.62), 2, fade(_MID_GREY))
+
+  def _draw_zone_labels(self, panel: rl.Rectangle, zones: dict[str, bool], fade) -> None:
+    labels = [
+      ("FL", zones["front_left"], panel.x + 34, panel.y + 86),
+      ("FR", zones["front_right"], panel.x + panel.width - 68, panel.y + 86),
+      ("RL", zones["rear_left"], panel.x + 34, panel.y + panel.height - 112),
+      ("RR", zones["rear_right"], panel.x + panel.width - 68, panel.y + panel.height - 112),
+    ]
+    for text, active, x, y in labels:
+      color = _RED if active else _DIM
+      rl.draw_text_ex(self._cap_font, text, rl.Vector2(int(x), int(y)), 24, 0, fade(color))

@@ -175,6 +175,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LanePositionIndicator", {PERSISTENT | BACKUP, BOOL, "0"}},  // on-screen lane-position indicator (squares + confidence border)
     {"VisualVehicleDetector", {PERSISTENT | BACKUP, BOOL, "0"}},       // standalone visual detector process for UI/debug validation
     {"VisualVehicleDetectorReadout", {PERSISTENT | BACKUP, BOOL, "0"}}, // large on-road readout for detector status/debug
+    {"VisualVehicleDetectorCarWidget", {PERSISTENT | BACKUP, BOOL, "0"}}, // replace the readout panels with a top-down car widget
     {"VisualVehicleDetectorAllowOnnx", {PERSISTENT | BACKUP, BOOL, "0"}}, // CPU ONNX fallback for debug only; pkl preferred on comma3x
     {"VisualVehicleDetectorLogDebug", {PERSISTENT | BACKUP, BOOL, "0"}}, // extra detector cloudlog output
     {"VisualVehicleDetectorCamera", {PERSISTENT | BACKUP, INT, "0"}}, // detector source: 0=road 1=wide 2=driver

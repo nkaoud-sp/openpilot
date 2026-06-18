@@ -633,6 +633,12 @@ class VisualVehicleSettingsLayout(Widget):
                             "detector reason, detection count, confidence and frame id."),
       param="VisualVehicleDetectorReadout",
     )
+    self._car_widget = toggle_item_sp(
+      title=lambda: tr("Use Car Widget"),
+      description=lambda: tr("Replace the detector readout panels with a top-down car widget. In Wide+Driver mode, "
+                            "each blocked zone lights the matching corner red."),
+      param="VisualVehicleDetectorCarWidget",
+    )
     self._allow_onnx = toggle_item_sp(
       title=lambda: tr("Allow ONNX Fallback (debug only)"),
       description=lambda: tr("If the PKL is missing, allow the detector daemon to try ONNX Runtime. Leave OFF on "
@@ -724,6 +730,7 @@ class VisualVehicleSettingsLayout(Widget):
       self._compile_wide_classifier,
       self._camera_source,
       self._readout,
+      self._car_widget,
       self._allow_onnx,
       self._debug_log,
       self._live_preview,
