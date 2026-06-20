@@ -2494,7 +2494,7 @@ struct Event {
     liveMapDataSP @115 :Custom.LiveMapDataSP;
     modelDataV2SP @116 :Custom.ModelDataV2SP;
     nkaoudNavigationSP @136 :Custom.NkaoudNavigationSP;
-    customReserved11 @137 :Custom.CustomReserved11;
+    visualVehicleDetectorStateSP @137 :Custom.VisualVehicleDetectorStateSP;
     customReserved12 @138 :Custom.CustomReserved12;
     customReserved13 @139 :Custom.CustomReserved13;
     customReserved14 @140 :Custom.CustomReserved14;

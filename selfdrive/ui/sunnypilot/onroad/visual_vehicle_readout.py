@@ -1,7 +1,5 @@
 """Large on-road UI/debug readout for the standalone visual vehicle detector."""
-import json
 import time
-from pathlib import Path
 
 import pyray as rl
 
@@ -9,7 +7,6 @@ from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 
-STATE_PATH = Path("/tmp/nkaoud_visual_vehicle_detector.json")
 STALE_AFTER_S = 1.0
 
 _GREEN = rl.Color(0, 220, 110, 255)
@@ -46,11 +43,112 @@ class VisualVehicleReadout:
     if now - self._last_read_t < 0.1:
       return self._state
     self._last_read_t = now
-    try:
-      self._state = json.loads(STATE_PATH.read_text())
-    except Exception:
+
+    sm = ui_state.sm
+    if sm.recv_frame.get("visualVehicleDetectorStateSP", 0) <= 0 or not sm.valid.get("visualVehicleDetectorStateSP", False):
       self._state = {"left": False, "right": False, "monotonic_time": 0.0, "debug": {"reason": "state_missing"}}
+      return self._state
+
+    try:
+      self._state = self._message_to_state(sm["visualVehicleDetectorStateSP"])
+    except Exception:
+      self._state = {"left": False, "right": False, "monotonic_time": 0.0, "debug": {"reason": "state_decode_failed"}}
     return self._state
+
+  @staticmethod
+  def _zones_to_dict(zones) -> list[dict]:
+    out = []
+    for zone in zones:
+      out.append({
+        "name": str(zone.name),
+        "blocked": bool(zone.blocked),
+        "p": float(zone.probability) if bool(zone.hasProbability) else None,
+      })
+    return out
+
+  def _message_to_state(self, msg) -> dict:
+    debug = {
+      "reason": str(msg.reason),
+      "runtime": str(msg.runtime),
+      "camera": str(msg.camera),
+      "side": str(msg.side),
+      "hz": float(msg.hz),
+      "frame_id": int(msg.frameId),
+      "dual": bool(msg.dual),
+      "input_shape": list(msg.inputShape),
+      "pkl_path": str(msg.pklPath),
+      "onnx_path": str(msg.onnxPath),
+      "pkl_exists": bool(msg.pklExists),
+      "onnx_exists": bool(msg.onnxExists),
+      "parser": str(msg.parser),
+      "output_shape": list(msg.outputShape),
+      "detections": int(msg.detections),
+      "best_conf": round(float(msg.bestConf), 3),
+      "left_score": int(msg.leftScore),
+      "right_score": int(msg.rightScore),
+      "timing": {
+        "crop_rgb_ms": round(float(msg.timing.cropRgbMs), 1),
+        "preprocess_ms": round(float(msg.timing.preprocessMs), 1),
+        "infer_ms": round(float(msg.timing.inferMs), 1),
+        "state_write_ms": round(float(msg.timing.stateWriteMs), 1),
+        "measured_hz": round(float(msg.timing.measuredHz), 1),
+        "model_load_ms": round(float(msg.timing.modelLoadMs), 1),
+        "first_inf_ms": round(float(msg.timing.firstInfMs), 1),
+        "cam_connect_ms": round(float(msg.timing.camConnectMs), 1),
+        "model": str(msg.modelName),
+      },
+      "crop": {
+        "crop_x": int(msg.crop.cropX),
+        "crop_y": int(msg.crop.cropY),
+        "crop_w": int(msg.crop.cropW),
+        "crop_h": int(msg.crop.cropH),
+        "frame_w": int(msg.crop.frameW),
+        "frame_h": int(msg.crop.frameH),
+      },
+      "capture": {
+        "on": bool(msg.capture.on),
+        "saved": int(msg.capture.saved),
+      },
+      "raw_best_obj": round(float(msg.rawBestObj), 5),
+      "raw_best_cls": round(float(msg.rawBestCls), 5),
+      "raw_best_conf": round(float(msg.rawBestConf), 5),
+      "raw_best_class_id": int(msg.rawBestClassId),
+      "raw_best_vehicle": bool(msg.rawBestVehicle),
+      "raw_best_left_roi": bool(msg.rawBestLeftRoi),
+      "raw_best_right_roi": bool(msg.rawBestRightRoi),
+      "raw_best_box": list(msg.rawBestBox),
+      "error": str(msg.error),
+    }
+
+    if bool(msg.rawBestCenterValid):
+      debug["raw_best_center_x"] = float(msg.rawBestCenterX)
+      debug["raw_best_center_y"] = float(msg.rawBestCenterY)
+
+    classifier_zones = self._zones_to_dict(msg.classifier.zones)
+    if bool(msg.classifier.active) or classifier_zones:
+      debug["classifier"] = {
+        "active": bool(msg.classifier.active),
+        "side": str(msg.classifier.side),
+        "threshold": round(float(msg.classifier.threshold), 3),
+        "left_blocked": bool(msg.classifier.leftBlocked),
+        "right_blocked": bool(msg.classifier.rightBlocked),
+        "zones": classifier_zones,
+      }
+
+    wide_zones = self._zones_to_dict(msg.wideZones)
+    driver_zones = self._zones_to_dict(msg.driverZones)
+    if bool(msg.dual) or wide_zones or driver_zones:
+      debug["cameras"] = {
+        "wide": {"zones": wide_zones},
+        "driver": {"zones": driver_zones},
+      }
+
+    return {
+      "left": bool(msg.leftBlocked),
+      "right": bool(msg.rightBlocked),
+      "monotonic_time": float(msg.monotonicTime),
+      "debug": debug,
+    }
 
   @staticmethod
   def _status_color(active: bool, stale: bool, reason: str) -> rl.Color:

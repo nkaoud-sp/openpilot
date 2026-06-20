@@ -508,7 +508,89 @@ struct NkaoudNavigationSP @0xcb9fd56c7057593a {
   }
 }
 
-struct CustomReserved11 @0xc2243c65e0340384 {
+struct VisualVehicleDetectorStateSP @0xc2243c65e0340384 {
+  leftBlocked @0 :Bool;
+  rightBlocked @1 :Bool;
+  monotonicTime @2 :Float64;
+
+  reason @3 :Text;
+  runtime @4 :Text;
+  camera @5 :Text;
+  side @6 :Text;
+  hz @7 :Float32;
+  frameId @8 :Int32;
+  dual @9 :Bool;
+  inputShape @10 :List(Int32);
+  detections @11 :Int32;
+  bestConf @12 :Float32;
+  leftScore @13 :Int32;
+  rightScore @14 :Int32;
+  timing @15 :Timing;
+  crop @16 :Crop;
+  capture @17 :Capture;
+  classifier @18 :Classifier;
+  wideZones @19 :List(Zone);
+  driverZones @20 :List(Zone);
+  parser @21 :Text;
+  outputShape @22 :List(Int32);
+  rawBestObj @23 :Float32;
+  rawBestCls @24 :Float32;
+  rawBestConf @25 :Float32;
+  rawBestClassId @26 :Int32;
+  rawBestVehicle @27 :Bool;
+  rawBestLeftRoi @28 :Bool;
+  rawBestRightRoi @29 :Bool;
+  rawBestBox @30 :List(Float32);
+  rawBestCenterX @31 :Float32;
+  rawBestCenterY @32 :Float32;
+  rawBestCenterValid @33 :Bool;
+  pklPath @34 :Text;
+  onnxPath @35 :Text;
+  pklExists @36 :Bool;
+  onnxExists @37 :Bool;
+  modelName @38 :Text;
+  error @39 :Text;
+
+  struct Timing {
+    cropRgbMs @0 :Float32;
+    preprocessMs @1 :Float32;
+    inferMs @2 :Float32;
+    stateWriteMs @3 :Float32;
+    measuredHz @4 :Float32;
+    modelLoadMs @5 :Float32;
+    firstInfMs @6 :Float32;
+    camConnectMs @7 :Float32;
+  }
+
+  struct Crop {
+    cropX @0 :Int32;
+    cropY @1 :Int32;
+    cropW @2 :Int32;
+    cropH @3 :Int32;
+    frameW @4 :Int32;
+    frameH @5 :Int32;
+  }
+
+  struct Capture {
+    on @0 :Bool;
+    saved @1 :Int32;
+  }
+
+  struct Zone {
+    name @0 :Text;
+    blocked @1 :Bool;
+    probability @2 :Float32;
+    hasProbability @3 :Bool;
+  }
+
+  struct Classifier {
+    active @0 :Bool;
+    side @1 :Text;
+    threshold @2 :Float32;
+    leftBlocked @3 :Bool;
+    rightBlocked @4 :Bool;
+    zones @5 :List(Zone);
+  }
 }
 
 struct CustomReserved12 @0x9ccdc8676701b412 {

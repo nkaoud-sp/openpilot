@@ -5,7 +5,7 @@ Standalone visual adjacent-vehicle detector for UI/debug validation.
 This daemon is independent from navigation and controls:
   - It does not publish a desire.
   - It does not block lane changes.
-  - It only writes /tmp/nkaoud_visual_vehicle_detector.json for the UI readout.
+  - It publishes visualVehicleDetectorStateSP for the UI and other services.
 
 Runtime order:
   1. Prefer compiled tinygrad pkl:
@@ -29,13 +29,13 @@ from typing import Any
 
 import numpy as np
 
+from cereal import messaging
 from msgq.visionipc import VisionIpcClient, VisionStreamType, VisionBuf
 from openpilot.common.params import Params
 from openpilot.common.realtime import Ratekeeper
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import MODEL_DIR as ARTIFACT_DIR, migrate_legacy_artifacts
 
-STATE_PATH = Path("/tmp/nkaoud_visual_vehicle_detector.json")
 # Live preview: the UI dialog/web server touches the request file while open,
 # the detector writes the latest letterboxed RGB tensor to the PNG path.
 PREVIEW_REQUEST_PATH = "/tmp/nkaoud_vvd_preview.request"
@@ -54,8 +54,8 @@ BUF_GEOMETRY_PATH = "/tmp/nkaoud_vvd_buf_geometry.json"
 DEFAULT_PKL_PATH = str(ARTIFACT_DIR / "visual_vehicle_detector_tinygrad.pkl")
 DEFAULT_DRIVER_PKL_PATH = str(ARTIFACT_DIR / "visual_vehicle_detector_driver_tinygrad.pkl")
 DEFAULT_ONNX_PATH = str(ARTIFACT_DIR / "visual_vehicle_detector.onnx")
-STATE_WRITE_HZ = 5.0
-STATE_WRITE_INTERVAL = 1.0 / STATE_WRITE_HZ
+STATE_PUBLISH_HZ = 5.0
+STATE_PUBLISH_INTERVAL = 1.0 / STATE_PUBLISH_HZ
 
 # Dataset capture: while the capture portal/dialog is open (sentinel present)
 # and the car is onroad, the detector saves the selected camera's crop as JPEG
@@ -260,6 +260,8 @@ CAMERA_PARAM = "VisualVehicleDetectorCamera"
 # each zone refreshes at ~1/4 the loop rate, each camera's L/R at ~1/2.
 DUAL_CAMERA = "wide+driver"
 DUAL_CAMERAS = ("wide", "driver")
+STATE_SERVICE = "visualVehicleDetectorStateSP"
+_frame_info_sm = None
 
 
 def active_camera(params: Params | None = None) -> str:
@@ -272,15 +274,16 @@ def active_camera(params: Params | None = None) -> str:
 
 
 def frame_info() -> dict[str, Any]:
-  """Latest camera/frame dimensions from the detector's state file, so the
+  """Latest camera/frame dimensions from the detector service, so the
   tuning portal can auto-range the crop sliders to the live stream."""
-  try:
-    st = json.loads(STATE_PATH.read_text())
-    dbg = st.get("debug", {}) or {}
-    crop = dbg.get("crop", {}) or {}
-    return {"camera": dbg.get("camera"), "frame_w": crop.get("frame_w"), "frame_h": crop.get("frame_h")}
-  except Exception:
+  global _frame_info_sm
+  if _frame_info_sm is None:
+    _frame_info_sm = messaging.SubMaster([STATE_SERVICE])
+  _frame_info_sm.update(0)
+  if _frame_info_sm.recv_frame.get(STATE_SERVICE, 0) <= 0 or not _frame_info_sm.valid.get(STATE_SERVICE, False):
     return {}
+  msg = _frame_info_sm[STATE_SERVICE]
+  return {"camera": str(msg.camera), "frame_w": int(msg.crop.frameW), "frame_h": int(msg.crop.frameH)}
 
 
 # ---- Dataset capture helpers (shared with the capture web portal) ----
@@ -471,7 +474,8 @@ class VisualVehicleDetector:
     self._cold_inference = False
     self.last_timing: dict[str, Any] = {}
     self._last_state_write_t = 0.0
-    self._pending_state: dict[str, Any] | None = None
+    self._pending_state: tuple[bool, bool, float, dict[str, Any]] | None = None
+    self.pm = messaging.PubMaster([STATE_SERVICE])
 
     # Dataset capture state.
     self._last_capture_t = 0.0
@@ -592,31 +596,129 @@ class VisualVehicleDetector:
     self.detector_hz = max(1, min(MAX_DETECTOR_HZ, int(round(t["hz"]))))
     self.blocked_threshold = t["blocked_threshold"]
 
+  @staticmethod
+  def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+      return float(value)
+    except (TypeError, ValueError):
+      return default
+
+  @staticmethod
+  def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+      return int(value)
+    except (TypeError, ValueError):
+      return default
+
+  @staticmethod
+  def _set_zone_list(zone_list, zones: list[dict[str, Any]]) -> None:
+    for i, zone in enumerate(zones):
+      zone_list[i].name = str(zone.get("name", ""))
+      zone_list[i].blocked = bool(zone.get("blocked", False))
+      prob = zone.get("p")
+      if prob is not None:
+        zone_list[i].probability = float(prob)
+        zone_list[i].hasProbability = True
+
+  def _build_state_message(self, left: bool, right: bool, monotonic_time: float, debug: dict[str, Any]):
+    msg = messaging.new_message(STATE_SERVICE, valid=True)
+    state = msg.visualVehicleDetectorStateSP
+    state.leftBlocked = bool(left)
+    state.rightBlocked = bool(right)
+    state.monotonicTime = float(monotonic_time)
+    state.reason = str(debug.get("reason", ""))
+    state.runtime = str(debug.get("runtime", ""))
+    state.camera = str(debug.get("camera", ""))
+    state.side = str(debug.get("side", ""))
+    state.hz = self._safe_float(debug.get("hz"))
+    state.frameId = self._safe_int(debug.get("frame_id"), -1)
+    state.dual = bool(debug.get("dual", False))
+    state.inputShape = [int(v) for v in debug.get("input_shape", [])]
+    state.detections = self._safe_int(debug.get("detections"))
+    state.bestConf = self._safe_float(debug.get("best_conf"))
+    state.leftScore = self._safe_int(debug.get("left_score"))
+    state.rightScore = self._safe_int(debug.get("right_score"))
+    state.parser = str(debug.get("parser", ""))
+    state.outputShape = [int(v) for v in debug.get("output_shape", [])]
+    state.rawBestObj = self._safe_float(debug.get("raw_best_obj"))
+    state.rawBestCls = self._safe_float(debug.get("raw_best_cls"))
+    state.rawBestConf = self._safe_float(debug.get("raw_best_conf"))
+    state.rawBestClassId = self._safe_int(debug.get("raw_best_class_id"), -1)
+    state.rawBestVehicle = bool(debug.get("raw_best_vehicle", False))
+    state.rawBestLeftRoi = bool(debug.get("raw_best_left_roi", False))
+    state.rawBestRightRoi = bool(debug.get("raw_best_right_roi", False))
+    state.rawBestBox = [float(v) for v in debug.get("raw_best_box", [])]
+    if "raw_best_center_x" in debug and "raw_best_center_y" in debug:
+      state.rawBestCenterX = self._safe_float(debug.get("raw_best_center_x"))
+      state.rawBestCenterY = self._safe_float(debug.get("raw_best_center_y"))
+      state.rawBestCenterValid = True
+    state.pklPath = str(debug.get("pkl_path", ""))
+    state.onnxPath = str(debug.get("onnx_path", ""))
+    state.pklExists = bool(debug.get("pkl_exists", False))
+    state.onnxExists = bool(debug.get("onnx_exists", False))
+    state.modelName = str((debug.get("timing", {}) or {}).get("model", ""))
+    state.error = str(debug.get("error", ""))
+
+    timing = debug.get("timing", {}) or {}
+    state.timing.cropRgbMs = self._safe_float(timing.get("crop_rgb_ms"))
+    state.timing.preprocessMs = self._safe_float(timing.get("preprocess_ms"))
+    state.timing.inferMs = self._safe_float(timing.get("infer_ms"))
+    state.timing.stateWriteMs = self._safe_float(timing.get("state_write_ms"))
+    state.timing.measuredHz = self._safe_float(timing.get("measured_hz"))
+    state.timing.modelLoadMs = self._safe_float(timing.get("model_load_ms"))
+    state.timing.firstInfMs = self._safe_float(timing.get("first_inf_ms"))
+    state.timing.camConnectMs = self._safe_float(timing.get("cam_connect_ms"))
+
+    crop = debug.get("crop", {}) or {}
+    state.crop.cropX = self._safe_int(crop.get("crop_x"))
+    state.crop.cropY = self._safe_int(crop.get("crop_y"))
+    state.crop.cropW = self._safe_int(crop.get("crop_w"))
+    state.crop.cropH = self._safe_int(crop.get("crop_h"))
+    state.crop.frameW = self._safe_int(crop.get("frame_w"))
+    state.crop.frameH = self._safe_int(crop.get("frame_h"))
+
+    capture = debug.get("capture", {}) or {}
+    state.capture.on = bool(capture.get("on", False))
+    state.capture.saved = self._safe_int(capture.get("saved"))
+
+    classifier = debug.get("classifier", {}) or {}
+    state.classifier.active = bool(classifier.get("active", False))
+    state.classifier.side = str(classifier.get("side", ""))
+    state.classifier.threshold = self._safe_float(classifier.get("threshold"))
+    state.classifier.leftBlocked = bool(classifier.get("left_blocked", False))
+    state.classifier.rightBlocked = bool(classifier.get("right_blocked", False))
+    zones = classifier.get("zones", []) or []
+    state.classifier.init("zones", len(zones))
+    self._set_zone_list(state.classifier.zones, zones)
+
+    wide_zones = ((debug.get("cameras", {}) or {}).get("wide", {}) or {}).get("zones", []) or []
+    driver_zones = ((debug.get("cameras", {}) or {}).get("driver", {}) or {}).get("zones", []) or []
+    state.init("wideZones", len(wide_zones))
+    self._set_zone_list(state.wideZones, wide_zones)
+    state.init("driverZones", len(driver_zones))
+    self._set_zone_list(state.driverZones, driver_zones)
+    return msg
+
   def _write_state(self, left: bool, right: bool, debug: dict[str, Any] | None = None, force: bool = False) -> None:
-    state = {
-      "left": bool(left),
-      "right": bool(right),
-      "monotonic_time": time.monotonic(),
-      "debug": debug or {},
-    }
-    self._pending_state = state
-    if not force and state["monotonic_time"] - self._last_state_write_t < STATE_WRITE_INTERVAL:
+    monotonic_time = time.monotonic()
+    debug_payload = debug or {}
+    self._pending_state = (bool(left), bool(right), monotonic_time, debug_payload)
+    if not force and monotonic_time - self._last_state_write_t < STATE_PUBLISH_INTERVAL:
       return
 
-    state = self._pending_state
-    if state is None:
+    pending = self._pending_state
+    if pending is None:
       return
 
-    tmp_path = STATE_PATH.with_suffix(".tmp")
     t0 = time.monotonic()
     try:
-      tmp_path.write_text(json.dumps(state, separators=(",", ":")))
-      os.replace(tmp_path, STATE_PATH)
-      self._last_state_write_t = float(state["monotonic_time"])
+      send_msg = self._build_state_message(*pending)
+      self.pm.send(STATE_SERVICE, send_msg)
+      self._last_state_write_t = pending[2]
       self._pending_state = None
       self.last_timing["state_write_ms"] = round((time.monotonic() - t0) * 1000.0, 1)
     except Exception:
-      cloudlog.exception("visual vehicle detector failed to write state")
+      cloudlog.exception("visual vehicle detector failed to publish state")
 
   def _set_startup_debug(self, **debug: Any) -> None:
     payload = {
