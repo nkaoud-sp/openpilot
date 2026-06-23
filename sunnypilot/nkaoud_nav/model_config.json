@@ -1,0 +1,76 @@
+{
+  "_note": "Visual vehicle detector classifier models, keyed by camera. The detector loads models[<camera>] to drive per-model preprocessing. Both are MobileNetV3-Small 2-class (car/no_car), ImageNet normalization, car at index 0.",
+  "version": 1,
+  "models": {
+    "driver": {
+      "onnx": "mobilenet_v3_dm_320x320.onnx",
+      "classes": [
+        "car",
+        "no_car"
+      ],
+      "class_to_idx": {
+        "car": 0,
+        "no_car": 1
+      },
+      "res_width": 320,
+      "res_height": 320,
+      "crop_mode": "roi_inset",
+      "roi_abs": [
+        30,
+        55,
+        535,
+        425
+      ],
+      "source_width": 543,
+      "source_height": 530,
+      "sides": [
+        "left",
+        "right"
+      ],
+      "mirror_left": true,
+      "normalization_mean": [
+        0.485,
+        0.456,
+        0.406
+      ],
+      "normalization_std": [
+        0.229,
+        0.224,
+        0.225
+      ],
+      "crop_x": 265,
+      "crop_y": 39
+    },
+    "wide": {
+      "onnx": "mobilenet_v3_wide_320x128.onnx",
+      "classes": [
+        "car",
+        "no_car"
+      ],
+      "class_to_idx": {
+        "car": 0,
+        "no_car": 1
+      },
+      "res_width": 320,
+      "res_height": 128,
+      "crop_mode": "remove_left_keep_rest",
+      "left_crop_px": 90,
+      "source_width": 854,
+      "source_height": 280,
+      "sides": [
+        "right"
+      ],
+      "mirror_left": false,
+      "normalization_mean": [
+        0.485,
+        0.456,
+        0.406
+      ],
+      "normalization_std": [
+        0.229,
+        0.224,
+        0.225
+      ]
+    }
+  }
+}
