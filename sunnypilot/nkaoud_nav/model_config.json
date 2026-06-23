@@ -53,14 +53,24 @@
       },
       "res_width": 320,
       "res_height": 128,
-      "crop_mode": "remove_left_keep_rest",
-      "left_crop_px": 90,
       "source_width": 854,
       "source_height": 280,
       "sides": [
+        "left",
         "right"
       ],
-      "mirror_left": false,
+      "side_crops": {
+        "left": {
+          "crop_mode": "roi_abs",
+          "roi_abs": [0, 0, 764, 280],
+          "mirror": true
+        },
+        "right": {
+          "crop_mode": "roi_abs",
+          "roi_abs": [90, 0, 854, 280],
+          "mirror": false
+        }
+      },
       "normalization_mean": [
         0.485,
         0.456,
