@@ -23,6 +23,29 @@ _CAR_EDGE = rl.Color(86, 94, 102, 255)
 _GLASS = rl.Color(30, 36, 42, 225)
 
 
+def _lerp_color(a: rl.Color, b: rl.Color, t: float) -> rl.Color:
+  t = max(0.0, min(1.0, t))
+  return rl.Color(
+    int(a.r + (b.r - a.r) * t),
+    int(a.g + (b.g - a.g) * t),
+    int(a.b + (b.b - a.b) * t),
+    int(a.a + (b.a - a.a) * t),
+  )
+
+
+def _zone_color_from_p(p: float | None) -> rl.Color:
+  """Per-zone arc color driven by car-probability: solid green at 0, fades to
+  grey by 0.40, stays grey through 0.60, then fades to solid red by 1.0. p=None
+  (no signal) stays grey."""
+  if p is None:
+    return _SOFT_GREY
+  if p <= 0.4:
+    return _lerp_color(_GREEN, _SOFT_GREY, p / 0.4)
+  if p >= 0.6:
+    return _lerp_color(_SOFT_GREY, _RED, (p - 0.6) / 0.4)
+  return _SOFT_GREY
+
+
 class VisualVehicleReadout:
   def __init__(self):
     self._alpha = 0.0
@@ -403,16 +426,18 @@ class VisualVehicleReadout:
       ("rear_right", 6, 84),
       ("rear_left", 96, 174),
     ]
-    base_zone = fade(_SOFT_GREY, 0.78)
-    alert_zone = fade(_RED, 0.96)
     for name, start, end in zone_specs:
-      color = alert_zone if zones[name] else base_zone
-      rl.draw_ring(center, ring_inner, ring_outer, start + gap / 2, end - gap / 2, 40, color)
+      z = zones[name]
+      base = _zone_color_from_p(z["p"]) if z["p"] is not None else (_RED if z["blocked"] else _SOFT_GREY)
+      # Solid red/green carry higher alpha so the cue reads at a glance; grey
+      # neutral dims back to the panel's reference weight.
+      alpha_scale = 0.78 + 0.18 * max(abs((z["p"] or 0.5) - 0.5) - 0.1, 0.0) / 0.4
+      rl.draw_ring(center, ring_inner, ring_outer, start + gap / 2, end - gap / 2, 40, fade(base, alpha_scale))
 
     self._draw_car_body(center, panel.width * 0.28, panel.height * 0.58, fade)
     self._draw_zone_labels(panel, zones, fade)
 
-    active_count = sum(1 for active in zones.values() if active)
+    active_count = sum(1 for z in zones.values() if z["blocked"])
     footer = f"{active_count} BLOCKED" if active_count else "CLEAR"
     footer_color = _RED if active_count else (_AMBER if stale or reason != "ok" else _GREEN)
     rl.draw_text_ex(self._val_font, footer, rl.Vector2(int(x + 28), int(y + panel.height - 60)), 34, 0, fade(footer_color))
@@ -421,12 +446,18 @@ class VisualVehicleReadout:
   def _zone_blocked(zone: dict | None) -> bool:
     return bool((zone or {}).get("blocked", False))
 
-  def _widget_zones(self, state: dict, debug: dict) -> dict[str, bool]:
-    zones = {
-      "front_left": False,
-      "front_right": False,
-      "rear_left": False,
-      "rear_right": False,
+  @staticmethod
+  def _zone_state(zone: dict | None) -> dict:
+    z = zone or {}
+    p = z.get("p")
+    return {"blocked": bool(z.get("blocked", False)), "p": float(p) if isinstance(p, (int, float)) else None}
+
+  def _widget_zones(self, state: dict, debug: dict) -> dict[str, dict]:
+    zones: dict[str, dict] = {
+      "front_left": {"blocked": False, "p": None},
+      "front_right": {"blocked": False, "p": None},
+      "rear_left": {"blocked": False, "p": None},
+      "rear_right": {"blocked": False, "p": None},
     }
     camera = str(debug.get("camera", "") or "")
 
@@ -434,39 +465,34 @@ class VisualVehicleReadout:
       cameras = debug.get("cameras", {}) or {}
       wide_zones = {str(z.get("name")): z for z in (cameras.get("wide", {}) or {}).get("zones", []) or []}
       driver_zones = {str(z.get("name")): z for z in (cameras.get("driver", {}) or {}).get("zones", []) or []}
-      zones["front_left"] = self._zone_blocked(wide_zones.get("left"))
-      zones["front_right"] = self._zone_blocked(wide_zones.get("right"))
-      zones["rear_left"] = self._zone_blocked(driver_zones.get("left"))
-      zones["rear_right"] = self._zone_blocked(driver_zones.get("right"))
+      zones["front_left"] = self._zone_state(wide_zones.get("left"))
+      zones["front_right"] = self._zone_state(wide_zones.get("right"))
+      zones["rear_left"] = self._zone_state(driver_zones.get("left"))
+      zones["rear_right"] = self._zone_state(driver_zones.get("right"))
       return zones
 
     classifier = debug.get("classifier", {}) or {}
     classifier_zones = {str(z.get("name")): z for z in classifier.get("zones", []) or []}
     if classifier.get("active"):
-      if camera == "driver":
-        zones["rear_left"] = self._zone_blocked(classifier_zones.get("left"))
-        zones["rear_right"] = self._zone_blocked(classifier_zones.get("right"))
-        if "center" in classifier_zones:
-          blocked = self._zone_blocked(classifier_zones.get("center"))
-          zones["rear_left"] = blocked
-          zones["rear_right"] = blocked
+      front_or_rear = ("rear_left", "rear_right") if camera == "driver" else ("front_left", "front_right")
+      left_key, right_key = front_or_rear
+      if "center" in classifier_zones:
+        cz = self._zone_state(classifier_zones.get("center"))
+        zones[left_key] = cz
+        zones[right_key] = cz
       else:
-        zones["front_left"] = self._zone_blocked(classifier_zones.get("left"))
-        zones["front_right"] = self._zone_blocked(classifier_zones.get("right"))
-        if "center" in classifier_zones:
-          blocked = self._zone_blocked(classifier_zones.get("center"))
-          zones["front_left"] = blocked
-          zones["front_right"] = blocked
+        zones[left_key] = self._zone_state(classifier_zones.get("left"))
+        zones[right_key] = self._zone_state(classifier_zones.get("right"))
       return zones
 
     left = bool(state.get("left", False))
     right = bool(state.get("right", False))
     if camera == "driver":
-      zones["rear_left"] = left
-      zones["rear_right"] = right
+      zones["rear_left"] = {"blocked": left, "p": None}
+      zones["rear_right"] = {"blocked": right, "p": None}
     else:
-      zones["front_left"] = left
-      zones["front_right"] = right
+      zones["front_left"] = {"blocked": left, "p": None}
+      zones["front_right"] = {"blocked": right, "p": None}
     return zones
 
   def _draw_car_body(self, center: rl.Vector2, width: float, height: float, fade) -> None:
@@ -495,13 +521,13 @@ class VisualVehicleReadout:
     rl.draw_line_ex(rl.Vector2(body.x + width * 0.68, body.y + height * 0.16),
                     rl.Vector2(body.x + width * 0.68, body.y + height * 0.62), 2, fade(_MID_GREY))
 
-  def _draw_zone_labels(self, panel: rl.Rectangle, zones: dict[str, bool], fade) -> None:
+  def _draw_zone_labels(self, panel: rl.Rectangle, zones: dict[str, dict], fade) -> None:
     labels = [
       ("FL", zones["front_left"], panel.x + 34, panel.y + 86),
       ("FR", zones["front_right"], panel.x + panel.width - 68, panel.y + 86),
       ("RL", zones["rear_left"], panel.x + 34, panel.y + panel.height - 112),
       ("RR", zones["rear_right"], panel.x + panel.width - 68, panel.y + panel.height - 112),
     ]
-    for text, active, x, y in labels:
-      color = _RED if active else _DIM
+    for text, z, x, y in labels:
+      color = _RED if z["blocked"] else _DIM
       rl.draw_text_ex(self._cap_font, text, rl.Vector2(int(x), int(y)), 24, 0, fade(color))
