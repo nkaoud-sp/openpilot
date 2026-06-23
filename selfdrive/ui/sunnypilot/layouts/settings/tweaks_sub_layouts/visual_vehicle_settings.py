@@ -228,10 +228,12 @@ class VisualVehicleSettingsLayout(Widget):
 
   def _run_compile_classifier(self) -> None:
     try:
-      from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import CLASSIFIER_ONNX_PATH, compile_classifier_pkl
+      from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import (
+        CLASSIFIER_ONNX_PATH, compile_classifier_pkl, ensure_classifier_onnx,
+      )
       if not os.path.exists(CLASSIFIER_ONNX_PATH):
-        self._set_status("error: DM classifier ONNX is missing")
-        return
+        self._set_status("Installing DM classifier ONNX...")
+        ensure_classifier_onnx()
       self._set_status("Compiling DM Classifier PKL...")
       compile_classifier_pkl()
       self._set_status(self._load_status_message())
@@ -314,10 +316,12 @@ class VisualVehicleSettingsLayout(Widget):
 
   def _run_compile_wide_classifier(self) -> None:
     try:
-      from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import WIDE_CLASSIFIER_ONNX_PATH, compile_wide_classifier_pkl
+      from openpilot.sunnypilot.nkaoud_nav.visual_vehicle_setup import (
+        WIDE_CLASSIFIER_ONNX_PATH, compile_wide_classifier_pkl, ensure_wide_classifier_onnx,
+      )
       if not os.path.exists(WIDE_CLASSIFIER_ONNX_PATH):
-        self._set_status("error: wide classifier ONNX is missing")
-        return
+        self._set_status("Installing wide classifier ONNX...")
+        ensure_wide_classifier_onnx()
       self._set_status("Compiling Wide Classifier PKL...")
       compile_wide_classifier_pkl()
       self._set_status(self._load_status_message())
