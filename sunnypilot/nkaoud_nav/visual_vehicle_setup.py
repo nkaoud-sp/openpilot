@@ -16,6 +16,7 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LEGACY_MODEL_DIR = REPO_ROOT / "selfdrive/modeld/models"
+BUNDLED_RESOURCE_DIR = Path(__file__).resolve().parent
 MODEL_DIR = Path("/data/visual_vehicle_detector")
 ONNX_PATH = MODEL_DIR / "visual_vehicle_detector.onnx"
 PKL_PATH = MODEL_DIR / "visual_vehicle_detector_tinygrad.pkl"
@@ -35,7 +36,7 @@ STATUS_PATH = MODEL_DIR / "visual_vehicle_detector_setup_status.json"
 CLASSIFIER_ONNX_PATH = MODEL_DIR / "visual_vehicle_classifier_driver.onnx"
 CLASSIFIER_PKL_PATH = MODEL_DIR / "visual_vehicle_classifier_driver_tinygrad.pkl"
 CLASSIFIER_META_PATH = MODEL_DIR / "visual_vehicle_classifier_driver_tinygrad.json"
-DEFAULT_CLASSIFIER_URL = "https://github.com/nkaoud-sp/resources/raw/refs/heads/main/mobilenet_v3_dm_320x320.onnx"
+BUNDLED_CLASSIFIER_ONNX = BUNDLED_RESOURCE_DIR / "mobilenet_v3_dm_320x320.onnx"
 
 # Wide-camera car classifier (MobileNetV3-Small, 320x128, single-zone). Replaces
 # YOLO on the wide cam. Self-contained ONNX; the detector loads its preprocessing
@@ -43,12 +44,12 @@ DEFAULT_CLASSIFIER_URL = "https://github.com/nkaoud-sp/resources/raw/refs/heads/
 WIDE_CLASSIFIER_ONNX_PATH = MODEL_DIR / "visual_vehicle_classifier_wide.onnx"
 WIDE_CLASSIFIER_PKL_PATH = MODEL_DIR / "visual_vehicle_classifier_wide_tinygrad.pkl"
 WIDE_CLASSIFIER_META_PATH = MODEL_DIR / "visual_vehicle_classifier_wide_tinygrad.json"
-DEFAULT_WIDE_CLASSIFIER_URL = "https://github.com/nkaoud-sp/resources/raw/refs/heads/main/mobilenet_v3_wide_320x128.onnx"
+BUNDLED_WIDE_CLASSIFIER_ONNX = BUNDLED_RESOURCE_DIR / "mobilenet_v3_wide_320x128.onnx"
 
 # Combined per-camera preprocessing config (models[<camera>]); the detector reads
 # it from here.
 MODEL_CONFIG_PATH = MODEL_DIR / "model_config.json"
-DEFAULT_MODEL_CONFIG_URL = "https://github.com/nkaoud-sp/resources/raw/refs/heads/main/model_config.json"
+BUNDLED_MODEL_CONFIG = BUNDLED_RESOURCE_DIR / "model_config.json"
 
 DEFAULT_MODEL_640_URL = "https://github.com/ultralytics/yolov5/releases/download/v7.0/yolov5n.onnx"
 DEFAULT_MODEL_480_URL = "https://github.com/nkaoud-sp/resources/raw/refs/heads/main/yolov5n_480x480_v7.0.onnx"
@@ -157,22 +158,23 @@ def ensure_onnx_256() -> None:
   ensure_onnx(DEFAULT_MODEL_256_URL)
 
 
-def ensure_classifier_onnx(url: str = DEFAULT_CLASSIFIER_URL) -> None:
-  """Download the hosted driver-cam classifier ONNX to the path the detector reads."""
+def ensure_classifier_onnx() -> None:
+  """Install the bundled driver-cam classifier ONNX to the path the detector reads."""
   migrate_legacy_artifacts()
   MODEL_DIR.mkdir(parents=True, exist_ok=True)
-  if not url:
-    write_status("error", "No DM classifier URL configured.")
-    raise RuntimeError("No DM classifier URL configured")
-  write_status("downloading", "Downloading DM classifier ONNX...", url=url)
+  src = BUNDLED_CLASSIFIER_ONNX
+  if not src.exists():
+    write_status("error", f"Bundled DM classifier ONNX missing: {src}")
+    raise RuntimeError(f"Bundled DM classifier ONNX missing: {src}")
+  write_status("installing", "Installing bundled DM classifier ONNX...", src=str(src))
   try:
     if CLASSIFIER_ONNX_PATH.exists():
       CLASSIFIER_ONNX_PATH.unlink()
-    urllib.request.urlretrieve(url, CLASSIFIER_ONNX_PATH)
-    write_status("downloaded", "DM classifier ONNX download complete.", url=url,
+    shutil.copyfile(src, CLASSIFIER_ONNX_PATH)
+    write_status("installed", "DM classifier ONNX install complete.", src=str(src),
                  classifier_onnx_mb=_size_mb(CLASSIFIER_ONNX_PATH))
   except Exception as e:
-    write_status("error", f"classifier download failed: {e}", url=url)
+    write_status("error", f"classifier install failed: {e}", src=str(src))
     raise
 
 
@@ -207,41 +209,43 @@ def compile_classifier_pkl(warmup: int = 2) -> None:
               pkl_path=CLASSIFIER_PKL_PATH, meta_path=CLASSIFIER_META_PATH, label="DM Classifier PKL")
 
 
-def ensure_model_config(url: str = DEFAULT_MODEL_CONFIG_URL) -> None:
-  """Download the combined per-camera preprocessing config (models[<camera>])."""
+def ensure_model_config() -> None:
+  """Install the bundled combined per-camera preprocessing config (models[<camera>])."""
   migrate_legacy_artifacts()
   MODEL_DIR.mkdir(parents=True, exist_ok=True)
-  if not url:
-    write_status("error", "No model_config URL configured.")
-    raise RuntimeError("No model_config URL configured")
-  write_status("downloading", "Downloading model_config.json...", url=url)
+  src = BUNDLED_MODEL_CONFIG
+  if not src.exists():
+    write_status("error", f"Bundled model_config.json missing: {src}")
+    raise RuntimeError(f"Bundled model_config.json missing: {src}")
+  write_status("installing", "Installing bundled model_config.json...", src=str(src))
   try:
     if MODEL_CONFIG_PATH.exists():
       MODEL_CONFIG_PATH.unlink()
-    urllib.request.urlretrieve(url, MODEL_CONFIG_PATH)
-    write_status("downloaded", "model_config.json download complete.", url=url)
+    shutil.copyfile(src, MODEL_CONFIG_PATH)
+    write_status("installed", "model_config.json install complete.", src=str(src))
   except Exception as e:
-    write_status("error", f"model_config download failed: {e}", url=url)
+    write_status("error", f"model_config install failed: {e}", src=str(src))
     raise
 
 
-def ensure_wide_classifier_onnx(url: str = DEFAULT_WIDE_CLASSIFIER_URL) -> None:
-  """Download the hosted wide-cam classifier ONNX, plus the combined config it
+def ensure_wide_classifier_onnx() -> None:
+  """Install the bundled wide-cam classifier ONNX, plus the combined config it
   needs (best-effort)."""
   migrate_legacy_artifacts()
   MODEL_DIR.mkdir(parents=True, exist_ok=True)
-  if not url:
-    write_status("error", "No wide classifier URL configured.")
-    raise RuntimeError("No wide classifier URL configured")
-  write_status("downloading", "Downloading wide classifier ONNX...", url=url)
+  src = BUNDLED_WIDE_CLASSIFIER_ONNX
+  if not src.exists():
+    write_status("error", f"Bundled wide classifier ONNX missing: {src}")
+    raise RuntimeError(f"Bundled wide classifier ONNX missing: {src}")
+  write_status("installing", "Installing bundled wide classifier ONNX...", src=str(src))
   try:
     if WIDE_CLASSIFIER_ONNX_PATH.exists():
       WIDE_CLASSIFIER_ONNX_PATH.unlink()
-    urllib.request.urlretrieve(url, WIDE_CLASSIFIER_ONNX_PATH)
-    write_status("downloaded", "Wide classifier ONNX download complete.", url=url,
+    shutil.copyfile(src, WIDE_CLASSIFIER_ONNX_PATH)
+    write_status("installed", "Wide classifier ONNX install complete.", src=str(src),
                  wide_classifier_onnx_mb=_size_mb(WIDE_CLASSIFIER_ONNX_PATH))
   except Exception as e:
-    write_status("error", f"wide classifier download failed: {e}", url=url)
+    write_status("error", f"wide classifier install failed: {e}", src=str(src))
     raise
   try:
     ensure_model_config()
