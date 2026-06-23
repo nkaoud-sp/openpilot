@@ -114,11 +114,24 @@ DEFAULT_WIDE_CLASSIFIER_ONNX_PATH = str(ARTIFACT_DIR / "visual_vehicle_classifie
 
 
 @dataclass
+class SideRecipe:
+  """Per-side preprocessing overrides. When a ClassifierRecipe carries a
+  side_crops mapping, the detector reads the side's entry to pick the crop and
+  mirror for that side -- overriding the top-level recipe fields. Missing keys
+  in the JSON inherit from the top-level recipe at parse time."""
+  crop_mode: str
+  roi_frac: tuple[float, float, float, float]
+  left_crop_px: int
+  mirror: bool
+
+
+@dataclass
 class ClassifierRecipe:
   """Per-model preprocessing recipe. crop_mode is either 'roi_inset' (cut a fixed
   inner ROI, as the driver model wants) or 'remove_left_keep_rest' (chop N px off
   the left, as the wide model wants). sides drives left/right alternation
-  ('left','right') vs a single forward bit ('center')."""
+  ('left','right') vs a single forward bit ('center'). side_crops, when present,
+  overrides crop_mode/roi_frac/left_crop_px/mirror per side."""
   res_w: int
   res_h: int
   crop_mode: str
@@ -131,6 +144,7 @@ class ClassifierRecipe:
   mean: np.ndarray
   std: np.ndarray
   pos_index: int
+  side_crops: dict[str, SideRecipe] | None = None
 
 
 DEFAULT_RECIPES = {
@@ -169,13 +183,34 @@ def load_classifier_recipe(camera: str) -> ClassifierRecipe:
     roi_frac = base.roi_frac
   sides = tuple(str(s) for s in m.get("sides", base.sides)) or base.sides
   car_idx = (m.get("class_to_idx", {}) or {}).get("car")
+  crop_mode = str(m.get("crop_mode", base.crop_mode))
+  left_crop_px = int(m.get("left_crop_px", base.left_crop_px))
+  raw_side_crops = m.get("side_crops")
+  side_crops: dict[str, SideRecipe] | None = None
+  if isinstance(raw_side_crops, dict):
+    side_crops = {}
+    for s, sm in raw_side_crops.items():
+      if not isinstance(sm, dict):
+        continue
+      s_roi = sm.get("roi_abs")
+      if isinstance(s_roi, (list, tuple)) and len(s_roi) == 4 and src_w > 0 and src_h > 0:
+        s_roi_frac = (s_roi[0] / src_w, s_roi[1] / src_h, s_roi[2] / src_w, s_roi[3] / src_h)
+      else:
+        s_roi_frac = roi_frac
+      side_crops[str(s)] = SideRecipe(
+        crop_mode=str(sm.get("crop_mode", crop_mode)),
+        roi_frac=s_roi_frac,
+        left_crop_px=int(sm.get("left_crop_px", left_crop_px)),
+        mirror=bool(sm.get("mirror", False)),
+      )
   return ClassifierRecipe(
-    res_w=res_w, res_h=res_h, crop_mode=str(m.get("crop_mode", base.crop_mode)),
-    roi_frac=roi_frac, left_crop_px=int(m.get("left_crop_px", base.left_crop_px)),
+    res_w=res_w, res_h=res_h, crop_mode=crop_mode,
+    roi_frac=roi_frac, left_crop_px=left_crop_px,
     src_w=src_w, src_h=src_h, sides=sides, mirror_left=bool(m.get("mirror_left", base.mirror_left)),
     mean=np.array(m.get("normalization_mean", base.mean.tolist()), dtype=np.float32),
     std=np.array(m.get("normalization_std", base.std.tolist()), dtype=np.float32),
-    pos_index=int(car_idx) if car_idx is not None else base.pos_index)
+    pos_index=int(car_idx) if car_idx is not None else base.pos_index,
+    side_crops=side_crops)
 
 # COCO class IDs from Ultralytics YOLO exports.
 VEHICLE_CLASS_IDS = {1, 2, 3, 5, 7}  # bicycle, car, motorcycle, bus, truck
@@ -984,17 +1019,23 @@ class VisualVehicleDetector:
       return False
 
   def _preprocess_classifier(self, detector_rgb: np.ndarray,
-                             recipe: ClassifierRecipe) -> tuple[np.ndarray, dict[str, int], np.ndarray]:
+                             recipe: ClassifierRecipe,
+                             side: str | None = None) -> tuple[np.ndarray, dict[str, int], np.ndarray]:
     """Reproduce the model's training preprocessing, driven by its recipe:
     cut the region (roi_inset = fixed inner ROI; remove_left_keep_rest = chop N px
     off the left), bilinear-resize to res_w x res_h, normalize, NCHW. Verified
-    byte-identical to the per-model training preprocess for both models."""
+    byte-identical to the per-model training preprocess for both models. If the
+    recipe carries side_crops for the current side, its crop overrides apply."""
     h, w = detector_rgb.shape[:2]
-    if recipe.crop_mode == "remove_left_keep_rest":
-      x1 = int(np.clip(recipe.left_crop_px, 0, w - 1))
+    side_cfg = recipe.side_crops.get(side) if (recipe.side_crops and side) else None
+    crop_mode = side_cfg.crop_mode if side_cfg else recipe.crop_mode
+    roi_frac = side_cfg.roi_frac if side_cfg else recipe.roi_frac
+    left_crop_px = side_cfg.left_crop_px if side_cfg else recipe.left_crop_px
+    if crop_mode == "remove_left_keep_rest":
+      x1 = int(np.clip(left_crop_px, 0, w - 1))
       y1, x2, y2 = 0, w, h
     else:  # roi_inset
-      fx1, fy1, fx2, fy2 = recipe.roi_frac
+      fx1, fy1, fx2, fy2 = roi_frac
       x1 = int(np.clip(round(fx1 * w), 0, w - 1))
       y1 = int(np.clip(round(fy1 * h), 0, h - 1))
       x2 = int(np.clip(round(fx2 * w), x1 + 1, w))
@@ -1076,7 +1117,7 @@ class VisualVehicleDetector:
                                           "allow_onnx": self.params.get_bool("VisualVehicleDetectorAllowOnnx")}}
     try:
       t0 = time.monotonic()
-      inp, roi, model_input = self._preprocess_classifier(detector_rgb, recipe)
+      inp, roi, model_input = self._preprocess_classifier(detector_rgb, recipe, side)
       self.last_timing["preprocess_ms"] = round((time.monotonic() - t0) * 1000.0, 1)
       t0 = time.monotonic()
       p_car = self._run_classifier(inp, recipe.pos_index)
@@ -1109,7 +1150,9 @@ class VisualVehicleDetector:
       "roi": [roi["roi_x1"], roi["roi_y1"], roi["roi_x2"], roi["roi_y2"]],
       "src_crop": [int(detector_rgb.shape[1]), int(detector_rgb.shape[0])],
       "expected_src": [recipe.src_w, recipe.src_h],
-      "crop_mode": recipe.crop_mode,
+      "crop_mode": (recipe.side_crops[side].crop_mode
+                    if (recipe.side_crops and side and side in recipe.side_crops)
+                    else recipe.crop_mode),
       "norm": CLASSIFIER_NORM,
       "pos_index": recipe.pos_index,
     }
@@ -1767,13 +1810,17 @@ class VisualVehicleDetector:
     frame_w, frame_h = int(buf.width), int(buf.height)
     rect = self._crop_rect(frame_w, frame_h)
     crop_debug = self._crop_debug(frame_w, frame_h, rect)
-    # The driver cam is a selfie, so base mirror un-mirrors it. For the LEFT zone,
-    # mirror_left toggles the read so the same crop yields the opposite lane in
-    # right-looking orientation -- works for the driver's selfie symmetry and the
-    # wide cam's road symmetry alike.
+    # The driver cam is a selfie, so base mirror un-mirrors it. Per-side mirror
+    # then XORs on top: side_crops[side].mirror when present (new schema), else
+    # the legacy mirror_left flag (toggles only on the LEFT zone).
     mirror = camera == "driver"
-    if recipe is not None and side == "left" and recipe.mirror_left:
-      mirror = not mirror
+    if recipe is not None:
+      side_cfg = recipe.side_crops.get(side) if (recipe.side_crops and side) else None
+      if side_cfg is not None:
+        if side_cfg.mirror:
+          mirror = not mirror
+      elif side == "left" and recipe.mirror_left:
+        mirror = not mirror
     # Extracting + converting the whole ~2MP frame every tick is the bottleneck,
     # and the model only sees the crop, so read just the crop's bytes from the
     # NV12 buffer on the hot path. A portal preview needs the whole oriented
