@@ -173,6 +173,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LaunchEagerness", {PERSISTENT | BACKUP, INT, "5"}},         // 1..10; higher launches with less lead movement
     {"LaunchReadout", {PERSISTENT | BACKUP, BOOL, "0"}},          // on-screen launch-assist readout
     {"LanePositionIndicator", {PERSISTENT | BACKUP, BOOL, "0"}},  // on-screen lane-position indicator (squares + confidence border)
+    {"LaneEdgeFilterMode", {PERSISTENT | BACKUP, INT, "0"}},      // edge-lane blocking filter: 0=None 1=Width 2=Separation 3=Both(AND) 4=Both(OR)
     {"VisualVehicleDetector", {PERSISTENT | BACKUP, BOOL, "0"}},       // standalone visual detector process for UI/debug validation
     {"VisualVehicleDetectorReadout", {PERSISTENT | BACKUP, BOOL, "0"}}, // large on-road readout for detector status/debug
     {"VisualVehicleDetectorCarWidget", {PERSISTENT | BACKUP, BOOL, "0"}}, // replace the readout panels with a top-down car widget

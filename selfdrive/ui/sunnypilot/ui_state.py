@@ -140,6 +140,7 @@ class UIStateSP:
     self.jerk_factor_accel = self.params.get("JerkFactorAccel", return_default=True) / 100.0
     self.jerk_factor_decel = self.params.get("JerkFactorDecel", return_default=True) / 100.0
     self.lane_position_indicator = self.params.get_bool("LanePositionIndicator")
+    self.lane_edge_filter_mode = self.params.get("LaneEdgeFilterMode", return_default=True)
     self.visual_vehicle_detector_readout = self.params.get_bool("VisualVehicleDetectorReadout")
     self.visual_vehicle_detector_car_widget = self.params.get_bool("VisualVehicleDetectorCarWidget")
     self.launch_readout = self.params.get_bool("LaunchReadout")

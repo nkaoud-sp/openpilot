@@ -9,6 +9,7 @@ from enum import IntEnum
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.auto_lock_settings import AutoLockSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.dynamic_follow_settings import DynamicFollowSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.jerk_settings import JerkSettingsLayout
+from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.lane_position_settings import LanePositionSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.launch_assist_settings import LaunchAssistSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.nav_settings import NavSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.park_assist_settings import ParkAssistSettingsLayout
@@ -28,6 +29,7 @@ class PanelType(IntEnum):
   PARK = 5
   NAVIGATION = 6
   VISUAL_VEHICLE = 7
+  LANE_POSITION = 8
 
 
 class TweaksLayout(Widget):
@@ -42,6 +44,7 @@ class TweaksLayout(Widget):
     self._park_layout = ParkAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._navigation_layout = NavSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._visual_vehicle_layout = VisualVehicleSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
+    self._lane_position_layout = LanePositionSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
 
     items = self._initialize_items()
     self._scroller = Scroller(items, line_separator=True, spacing=0)
@@ -132,6 +135,11 @@ class TweaksLayout(Widget):
                             "confidence: green = high, amber = medium, red = low."),
       param="LanePositionIndicator",
     )
+    self._lane_position_button = simple_button_item_sp(
+      button_text=lambda: tr("Manage Lane Position Settings"),
+      button_width=800,
+      callback=lambda: self._set_current_panel(PanelType.LANE_POSITION),
+    )
 
     # Standalone visual adjacent-vehicle detector. UI/debug only; no controls integration.
     self._visual_vehicle_detector = toggle_item_sp(
@@ -174,6 +182,7 @@ class TweaksLayout(Widget):
       self._park_assist,
       self._park_assist_button,
       self._lane_position_indicator,
+      self._lane_position_button,
       self._visual_vehicle_detector,
       self._visual_vehicle_button,
       self._navigation,
@@ -196,6 +205,8 @@ class TweaksLayout(Widget):
       self._navigation_layout.render(rect)
     elif self._current_panel == PanelType.VISUAL_VEHICLE:
       self._visual_vehicle_layout.render(rect)
+    elif self._current_panel == PanelType.LANE_POSITION:
+      self._lane_position_layout.render(rect)
     else:
       self._scroller.render(rect)
 
@@ -219,6 +230,8 @@ class TweaksLayout(Widget):
       self._navigation_layout.show_event()
     elif panel == PanelType.VISUAL_VEHICLE:
       self._visual_vehicle_layout.show_event()
+    elif panel == PanelType.LANE_POSITION:
+      self._lane_position_layout.show_event()
 
   def _update_state(self):
     super()._update_state()

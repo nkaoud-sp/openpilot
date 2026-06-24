@@ -50,7 +50,8 @@ class LanePositionIndicator:
       self._alpha = 0.0
       return
 
-    current, total, conf = self._estimator.update(sm['modelV2'])
+    filter_mode = int(ui_state.lane_edge_filter_mode or 0)
+    current, total, conf = self._estimator.update(sm['modelV2'], filter_mode=filter_mode)
     self._update_alpha(total > 0)
     if self._alpha <= 0.0 or total <= 0:
       return
