@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from openpilot.sunnypilot.selfdrive.controls.lib.lane_position import (
   LanePositionEstimator,
+  EDGE_BLOCK_COUNTER_MAX,
   FILTER_MODE_NONE,
   FILTER_MODE_WIDTH,
   FILTER_MODE_SEPARATION,
@@ -130,6 +131,59 @@ def test_both_or_blocks_on_separation_alone():
   assert (current, total) == (2, 2)
   assert est.debug.blocked_left is True
   assert est.debug.blocked_right is True
+
+
+def test_block_does_not_chatter_when_vote_toggles_each_frame():
+  # Drive the counter up to the ON threshold (3), then alternate True/False every frame.
+  # With symmetric +1/-1 the counter oscillates 3<->2 around the threshold; the asymmetric
+  # OFF latch must keep `blocked_right` stuck True until the counter actually falls to <=1.
+  est = LanePositionEstimator()
+  blocking_model = make_model(
+    dist_left=9.25,
+    dist_right=5.55,
+    lane_ys=(-5.4, -1.8, 1.8, 3.8),
+    lane_probs=(0.1, 0.95, 0.95, 0.1),
+  )
+  clean_model = make_model(
+    dist_left=9.25,
+    dist_right=5.55,
+    lane_ys=(-5.4, -1.8, 1.8, 5.4),
+    lane_probs=(0.95, 0.95, 0.95, 0.95),
+  )
+
+  # Engage the block.
+  for _ in range(3):
+    est.update(blocking_model, filter_mode=FILTER_MODE_WIDTH)
+  assert est.debug.blocked_right is True
+
+  # Now alternate blocking/clean frames. blocked_right must stay True the whole way.
+  for i in range(8):
+    est.update(blocking_model if i % 2 == 0 else clean_model, filter_mode=FILTER_MODE_WIDTH)
+    assert est.debug.blocked_right is True, f"flipped off at frame {i}"
+
+
+def test_block_releases_after_sustained_clean_run():
+  est = LanePositionEstimator()
+  blocking_model = make_model(
+    dist_left=9.25,
+    dist_right=5.55,
+    lane_ys=(-5.4, -1.8, 1.8, 3.8),
+    lane_probs=(0.1, 0.95, 0.95, 0.1),
+  )
+  clean_model = make_model(
+    dist_left=9.25,
+    dist_right=5.55,
+    lane_ys=(-5.4, -1.8, 1.8, 5.4),
+    lane_probs=(0.95, 0.95, 0.95, 0.95),
+  )
+  for _ in range(EDGE_BLOCK_COUNTER_MAX):
+    est.update(blocking_model, filter_mode=FILTER_MODE_WIDTH)
+  assert est.debug.blocked_right is True
+
+  # Counter starts at MAX=6, needs to fall to <= OFF=1 -> 5 clean frames.
+  for _ in range(5):
+    est.update(clean_model, filter_mode=FILTER_MODE_WIDTH)
+  assert est.debug.blocked_right is False
 
 
 def test_width_only_ignores_separation_signal():

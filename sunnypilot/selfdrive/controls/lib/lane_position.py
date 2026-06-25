@@ -46,6 +46,7 @@ LANE_LINE_PROB_STRONG = 0.6
 LANE_LINE_PROB_WEAK = 0.35
 EDGE_LANE_NARROW_RATIO = 0.8
 EDGE_BLOCK_COUNTER_ON = 3
+EDGE_BLOCK_COUNTER_OFF = 1
 EDGE_BLOCK_COUNTER_MAX = 6
 
 # Filter modes
@@ -119,6 +120,8 @@ class LanePositionEstimator:
     self._last_current = 0
     self._left_block_counter = 0
     self._right_block_counter = 0
+    self._left_blocked = False
+    self._right_blocked = False
     self._debug = LanePositionDebug()
 
   @property
@@ -136,6 +139,15 @@ class LanePositionEstimator:
     if vote:
       return min(EDGE_BLOCK_COUNTER_MAX, counter + 1)
     return max(0, counter - 1)
+
+  @staticmethod
+  def _latch_block(was_blocked: bool, counter: int) -> bool:
+    # Asymmetric thresholds: engage at >= ON, release only at <= OFF.
+    # Anything between OFF+1 and ON-1 keeps the previous state, so a vote
+    # that twitches True/False each frame around counter=ON cannot chatter.
+    if was_blocked:
+      return counter > EDGE_BLOCK_COUNTER_OFF
+    return counter >= EDGE_BLOCK_COUNTER_ON
 
   def update(self, modelV2, max_lanes: int = LANE_POSITION_MAX_LANES, filter_mode: int = FILTER_MODE_NONE):
     road_edges = list(modelV2.roadEdges)
@@ -156,6 +168,8 @@ class LanePositionEstimator:
       self._last_current = 0
       self._left_block_counter = 0
       self._right_block_counter = 0
+      self._left_blocked = False
+      self._right_blocked = False
       self._debug = LanePositionDebug(confidence="low")
       return 0, 0, "low"
 
@@ -186,6 +200,8 @@ class LanePositionEstimator:
     if filter_mode == FILTER_MODE_NONE:
       self._left_block_counter = 0
       self._right_block_counter = 0
+      self._left_blocked = False
+      self._right_blocked = False
       self._debug = LanePositionDebug(
         raw_current_lane=current_lane,
         raw_total_lanes=total_lanes,
@@ -248,8 +264,10 @@ class LanePositionEstimator:
     self._left_block_counter = self._update_block_counter(self._left_block_counter, left_candidate)
     self._right_block_counter = self._update_block_counter(self._right_block_counter, right_candidate)
 
-    blocked_left = self._left_block_counter >= EDGE_BLOCK_COUNTER_ON
-    blocked_right = self._right_block_counter >= EDGE_BLOCK_COUNTER_ON
+    self._left_blocked = self._latch_block(self._left_blocked, self._left_block_counter)
+    self._right_blocked = self._latch_block(self._right_blocked, self._right_block_counter)
+    blocked_left = self._left_blocked
+    blocked_right = self._right_blocked
 
     usable_total = max(1, total_lanes - int(blocked_left) - int(blocked_right))
     usable_current = current_lane - int(blocked_left)
