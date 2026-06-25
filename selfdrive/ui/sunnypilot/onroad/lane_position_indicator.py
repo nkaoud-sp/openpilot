@@ -21,6 +21,7 @@ _BOTTOM_MARGIN = 16  # gap (px) between this widget's bottom and the follow read
 _BG = rl.Color(0, 0, 0, 130)
 _FILL_FG = rl.Color(255, 255, 255, 255)
 _EMPTY_FG = rl.Color(255, 255, 255, 100)
+_BLOCK_FG = rl.Color(255, 110, 70, 235)  # diagonal strike on filter-blocked edge lanes
 
 # Border colour by confidence
 _CONF_COLORS = {
@@ -56,9 +57,16 @@ class LanePositionIndicator:
     if self._alpha <= 0.0 or total <= 0:
       return
 
-    self._render(rect, current, total, conf)
+    debug = self._estimator.debug
+    # Render the raw lane grid so a demoted edge stays visible (struck through);
+    # when no edge is blocked, raw_* == usable_* and the widget is identical to base.
+    display_total = max(debug.raw_total_lanes, total)
+    display_current = debug.raw_current_lane if debug.raw_current_lane > 0 else current
+    self._render(rect, display_current, display_total, conf,
+                 debug.blocked_left, debug.blocked_right)
 
-  def _render(self, rect: rl.Rectangle, current: int, total: int, conf: str):
+  def _render(self, rect: rl.Rectangle, current: int, total: int, conf: str,
+              blocked_left: bool = False, blocked_right: bool = False):
     a = self._alpha
 
     def fade(c: rl.Color) -> rl.Color:
@@ -85,11 +93,19 @@ class LanePositionIndicator:
     sq_x0 = x + _BORDER + _INNER_PAD
     for i in range(total):
       sx = sq_x0 + i * (_SQ + _SQ_GAP)
+      is_blocked = (i == 0 and blocked_left) or (i == total - 1 and blocked_right)
       if (i + 1) == current:
         # filled square
         rl.draw_rectangle_rounded(rl.Rectangle(sx, sq_y, _SQ, _SQ), 0.2, 6, fade(_FILL_FG))
       else:
         # empty square (outline only)
+        outline = _BLOCK_FG if is_blocked else _EMPTY_FG
         rl.draw_rectangle_rounded_lines_ex(
-          rl.Rectangle(sx, sq_y, _SQ, _SQ), 0.2, 6, 2, fade(_EMPTY_FG)
+          rl.Rectangle(sx, sq_y, _SQ, _SQ), 0.2, 6, 2, fade(outline)
+        )
+      if is_blocked:
+        rl.draw_line_ex(
+          rl.Vector2(sx + 4, sq_y + _SQ - 4),
+          rl.Vector2(sx + _SQ - 4, sq_y + 4),
+          3, fade(_BLOCK_FG),
         )
