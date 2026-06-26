@@ -15,6 +15,7 @@ from openpilot.selfdrive.ui.sunnypilot.onroad.nav_button import NavButton
 from openpilot.selfdrive.ui.sunnypilot.onroad.visual_vehicle_capture_button import VisualVehicleCaptureButton
 from openpilot.selfdrive.ui.sunnypilot.onroad.nav_lane_guidance import NavLaneGuidance
 from openpilot.selfdrive.ui.sunnypilot.onroad.nav_maneuver_banner import NavManeuverBanner
+from openpilot.selfdrive.ui.sunnypilot.onroad.nav_turn_arrow import NavTurnArrow
 from openpilot.selfdrive.ui.sunnypilot.onroad.road_name import RoadNameRenderer
 from openpilot.selfdrive.ui.sunnypilot.onroad.rocket_fuel import RocketFuel
 from openpilot.selfdrive.ui.sunnypilot.onroad.speed_limit import SpeedLimitRenderer
@@ -47,6 +48,7 @@ class HudRendererSP(HudRenderer):
     self._capture_button = VisualVehicleCaptureButton(UI_CONFIG.button_size)
     self._nav_maneuver_banner = NavManeuverBanner()
     self._nav_lane_guidance = NavLaneGuidance()
+    self._nav_turn_arrow = NavTurnArrow()
 
     self.pcm_cruise_speed: bool = True
     self.show_icbm_status: bool = False
@@ -172,6 +174,7 @@ class HudRendererSP(HudRenderer):
     # Maneuver banner: top-center, drawn last so it sits above everything else.
     self._nav_maneuver_banner.render(rect)
     self._nav_lane_guidance.render(rect)
+    self._nav_turn_arrow.render(rect)
 
   def user_interacting(self) -> bool:
     return super().user_interacting() or self._nav_button.is_pressed or self._capture_button.is_pressed
