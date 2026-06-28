@@ -82,11 +82,20 @@ class NavSettingsLayout(Widget):
       param="NkaoudNavControlSteer",
     )
     self._highway_default = toggle_item_sp(
-      title=lambda: tr("Highway Center Lane Default"),
-      description=lambda: tr("When cruising on a motorway with no imminent maneuver, nudge toward the center lane " +
-                            "using a conservative lane keep. Suppressed if you manually blinker on the highway; " +
+      title=lambda: tr("Highway Lane Default"),
+      description=lambda: tr("When cruising on a motorway with no imminent maneuver, nudge toward the preferred " +
+                            "lane using a conservative lane keep. Suppressed if you manually blinker on the highway; " +
                             "automatically re-enabled when the next navigation command fires."),
       param="NkaoudNavHighwayDefault",
+    )
+    self._highway_lane_pref = multiple_button_item_sp(
+      title=lambda: tr("Highway Lane Preference"),
+      description=lambda: tr("Which lane to target on motorways when no maneuver is imminent. " +
+                            "Rightmost = slow/right lane. Center = middle lane. Leftmost = passing lane. " +
+                            "Only active when Highway Lane Default is enabled."),
+      buttons=[lambda: tr("Rightmost"), lambda: tr("Center"), lambda: tr("Leftmost")],
+      param="NkaoudNavHighwayLanePref",
+      button_width=330,
     )
     self._turn_tolerance = multiple_button_item_sp(
       title=lambda: tr("Turn Speed Tolerance"),
@@ -119,6 +128,7 @@ class NavSettingsLayout(Widget):
       self._max_lat_accel,
       self._control_steer,
       self._highway_default,
+      self._highway_lane_pref,
     ]
     return items
 
