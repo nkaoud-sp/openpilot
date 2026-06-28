@@ -8,22 +8,14 @@ LaneChangeState = log.LaneChangeState
 LaneChangeDirection = log.LaneChangeDirection
 TurnDirection = custom.ModelDataV2SP.TurnDirection
 
-# nkaoud_nav: map our NavDesire enum onto the upstream log.Desire. Keys are
-# the string names (pycapnp returns _EnumValueProxy objects on read that
-# don't hash the same way as the schema constants used at write time, so
-# we normalize via str()). The laneChange* values are NOT used here as a
-# direct desire override -- they kick the LaneChangeState machine and let
-# its existing logic produce the right desire as the lane change executes.
+# nkaoud_nav v2: nav only ever sends keep*/turn* desires — never laneChange*.
+# Driver blinker is the only path into the LaneChangeState machine.
 NAV_DESIRE_MAP = {
-  "none": log.Desire.none,
-  "turnLeft": log.Desire.turnLeft,
-  "turnRight": log.Desire.turnRight,
-  "keepLeft": log.Desire.keepLeft,
-  "keepRight": log.Desire.keepRight,
-}
-NAV_LANE_CHANGE_DIRS = {
-  "laneChangeLeft": LaneChangeDirection.left,
-  "laneChangeRight": LaneChangeDirection.right,
+  "none":       log.Desire.none,
+  "turnLeft":   log.Desire.turnLeft,
+  "turnRight":  log.Desire.turnRight,
+  "keepLeft":   log.Desire.keepLeft,
+  "keepRight":  log.Desire.keepRight,
 }
 
 LANE_CHANGE_SPEED_MIN = 20 * CV.MPH_TO_MS
@@ -81,75 +73,65 @@ class DesireHelper:
     one_blinker = carstate.leftBlinker != carstate.rightBlinker
     below_lane_change_speed = v_ego < LANE_CHANGE_SPEED_MIN
 
-    # nkaoud_nav: is the route asking for an active lane change right now?
-    nav_name_pre = str(nav_desire)
-    nav_lc_dir = NAV_LANE_CHANGE_DIRS.get(nav_name_pre, LaneChangeDirection.none)
-    nav_requesting_lc = nav_lc_dir != LaneChangeDirection.none
-
-    # Lane turn controller update
-    self.lane_turn_controller.update_lane_turn(blindspot_left=carstate.leftBlindspot, blindspot_right=carstate.rightBlindspot,
-                                               left_blinker=carstate.leftBlinker, right_blinker=carstate.rightBlinker, v_ego=v_ego)
+    # Lane turn controller (model-based turn cues from road geometry)
+    self.lane_turn_controller.update_lane_turn(
+      blindspot_left=carstate.leftBlindspot,
+      blindspot_right=carstate.rightBlindspot,
+      left_blinker=carstate.leftBlinker,
+      right_blinker=carstate.rightBlinker,
+      v_ego=v_ego,
+    )
     self.lane_turn_direction = self.lane_turn_controller.get_turn_direction()
 
+    # -------------------------------------------------------------------------
+    # Lane change state machine — driver-initiated only.
+    # Nav v2 never drives this machine directly; it only sends keep*/turn*
+    # desires which are applied as an override at the bottom of this method.
+    # -------------------------------------------------------------------------
     if not lateral_active or self.lane_change_timer > LANE_CHANGE_TIME_MAX or self.alc.lane_change_set_timer == AutoLaneChangeMode.OFF:
       self.lane_change_state = LaneChangeState.off
       self.lane_change_direction = LaneChangeDirection.none
+
     else:
-      # LaneChangeState.off -- enter on driver blinker or nav request.
       if self.lane_change_state == LaneChangeState.off:
-        driver_kicked = one_blinker and not self.prev_one_blinker
-        if (driver_kicked or nav_requesting_lc) and not below_lane_change_speed:
+        # Enter preLaneChange on a fresh driver blinker flick only.
+        if one_blinker and not self.prev_one_blinker and not below_lane_change_speed:
           self.lane_change_state = LaneChangeState.preLaneChange
           self.lane_change_ll_prob = 1.0
-          # Initialize lane change direction (nav wins if both are active)
-          self.lane_change_direction = nav_lc_dir if nav_requesting_lc else self.get_lane_change_direction(carstate)
-
-      # LaneChangeState.preLaneChange
-      elif self.lane_change_state == LaneChangeState.preLaneChange:
-        # Direction: nav request takes precedence (it doesn't toggle blinkers).
-        if nav_requesting_lc:
-          self.lane_change_direction = nav_lc_dir
-        else:
           self.lane_change_direction = self.get_lane_change_direction(carstate)
 
-        torque_applied = carstate.steeringPressed and \
-                         ((carstate.steeringTorque > 0 and self.lane_change_direction == LaneChangeDirection.left) or
-                          (carstate.steeringTorque < 0 and self.lane_change_direction == LaneChangeDirection.right))
+      elif self.lane_change_state == LaneChangeState.preLaneChange:
+        self.lane_change_direction = self.get_lane_change_direction(carstate)
 
-        blindspot_detected = ((carstate.leftBlindspot and self.lane_change_direction == LaneChangeDirection.left) or
-                              (carstate.rightBlindspot and self.lane_change_direction == LaneChangeDirection.right))
+        torque_applied = (
+          carstate.steeringPressed and (
+            (carstate.steeringTorque > 0 and self.lane_change_direction == LaneChangeDirection.left) or
+            (carstate.steeringTorque < 0 and self.lane_change_direction == LaneChangeDirection.right)
+          )
+        )
+        blindspot_detected = (
+          (carstate.leftBlindspot and self.lane_change_direction == LaneChangeDirection.left) or
+          (carstate.rightBlindspot and self.lane_change_direction == LaneChangeDirection.right)
+        )
 
         self.alc.update_lane_change(blindspot_detected, carstate.brakePressed)
 
-        # Exit only when neither driver nor nav is asking, or speed dropped.
-        if ((not one_blinker and not nav_requesting_lc) or below_lane_change_speed):
+        if not one_blinker or below_lane_change_speed:
           self.lane_change_state = LaneChangeState.off
           self.lane_change_direction = LaneChangeDirection.none
-        elif (torque_applied or self.alc.auto_lane_change_allowed or nav_requesting_lc) and not blindspot_detected:
-          # Nav-requested lane changes advance as soon as BSM is clear,
-          # respecting the alc timer the user set via their own settings.
+        elif (torque_applied or self.alc.auto_lane_change_allowed) and not blindspot_detected:
           self.lane_change_state = LaneChangeState.laneChangeStarting
 
-      # LaneChangeState.laneChangeStarting
       elif self.lane_change_state == LaneChangeState.laneChangeStarting:
-        # fade out over .5s
         self.lane_change_ll_prob = max(self.lane_change_ll_prob - 2 * DT_MDL, 0.0)
-
-        # 98% certainty
         if lane_change_prob < 0.02 and self.lane_change_ll_prob < 0.01:
           self.lane_change_state = LaneChangeState.laneChangeFinishing
 
-      # LaneChangeState.laneChangeFinishing
       elif self.lane_change_state == LaneChangeState.laneChangeFinishing:
-        # fade in laneline over 1s
         self.lane_change_ll_prob = min(self.lane_change_ll_prob + DT_MDL, 1.0)
-
         if self.lane_change_ll_prob > 0.99:
           self.lane_change_direction = LaneChangeDirection.none
-          if one_blinker:
-            self.lane_change_state = LaneChangeState.preLaneChange
-          else:
-            self.lane_change_state = LaneChangeState.off
+          self.lane_change_state = LaneChangeState.preLaneChange if one_blinker else LaneChangeState.off
 
     if self.lane_change_state in (LaneChangeState.off, LaneChangeState.preLaneChange):
       self.lane_change_timer = 0.0
@@ -158,22 +140,36 @@ class DesireHelper:
 
     self.prev_one_blinker = one_blinker
 
+    # -------------------------------------------------------------------------
+    # Base desire: lane turn controller > driver lane change machine
+    # -------------------------------------------------------------------------
     if self.lane_turn_direction != TurnDirection.none:
       self.desire = TURN_DESIRES[self.lane_turn_direction]
     else:
       self.desire = DESIRES[self.lane_change_direction][self.lane_change_state]
 
-    # nkaoud_nav: when a route-derived desire is present (and isn't a
-    # lane-change request -- those drive the LaneChangeState machine above),
-    # override the desire here. Gated at navd by NkaoudNavControlSteer.
-    # We leave actively-running lane changes alone so we don't yank the
-    # wheel mid-maneuver.
+    # -------------------------------------------------------------------------
+    # Nav v2 desire override.
+    #
+    # Applied when NOT in an active lane change (we don't interrupt mid-maneuver).
+    # turnLeft/turnRight fire unconditionally when not mid-lc (navd already
+    # confirmed the car is in the correct lane before publishing them).
+    # keepLeft/keepRight are also applied here; the keep_pulse_timer below
+    # suppresses them on alternate 1s cycles during preLaneChange.
+    #
+    # Driver conflict (blinker opposite to nav direction) is already filtered
+    # inside navd before publishing — no additional check needed here.
+    # -------------------------------------------------------------------------
     nav_name = str(nav_desire)
-    if (nav_name in NAV_DESIRE_MAP and nav_name != "none"
-        and self.lane_change_state in (LaneChangeState.off, LaneChangeState.preLaneChange)):
+    active_lc = self.lane_change_state in (LaneChangeState.laneChangeStarting,
+                                           LaneChangeState.laneChangeFinishing)
+    if nav_name in NAV_DESIRE_MAP and nav_name != "none" and not active_lc:
       self.desire = NAV_DESIRE_MAP[nav_name]
 
-    # Send keep pulse once per second during LaneChangeStart.preLaneChange
+    # -------------------------------------------------------------------------
+    # Keep pulse timer: suppress keepLeft/keepRight on alternate seconds during
+    # preLaneChange to give the model breathing room (not biased every tick).
+    # -------------------------------------------------------------------------
     if self.lane_change_state in (LaneChangeState.off, LaneChangeState.laneChangeStarting):
       self.keep_pulse_timer = 0.0
     elif self.lane_change_state == LaneChangeState.preLaneChange:
