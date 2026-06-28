@@ -56,7 +56,10 @@ from openpilot.sunnypilot.nkaoud_nav.route_client import (
 from openpilot.sunnypilot.nkaoud_nav.share_client import (
   ShareFetchError, fetch_share_destination,
 )
-from openpilot.sunnypilot.selfdrive.controls.lib.lane_position import LanePositionEstimator
+from openpilot.sunnypilot.selfdrive.controls.lib.lane_position import (
+  FILTER_MODE_WIDTH,
+  LanePositionEstimator,
+)
 
 NavDesire = custom.NkaoudNavigationSP.NavDesire
 
@@ -481,7 +484,9 @@ class NkaoudNavd:
     # Update lane position from model
     if self.sm.updated['modelV2']:
       mv2 = self.sm['modelV2']
-      self.lane_current, self.lane_total, self.lane_conf = self.lane_position_est.update(mv2)
+      self.lane_current, self.lane_total, self.lane_conf = self.lane_position_est.update(
+        mv2, filter_mode=FILTER_MODE_WIDTH,
+      )
 
     # Read blinker + blind spot state from carState
     cs = self.sm['carState']
