@@ -98,6 +98,14 @@ _ACCEL_IDX_TO_INT100 = [200, 250, 300]          # int*100 m/s²; index default =
 # ---------------------------------------------------------------------------
 # Highway default
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Visual vehicle detector gate
+# ---------------------------------------------------------------------------
+# The adjacent lane must be clear (leftBlocked/rightBlocked == False) for this
+# many consecutive ticks before a keepLeft/keepRight desire is allowed.
+# At 5 Hz loop rate: 20 ticks = 4 seconds.
+VVD_CLEAR_TICKS_REQUIRED = 20   # 4 s × 5 Hz
+
 HIGHWAY_DEFAULT_MIN_SPEED_MS = 60.0 / 3.6   # ~16.7 m/s
 
 # Lane preference indices (NkaoudNavHighwayLanePref multiple_button_item_sp)
@@ -359,7 +367,7 @@ class ShareFetcher:
 class NkaoudNavd:
   def __init__(self) -> None:
     self.params = Params()
-    self.sm = messaging.SubMaster(['liveLocationKalman', 'modelV2', 'carState'])
+    self.sm = messaging.SubMaster(['liveLocationKalman', 'modelV2', 'carState', 'visualVehicleDetectorStateSP'])
     self.pm = messaging.PubMaster(['nkaoudNavigationSP', 'navRoute', 'navInstruction'])
     self.rk = Ratekeeper(5.0)
 
@@ -393,6 +401,12 @@ class NkaoudNavd:
     # Blind spot state (from carState — used to block keepLeft/keepRight)
     self.left_blindspot: bool = False
     self.right_blindspot: bool = False
+
+    # Visual vehicle detector gate — counts consecutive ticks each side has been
+    # clear (leftBlocked/rightBlocked == False). keepLeft/keepRight is suppressed
+    # until the side has been clear for VVD_CLEAR_TICKS_REQUIRED ticks (4 s).
+    self._vvd_left_clear_ticks: int = 0
+    self._vvd_right_clear_ticks: int = 0
 
     # Reroute counters
     self.bearing_misalign_counter: int = 0
@@ -471,6 +485,22 @@ class NkaoudNavd:
     self.right_blinker = cs.rightBlinker
     self.left_blindspot = cs.leftBlindspot
     self.right_blindspot = cs.rightBlindspot
+
+    # Update visual vehicle detector clear-tick counters.
+    # Increment when the side is clear, reset to 0 when blocked.
+    # We consume the latest message if available; if the service hasn't
+    # published yet (detector off / not installed), counters stay at 0
+    # and the gate effectively suppresses lane changes — safe default.
+    vvd = self.sm['visualVehicleDetectorStateSP']
+    if self.sm.updated['visualVehicleDetectorStateSP'] and self.sm.valid['visualVehicleDetectorStateSP']:
+      self._vvd_left_clear_ticks = (
+        self._vvd_left_clear_ticks + 1 if not vvd.leftBlocked
+        else 0
+      )
+      self._vvd_right_clear_ticks = (
+        self._vvd_right_clear_ticks + 1 if not vvd.rightBlocked
+        else 0
+      )
 
     # Handle destination changes
     new_dest = _read_destination(self.params)
@@ -730,6 +760,8 @@ class NkaoudNavd:
         return NavDesire.none
       if self._blindspot_blocking(side):
         return NavDesire.none
+      if self._vvd_blocking(side):
+        return NavDesire.none
       if self._needs_to_move(side):
         desire = NavDesire.keepLeft if side == "left" else NavDesire.keepRight
         self._arm_highway()
@@ -788,6 +820,20 @@ class NkaoudNavd:
       return self.right_blindspot
     return False
 
+  def _vvd_blocking(self, nav_side: str) -> bool:
+    """True when the visual vehicle detector has not confirmed the adjacent lane
+    is clear for VVD_CLEAR_TICKS_REQUIRED consecutive ticks (4 s at 5 Hz).
+
+    If the detector service is not running or has never published (counters stuck
+    at 0), this gate suppresses all keepLeft/keepRight — the safe default.
+    The gate resets immediately when a vehicle is detected; once the lane stays
+    clear for 4 s it opens again."""
+    if nav_side == "left":
+      return self._vvd_left_clear_ticks < VVD_CLEAR_TICKS_REQUIRED
+    if nav_side == "right":
+      return self._vvd_right_clear_ticks < VVD_CLEAR_TICKS_REQUIRED
+    return False
+
   def _highway_default(self, cur_step: Step | None):
     """When cruising on a motorway with no imminent maneuver, bias toward
     the center lane. Uses keepLeft/keepRight (conservative lane change).
@@ -818,6 +864,8 @@ class NkaoudNavd:
     if self._driver_conflicting(side):
       return NavDesire.none
     if self._blindspot_blocking(side):
+      return NavDesire.none
+    if self._vvd_blocking(side):
       return NavDesire.none
 
     return NavDesire.keepLeft if side == "left" else NavDesire.keepRight
