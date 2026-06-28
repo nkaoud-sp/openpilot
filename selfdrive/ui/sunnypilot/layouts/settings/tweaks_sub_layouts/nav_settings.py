@@ -74,13 +74,37 @@ class NavSettingsLayout(Widget):
       param="NkaoudNavControlSpeed",
     )
     self._control_steer = toggle_item_sp(
-      title=lambda: tr("Steer / Lane-Change With The Route"),
-      description=lambda: tr("Lets the route bias steering (turnLeft / turnRight near a turn, keepLeft / keepRight " +
-                            "when off-side of the road) AND trigger active lane changes via the standard " +
-                            "openpilot pipeline when the route requires moving to a different lane. Lane " +
-                            "changes require an AutoLaneChange timer set in your steering settings (anything " +
-                            "other than \"Off\"); blind-spot monitor still gates execution. Experimental."),
+      title=lambda: tr("Steer / Lane-Keep With The Route"),
+      description=lambda: tr("Lets the route bias steering near turns (turnLeft/turnRight) and nudge toward the " +
+                            "correct lane when an upcoming maneuver requires it (keepLeft/keepRight). " +
+                            "Nav never triggers an assertive lane change — the driver blinker still does that. " +
+                            "Experimental."),
       param="NkaoudNavControlSteer",
+    )
+    self._highway_default = toggle_item_sp(
+      title=lambda: tr("Highway Center Lane Default"),
+      description=lambda: tr("When cruising on a motorway with no imminent maneuver, nudge toward the center lane " +
+                            "using a conservative lane keep. Suppressed if you manually blinker on the highway; " +
+                            "automatically re-enabled when the next navigation command fires."),
+      param="NkaoudNavHighwayDefault",
+    )
+    self._turn_tolerance = multiple_button_item_sp(
+      title=lambda: tr("Turn Speed Tolerance"),
+      description=lambda: tr("How aggressively to slow for upcoming turns. Speed is computed from road curvature " +
+                            "(v = sqrt(a_lat × tolerance / curvature)). Conservative slows more; Aggressive slows " +
+                            "less. Default is Normal (100 %)."),
+      buttons=[lambda: tr("Conservative"), lambda: tr("Normal"), lambda: tr("Aggressive")],
+      param="NkaoudNavTurnTolerance",
+      button_width=330,
+    )
+    self._max_lat_accel = multiple_button_item_sp(
+      title=lambda: tr("Turn Max Lateral Accel"),
+      description=lambda: tr("Maximum lateral acceleration used to compute the geometry-based turn speed cap. " +
+                            "Higher allows faster corner entry; lower forces slower corners. " +
+                            "Default is 2.5 m/s²."),
+      buttons=[lambda: tr("2.0 m/s²"), lambda: tr("2.5 m/s²"), lambda: tr("3.0 m/s²")],
+      param="NkaoudNavMaxLatAccel",
+      button_width=330,
     )
 
     items = [
@@ -91,43 +115,36 @@ class NavSettingsLayout(Widget):
       self._polyline_style,
       self._show_banner,
       self._control_speed,
+      self._turn_tolerance,
+      self._max_lat_accel,
       self._control_steer,
+      self._highway_default,
     ]
     return items
 
   def _token_button_label(self) -> str:
     token = (self._params.get("NkaoudNavMapboxToken") or "").strip()
     if token:
-      # show only a short masked indicator so the token isn't displayed in plain text
       tail = token[-4:] if len(token) >= 4 else token
       return tr("Mapbox Token (set, ...{})").format(tail)
     return tr("Set Mapbox Token")
 
   def _open_token_input(self) -> None:
-    # Pushes the QR dialog. The dialog starts a temporary HTTP server on
-    # :8081 in its __init__ and stops it on cancel / token receipt.
     gui_app.push_widget(NavTokenQrDialog())
 
   def _share_endpoint_label(self) -> str:
     url = (self._params.get("NkaoudNavShareEndpoint") or "").strip()
     if not url:
       return tr("Set Neon Connection String (for Share)")
-    # Show just the Neon host so credentials don't appear in the label.
     after_scheme = url.split("://", 1)[-1]
     after_creds = after_scheme.split("@", 1)[-1]
     host = after_creds.split("/", 1)[0]
     return tr("Neon Connection (set, {})").format(host)
 
   def _open_share_endpoint_input(self) -> None:
-    # Same QR/web-form workflow as the Mapbox token, but the form
-    # shows an example JSON response so the user can sanity-check their
-    # endpoint format.
     gui_app.push_widget(NavShareEndpointQrDialog())
 
   def _clear_destination(self) -> None:
-    # Wipe both the destination AND the share trigger so a pending share
-    # fetch (or one that completes after the tap) doesn't re-instate the
-    # destination on the next navd tick.
     self._params.remove("NkaoudNavDestination")
     self._params.remove("NkaoudNavShareTrigger")
 
