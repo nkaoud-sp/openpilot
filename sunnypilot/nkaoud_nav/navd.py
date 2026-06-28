@@ -100,6 +100,11 @@ _ACCEL_IDX_TO_INT100 = [200, 250, 300]          # int*100 m/s²; index default =
 # ---------------------------------------------------------------------------
 HIGHWAY_DEFAULT_MIN_SPEED_MS = 60.0 / 3.6   # ~16.7 m/s
 
+# Lane preference indices (NkaoudNavHighwayLanePref multiple_button_item_sp)
+_LANE_PREF_RIGHTMOST = 0
+_LANE_PREF_CENTER    = 1   # default
+_LANE_PREF_LEFTMOST  = 2
+
 # ---------------------------------------------------------------------------
 # Rerouting
 # ---------------------------------------------------------------------------
@@ -427,6 +432,9 @@ class NkaoudNavd:
     accel_idx = int(raw_accel) if raw_accel and raw_accel.isdigit() else 1
     accel_int100 = _ACCEL_IDX_TO_INT100[max(0, min(accel_idx, len(_ACCEL_IDX_TO_INT100) - 1))]
     self._max_lat_accel = accel_int100 / 100.0
+
+    raw_pref = self.params.get("NkaoudNavHighwayLanePref")
+    self._highway_lane_pref = int(raw_pref) if raw_pref and raw_pref.isdigit() else _LANE_PREF_CENTER
 
   # -------------------------------------------------------------------------
   # Main loop
@@ -776,8 +784,14 @@ class NkaoudNavd:
     if self.lane_conf in ("unknown", "low") or self.lane_total <= 1 or self.lane_current <= 0:
       return NavDesire.none
 
-    # Center lane: ceil(N/2). Ties bias left (more conservative on LHD roads).
-    target = math.ceil(self.lane_total / 2)
+    # Target lane based on user preference
+    if self._highway_lane_pref == _LANE_PREF_RIGHTMOST:
+      target = self.lane_total
+    elif self._highway_lane_pref == _LANE_PREF_LEFTMOST:
+      target = 1
+    else:  # CENTER (default) — ceil(N/2), ties bias left
+      target = math.ceil(self.lane_total / 2)
+
     if self.lane_current == target:
       return NavDesire.none
 
