@@ -44,7 +44,7 @@ EDGE_HYSTERESIS = 0.25     # lane-widths past the half-integer boundary before f
 # Edge-lane blocking filter tunables
 LANE_LINE_PROB_STRONG = 0.6
 LANE_LINE_PROB_WEAK = 0.35
-EDGE_LANE_NARROW_RATIO = 0.8
+EDGE_LANE_NARROW_RATIO = 0.9
 EDGE_BLOCK_COUNTER_ON = 3
 EDGE_BLOCK_COUNTER_OFF = 1
 EDGE_BLOCK_COUNTER_MAX = 6

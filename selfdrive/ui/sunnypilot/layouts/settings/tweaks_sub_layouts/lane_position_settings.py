@@ -32,7 +32,7 @@ class LanePositionSettingsLayout(Widget):
     self._edge_filter_mode = multiple_button_item_sp(
       title=lambda: tr("Edge-Lane Filter"),
       description=lambda: tr("Demote fake outer lanes from the lane-position estimate. " +
-                            "Width: outer lane narrower than the ego lane (ratio < 0.8). " +
+                            "Width: outer lane narrower than the ego lane (ratio < 0.9). " +
                             "Separation: inner lane line strong while the outer line is weak. " +
                             "Both (AND): conservative — needs both. " +
                             "Both (OR): aggressive — either is enough."),
