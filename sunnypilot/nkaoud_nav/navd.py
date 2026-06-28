@@ -105,6 +105,7 @@ _ACCEL_IDX_TO_INT100 = [200, 250, 300]          # int*100 m/s²; index default =
 # many consecutive ticks before a keepLeft/keepRight desire is allowed.
 # At 5 Hz loop rate: 20 ticks = 4 seconds.
 VVD_CLEAR_TICKS_REQUIRED = 20   # 4 s × 5 Hz
+VVD_CONF_THRESHOLD     = 0.60  # vehicle confidence >= this → lane is blocked
 
 HIGHWAY_DEFAULT_MIN_SPEED_MS = 60.0 / 3.6   # ~16.7 m/s
 
@@ -486,21 +487,28 @@ class NkaoudNavd:
     self.left_blindspot = cs.leftBlindspot
     self.right_blindspot = cs.rightBlindspot
 
-    # Update visual vehicle detector clear-tick counters.
-    # Increment when the side is clear, reset to 0 when blocked.
-    # We consume the latest message if available; if the service hasn't
-    # published yet (detector off / not installed), counters stay at 0
-    # and the gate effectively suppresses lane changes — safe default.
-    vvd = self.sm['visualVehicleDetectorStateSP']
+    # Update visual vehicle detector clear-tick counters from per-zone probability.
+    # Each Zone in classifier.zones has a name ("left"/"right"), probability
+    # (Float32, 0-1), and hasProbability flag. A zone with probability >=
+    # VVD_CONF_THRESHOLD (0.60) is treated as blocked and resets its counter.
+    # If the detector is not running or hasn't published, counters stay at 0
+    # (gate stays closed) — fail-safe default.
     if self.sm.updated['visualVehicleDetectorStateSP'] and self.sm.valid['visualVehicleDetectorStateSP']:
-      self._vvd_left_clear_ticks = (
-        self._vvd_left_clear_ticks + 1 if not vvd.leftBlocked
-        else 0
-      )
-      self._vvd_right_clear_ticks = (
-        self._vvd_right_clear_ticks + 1 if not vvd.rightBlocked
-        else 0
-      )
+      vvd = self.sm['visualVehicleDetectorStateSP']
+      for zone in vvd.classifier.zones:
+        if not zone.hasProbability:
+          continue
+        prob = float(zone.probability)
+        if zone.name == "left":
+          if prob >= VVD_CONF_THRESHOLD:
+            self._vvd_left_clear_ticks = 0
+          else:
+            self._vvd_left_clear_ticks = min(self._vvd_left_clear_ticks + 1, VVD_CLEAR_TICKS_REQUIRED)
+        elif zone.name == "right":
+          if prob >= VVD_CONF_THRESHOLD:
+            self._vvd_right_clear_ticks = 0
+          else:
+            self._vvd_right_clear_ticks = min(self._vvd_right_clear_ticks + 1, VVD_CLEAR_TICKS_REQUIRED)
 
     # Handle destination changes
     new_dest = _read_destination(self.params)
@@ -821,13 +829,13 @@ class NkaoudNavd:
     return False
 
   def _vvd_blocking(self, nav_side: str) -> bool:
-    """True when the visual vehicle detector has not confirmed the adjacent lane
-    is clear for VVD_CLEAR_TICKS_REQUIRED consecutive ticks (4 s at 5 Hz).
+    """True when the adjacent lane has not had zone probability < 60 % for at
+    least VVD_CLEAR_TICKS_REQUIRED consecutive ticks (4 s at 5 Hz).
 
-    If the detector service is not running or has never published (counters stuck
-    at 0), this gate suppresses all keepLeft/keepRight — the safe default.
-    The gate resets immediately when a vehicle is detected; once the lane stays
-    clear for 4 s it opens again."""
+    The counter increments each tick the classifier zone probability is below
+    VVD_CONF_THRESHOLD (0.60) and resets instantly when it hits or exceeds it.
+    If the detector is not running or zones have no probability data, counters
+    stay at 0 — gate stays closed, the safe default."""
     if nav_side == "left":
       return self._vvd_left_clear_ticks < VVD_CLEAR_TICKS_REQUIRED
     if nav_side == "right":
