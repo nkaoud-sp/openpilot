@@ -97,6 +97,7 @@ CURVATURE_LOOKAHEAD_M = 100.0  # only look at first 100 m of upcoming step
 # index → actual value. Index 1 is the middle/normal option in each case.
 _TOLERANCE_IDX_TO_PCT = [75, 100, 125]          # % of v_target; index default = 1 (100 %)
 _ACCEL_IDX_TO_INT100 = [200, 250, 300]          # int*100 m/s²; index default = 1 (2.5 m/s²)
+_LANE_CHANGE_COOLDOWN_IDX_TO_S = [0.0, 1.0, 2.0, 3.0, 5.0]
 
 # ---------------------------------------------------------------------------
 # Highway default
@@ -437,6 +438,9 @@ class NkaoudNavd:
     self._highway_default_enabled: bool = False
     self._turn_tolerance: float = 1.0        # NkaoudNavTurnTolerance / 100
     self._max_lat_accel: float = MAX_LAT_ACCEL_MS2
+    self._lane_change_cooldown_s: float = 2.0
+    self._keep_cooldown_until: float = 0.0
+    self._last_lane_current_observed: int = 0
     self._refresh_params()
 
   # -------------------------------------------------------------------------
@@ -457,6 +461,12 @@ class NkaoudNavd:
     accel_idx = int(raw_accel) if raw_accel and raw_accel.isdigit() else 1
     accel_int100 = _ACCEL_IDX_TO_INT100[max(0, min(accel_idx, len(_ACCEL_IDX_TO_INT100) - 1))]
     self._max_lat_accel = accel_int100 / 100.0
+
+    raw_cooldown = self.params.get("NkaoudNavLaneChangeCooldown")
+    cooldown_idx = int(raw_cooldown) if raw_cooldown and raw_cooldown.isdigit() else 2
+    self._lane_change_cooldown_s = _LANE_CHANGE_COOLDOWN_IDX_TO_S[
+      max(0, min(cooldown_idx, len(_LANE_CHANGE_COOLDOWN_IDX_TO_S) - 1))
+    ]
 
     raw_pref = self.params.get("NkaoudNavHighwayLanePref")
     self._highway_lane_pref = int(raw_pref) if raw_pref and raw_pref.isdigit() else _LANE_PREF_CENTER
@@ -487,6 +497,7 @@ class NkaoudNavd:
       self.lane_current, self.lane_total, self.lane_conf = self.lane_position_est.update(
         mv2, filter_mode=FILTER_MODE_WIDTH,
       )
+      self._update_lane_change_cooldown()
 
     # Read blinker + blind spot state from carState
     cs = self.sm['carState']
@@ -534,6 +545,7 @@ class NkaoudNavd:
       self.bearing_misalign_counter = 0
       self.cross_track_counter = 0
       self._highway_suppressed = False
+      self._keep_cooldown_until = 0.0
       self._try_fetch_initial()
 
     # Route fetch lifecycle
@@ -735,6 +747,22 @@ class NkaoudNavd:
     """Re-arm highway default after a real nav command fires."""
     self._highway_suppressed = False
 
+  def _update_lane_change_cooldown(self) -> None:
+    """Start cooldown when the observed lane index changes."""
+    current = self.lane_current
+    prev = self._last_lane_current_observed
+    self._last_lane_current_observed = current
+    if self._lane_change_cooldown_s <= 0.0:
+      return
+    if prev <= 0 or current <= 0 or current == prev:
+      return
+    self._keep_cooldown_until = max(
+      self._keep_cooldown_until, time.monotonic() + self._lane_change_cooldown_s,
+    )
+
+  def _keep_cooldown_active(self) -> bool:
+    return time.monotonic() < self._keep_cooldown_until
+
   # -------------------------------------------------------------------------
   # Core lateral desire — single priority chain
   # -------------------------------------------------------------------------
@@ -781,6 +809,8 @@ class NkaoudNavd:
       if self._driver_conflicting(side):
         return NavDesire.none
       if self._side_gate_blocking(side):
+        return NavDesire.none
+      if self._keep_cooldown_active():
         return NavDesire.none
       if self._needs_to_move(side):
         desire = NavDesire.keepLeft if side == "left" else NavDesire.keepRight
@@ -875,6 +905,8 @@ class NkaoudNavd:
     if self._driver_conflicting(side):
       return NavDesire.none
     if self._side_gate_blocking(side):
+      return NavDesire.none
+    if self._keep_cooldown_active():
       return NavDesire.none
 
     return NavDesire.keepLeft if side == "left" else NavDesire.keepRight

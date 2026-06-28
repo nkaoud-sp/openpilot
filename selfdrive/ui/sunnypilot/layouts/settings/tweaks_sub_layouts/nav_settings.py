@@ -81,6 +81,17 @@ class NavSettingsLayout(Widget):
                             "Experimental."),
       param="NkaoudNavControlSteer",
     )
+    self._lane_change_cooldown = multiple_button_item_sp(
+      title=lambda: tr("Nav Lane Change Cooldown"),
+      description=lambda: tr("Minimum cooldown after nav detects a lane index change before it can request the next " +
+                            "keepLeft/keepRight step. Useful when multiple route lane changes are needed in sequence. " +
+                            "Off allows immediate follow-up requests."),
+      buttons=[lambda: tr("Off"), lambda: f"1 {tr('s')}",
+               lambda: f"2 {tr('s')}", lambda: f"3 {tr('s')}",
+               lambda: f"5 {tr('s')}"],
+      param="NkaoudNavLaneChangeCooldown",
+      button_width=220,
+    )
     self._highway_default = toggle_item_sp(
       title=lambda: tr("Highway Lane Default"),
       description=lambda: tr("When cruising on a motorway with no imminent maneuver, nudge toward the preferred " +
@@ -127,6 +138,7 @@ class NavSettingsLayout(Widget):
       self._turn_tolerance,
       self._max_lat_accel,
       self._control_steer,
+      self._lane_change_cooldown,
       self._highway_default,
       self._highway_lane_pref,
     ]
