@@ -101,11 +101,13 @@ _ACCEL_IDX_TO_INT100 = [200, 250, 300]          # int*100 m/s²; index default =
 # ---------------------------------------------------------------------------
 # Visual vehicle detector gate
 # ---------------------------------------------------------------------------
-# The adjacent lane must be clear (leftBlocked/rightBlocked == False) for this
-# many consecutive ticks before a keepLeft/keepRight desire is allowed.
+# The adjacent lane must be clear for this many consecutive ticks before a
+# keepLeft/keepRight desire is allowed. "Clear" means BOTH:
+#   1. Blindspot on that side is false
+#   2. VVD zone probability on that side is below VVD_CONF_THRESHOLD
 # At 5 Hz loop rate: 20 ticks = 4 seconds.
-VVD_CLEAR_TICKS_REQUIRED = 20   # 4 s × 5 Hz
-VVD_CONF_THRESHOLD     = 0.60  # vehicle confidence >= this → lane is blocked
+SIDE_CLEAR_TICKS_REQUIRED = 20   # 4 s × 5 Hz
+VVD_CONF_THRESHOLD      = 0.60  # vehicle confidence >= this → lane is blocked
 
 HIGHWAY_DEFAULT_MIN_SPEED_MS = 60.0 / 3.6   # ~16.7 m/s
 
@@ -403,11 +405,12 @@ class NkaoudNavd:
     self.left_blindspot: bool = False
     self.right_blindspot: bool = False
 
-    # Visual vehicle detector gate — counts consecutive ticks each side has been
-    # clear (leftBlocked/rightBlocked == False). keepLeft/keepRight is suppressed
-    # until the side has been clear for VVD_CLEAR_TICKS_REQUIRED ticks (4 s).
-    self._vvd_left_clear_ticks: int = 0
-    self._vvd_right_clear_ticks: int = 0
+    # Side-clear gate — counts consecutive ticks each side has been clear by
+    # BOTH signals together: blindspot false + VVD probability below threshold.
+    # keepLeft/keepRight is suppressed until the side has been clear for
+    # SIDE_CLEAR_TICKS_REQUIRED ticks (4 s).
+    self._left_clear_ticks: int = 0
+    self._right_clear_ticks: int = 0
 
     # Reroute counters
     self.bearing_misalign_counter: int = 0
@@ -487,12 +490,12 @@ class NkaoudNavd:
     self.left_blindspot = cs.leftBlindspot
     self.right_blindspot = cs.rightBlindspot
 
-    # Update visual vehicle detector clear-tick counters from per-zone probability.
-    # Each Zone in classifier.zones has a name ("left"/"right"), probability
-    # (Float32, 0-1), and hasProbability flag. A zone with probability >=
-    # VVD_CONF_THRESHOLD (0.60) is treated as blocked and resets its counter.
-    # If the detector is not running or hasn't published, counters stay at 0
-    # (gate stays closed) — fail-safe default.
+    # Compute VVD clear state from per-zone probability. Each Zone in
+    # classifier.zones has a name ("left"/"right"), probability (Float32, 0-1),
+    # and hasProbability flag. A zone with probability >= VVD_CONF_THRESHOLD
+    # (0.60) is treated as blocked.
+    left_vvd_clear = False
+    right_vvd_clear = False
     if self.sm.updated['visualVehicleDetectorStateSP'] and self.sm.valid['visualVehicleDetectorStateSP']:
       vvd = self.sm['visualVehicleDetectorStateSP']
       for zone in vvd.classifier.zones:
@@ -500,15 +503,21 @@ class NkaoudNavd:
           continue
         prob = float(zone.probability)
         if zone.name == "left":
-          if prob >= VVD_CONF_THRESHOLD:
-            self._vvd_left_clear_ticks = 0
-          else:
-            self._vvd_left_clear_ticks = min(self._vvd_left_clear_ticks + 1, VVD_CLEAR_TICKS_REQUIRED)
+          left_vvd_clear = prob < VVD_CONF_THRESHOLD
         elif zone.name == "right":
-          if prob >= VVD_CONF_THRESHOLD:
-            self._vvd_right_clear_ticks = 0
-          else:
-            self._vvd_right_clear_ticks = min(self._vvd_right_clear_ticks + 1, VVD_CLEAR_TICKS_REQUIRED)
+          right_vvd_clear = prob < VVD_CONF_THRESHOLD
+
+    # Require blindspot and VVD to stay clear simultaneously for the full
+    # window. Any violation resets the side's counter immediately.
+    if (not self.left_blindspot) and left_vvd_clear:
+      self._left_clear_ticks = min(self._left_clear_ticks + 1, SIDE_CLEAR_TICKS_REQUIRED)
+    else:
+      self._left_clear_ticks = 0
+
+    if (not self.right_blindspot) and right_vvd_clear:
+      self._right_clear_ticks = min(self._right_clear_ticks + 1, SIDE_CLEAR_TICKS_REQUIRED)
+    else:
+      self._right_clear_ticks = 0
 
     # Handle destination changes
     new_dest = _read_destination(self.params)
@@ -766,9 +775,7 @@ class NkaoudNavd:
         return NavDesire.none
       if self._driver_conflicting(side):
         return NavDesire.none
-      if self._blindspot_blocking(side):
-        return NavDesire.none
-      if self._vvd_blocking(side):
+      if self._side_gate_blocking(side):
         return NavDesire.none
       if self._needs_to_move(side):
         desire = NavDesire.keepLeft if side == "left" else NavDesire.keepRight
@@ -817,29 +824,20 @@ class NkaoudNavd:
       return True
     return False
 
-  def _blindspot_blocking(self, nav_side: str) -> bool:
-    """True when there is a vehicle in the blind spot on the side nav wants to move.
-    Only applies to keepLeft/keepRight (POSITION zone and highway default).
-    turnLeft/turnRight are excluded — by that point the car should already
-    be in the correct lane, so a blind spot hit is a conflict for the driver."""
-    if nav_side == "left":
-      return self.left_blindspot
-    if nav_side == "right":
-      return self.right_blindspot
-    return False
+  def _side_gate_blocking(self, nav_side: str) -> bool:
+    """True when the side has not been clear for the full 4 s window.
 
-  def _vvd_blocking(self, nav_side: str) -> bool:
-    """True when the adjacent lane has not had zone probability < 60 % for at
-    least VVD_CLEAR_TICKS_REQUIRED consecutive ticks (4 s at 5 Hz).
+    A side is only considered clear on a tick when BOTH signals agree:
+      - blindspot on that side is false
+      - VVD probability on that side is below VVD_CONF_THRESHOLD
 
-    The counter increments each tick the classifier zone probability is below
-    VVD_CONF_THRESHOLD (0.60) and resets instantly when it hits or exceeds it.
-    If the detector is not running or zones have no probability data, counters
-    stay at 0 — gate stays closed, the safe default."""
+    The counter increments only while both stay clear simultaneously and resets
+    immediately on any violation. If VVD is missing, counters stay at 0 and the
+    gate remains closed — fail-safe default."""
     if nav_side == "left":
-      return self._vvd_left_clear_ticks < VVD_CLEAR_TICKS_REQUIRED
+      return self._left_clear_ticks < SIDE_CLEAR_TICKS_REQUIRED
     if nav_side == "right":
-      return self._vvd_right_clear_ticks < VVD_CLEAR_TICKS_REQUIRED
+      return self._right_clear_ticks < SIDE_CLEAR_TICKS_REQUIRED
     return False
 
   def _highway_default(self, cur_step: Step | None):
@@ -871,9 +869,7 @@ class NkaoudNavd:
     side = "left" if self.lane_current > target else "right"
     if self._driver_conflicting(side):
       return NavDesire.none
-    if self._blindspot_blocking(side):
-      return NavDesire.none
-    if self._vvd_blocking(side):
+    if self._side_gate_blocking(side):
       return NavDesire.none
 
     return NavDesire.keepLeft if side == "left" else NavDesire.keepRight
