@@ -390,6 +390,10 @@ class NkaoudNavd:
     self.left_blinker: bool = False
     self.right_blinker: bool = False
 
+    # Blind spot state (from carState — used to block keepLeft/keepRight)
+    self.left_blindspot: bool = False
+    self.right_blindspot: bool = False
+
     # Reroute counters
     self.bearing_misalign_counter: int = 0
     self.cross_track_m: float = 0.0
@@ -461,10 +465,12 @@ class NkaoudNavd:
       mv2 = self.sm['modelV2']
       self.lane_current, self.lane_total, self.lane_conf = self.lane_position_est.update(mv2)
 
-    # Read blinker state from carState
+    # Read blinker + blind spot state from carState
     cs = self.sm['carState']
     self.left_blinker = cs.leftBlinker
     self.right_blinker = cs.rightBlinker
+    self.left_blindspot = cs.leftBlindspot
+    self.right_blindspot = cs.rightBlindspot
 
     # Handle destination changes
     new_dest = _read_destination(self.params)
@@ -722,6 +728,8 @@ class NkaoudNavd:
         return NavDesire.none
       if self._driver_conflicting(side):
         return NavDesire.none
+      if self._blindspot_blocking(side):
+        return NavDesire.none
       if self._needs_to_move(side):
         desire = NavDesire.keepLeft if side == "left" else NavDesire.keepRight
         self._arm_highway()
@@ -769,6 +777,17 @@ class NkaoudNavd:
       return True
     return False
 
+  def _blindspot_blocking(self, nav_side: str) -> bool:
+    """True when there is a vehicle in the blind spot on the side nav wants to move.
+    Only applies to keepLeft/keepRight (POSITION zone and highway default).
+    turnLeft/turnRight are excluded — by that point the car should already
+    be in the correct lane, so a blind spot hit is a conflict for the driver."""
+    if nav_side == "left":
+      return self.left_blindspot
+    if nav_side == "right":
+      return self.right_blindspot
+    return False
+
   def _highway_default(self, cur_step: Step | None):
     """When cruising on a motorway with no imminent maneuver, bias toward
     the center lane. Uses keepLeft/keepRight (conservative lane change).
@@ -797,6 +816,8 @@ class NkaoudNavd:
 
     side = "left" if self.lane_current > target else "right"
     if self._driver_conflicting(side):
+      return NavDesire.none
+    if self._blindspot_blocking(side):
       return NavDesire.none
 
     return NavDesire.keepLeft if side == "left" else NavDesire.keepRight
