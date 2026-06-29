@@ -279,6 +279,15 @@ DEFAULT_CROP_H = _env_float("NKAOUD_VISUAL_VEHICLE_CROP_H", float(DETECT_CROP_H)
 MAX_DETECTOR_HZ = 20
 DEFAULT_HZ = float(max(1, min(MAX_DETECTOR_HZ, int(_env_float("NKAOUD_VISUAL_VEHICLE_HZ", 1.0)))))
 
+# Driver-camera tuned defaults. These seed the live tuning values only for the
+# driver camera when no persisted tuning file entry exists yet.
+DRIVER_DEFAULT_CROP_X = 1365.0
+DRIVER_DEFAULT_CROP_Y = 231.0
+DRIVER_DEFAULT_CROP_W = 543.0
+DRIVER_DEFAULT_CROP_H = 530.0
+DRIVER_DEFAULT_HZ = 5.0
+DRIVER_DEFAULT_BLOCKED_THRESHOLD = 0.90
+
 # Live tuning: a small JSON the web portal writes and the detector re-reads
 # (mtime-gated) every frame, so ROI/gate/confidence can be adjusted on-road
 # without a restart. Persisted under /data so it survives reboots. The file is
@@ -421,6 +430,21 @@ TUNING_DEFAULTS: dict[str, float] = {
   "blocked_threshold": DEFAULT_BLOCKED_THRESHOLD,
 }
 
+TUNING_DEFAULTS_BY_CAMERA: dict[str, dict[str, float]] = {
+  "road": dict(TUNING_DEFAULTS),
+  "wide": dict(TUNING_DEFAULTS),
+  "driver": {
+    **TUNING_DEFAULTS,
+    "crop_x": DRIVER_DEFAULT_CROP_X,
+    "crop_y": DRIVER_DEFAULT_CROP_Y,
+    "crop_w": DRIVER_DEFAULT_CROP_W,
+    "crop_h": DRIVER_DEFAULT_CROP_H,
+    "hz": DRIVER_DEFAULT_HZ,
+    "blocked_threshold": DRIVER_DEFAULT_BLOCKED_THRESHOLD,
+  },
+  "wide+driver": dict(TUNING_DEFAULTS),
+}
+
 
 def _load_all_tuning() -> dict[str, Any]:
   try:
@@ -433,7 +457,7 @@ def _load_all_tuning() -> dict[str, Any]:
 def load_tuning(camera: str | None = None) -> dict[str, float]:
   """Tuning values for `camera` (or the active one), defaults filled in."""
   cam = camera or active_camera()
-  values = dict(TUNING_DEFAULTS)
+  values = dict(TUNING_DEFAULTS_BY_CAMERA.get(cam, TUNING_DEFAULTS))
   data = _load_all_tuning().get(cam, {})
   if isinstance(data, dict):
     for key in TUNING_KEYS:
