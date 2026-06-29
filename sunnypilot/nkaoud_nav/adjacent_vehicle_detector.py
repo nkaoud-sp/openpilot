@@ -287,6 +287,12 @@ DRIVER_DEFAULT_CROP_W = 543.0
 DRIVER_DEFAULT_CROP_H = 530.0
 DRIVER_DEFAULT_HZ = 5.0
 DRIVER_DEFAULT_BLOCKED_THRESHOLD = 0.90
+WIDE_DEFAULT_CROP_X = 903.0
+WIDE_DEFAULT_CROP_Y = 509.0
+WIDE_DEFAULT_CROP_W = 855.0
+WIDE_DEFAULT_CROP_H = 281.0
+WIDE_DEFAULT_HZ = 5.0
+WIDE_DEFAULT_BLOCKED_THRESHOLD = 0.90
 
 # Live tuning: a small JSON the web portal writes and the detector re-reads
 # (mtime-gated) every frame, so ROI/gate/confidence can be adjusted on-road
@@ -432,7 +438,15 @@ TUNING_DEFAULTS: dict[str, float] = {
 
 TUNING_DEFAULTS_BY_CAMERA: dict[str, dict[str, float]] = {
   "road": dict(TUNING_DEFAULTS),
-  "wide": dict(TUNING_DEFAULTS),
+  "wide": {
+    **TUNING_DEFAULTS,
+    "crop_x": WIDE_DEFAULT_CROP_X,
+    "crop_y": WIDE_DEFAULT_CROP_Y,
+    "crop_w": WIDE_DEFAULT_CROP_W,
+    "crop_h": WIDE_DEFAULT_CROP_H,
+    "hz": WIDE_DEFAULT_HZ,
+    "blocked_threshold": WIDE_DEFAULT_BLOCKED_THRESHOLD,
+  },
   "driver": {
     **TUNING_DEFAULTS,
     "crop_x": DRIVER_DEFAULT_CROP_X,
@@ -442,7 +456,15 @@ TUNING_DEFAULTS_BY_CAMERA: dict[str, dict[str, float]] = {
     "hz": DRIVER_DEFAULT_HZ,
     "blocked_threshold": DRIVER_DEFAULT_BLOCKED_THRESHOLD,
   },
-  "wide+driver": dict(TUNING_DEFAULTS),
+  "wide+driver": {
+    **TUNING_DEFAULTS,
+    "crop_x": WIDE_DEFAULT_CROP_X,
+    "crop_y": WIDE_DEFAULT_CROP_Y,
+    "crop_w": WIDE_DEFAULT_CROP_W,
+    "crop_h": WIDE_DEFAULT_CROP_H,
+    "hz": WIDE_DEFAULT_HZ,
+    "blocked_threshold": WIDE_DEFAULT_BLOCKED_THRESHOLD,
+  },
 }
 
 
