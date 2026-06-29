@@ -1004,6 +1004,23 @@ class NkaoudNavd:
     step_end = step_start + step.distance
     return max(0.0, step_end - self.last_distance_along)
 
+  def _lane_guidance_hint(self) -> tuple[custom.NkaoudNavigationSP.LaneSide, float]:
+    if self.route is None or self.arrived:
+      return custom.NkaoudNavigationSP.LaneSide.none, 0.0
+    cur_step = self._current_step()
+    next_step = self._upcoming_step()
+    if next_step is None:
+      return custom.NkaoudNavigationSP.LaneSide.none, 0.0
+    road_class = _road_class(cur_step)
+    _, lane_keep_m_base = ZONE_THRESHOLDS[road_class]
+    lane_keep_m = _scaled_nav_zone_distance(lane_keep_m_base, self.last_v_ego)
+    side = _modifier_to_side(next_step.maneuver_modifier)
+    if side == "left":
+      return custom.NkaoudNavigationSP.LaneSide.left, lane_keep_m
+    if side == "right":
+      return custom.NkaoudNavigationSP.LaneSide.right, lane_keep_m
+    return custom.NkaoudNavigationSP.LaneSide.none, lane_keep_m
+
   # -------------------------------------------------------------------------
   # Publishing
   # -------------------------------------------------------------------------
@@ -1014,23 +1031,32 @@ class NkaoudNavd:
     # Compute desires and longitudinal cap
     desire = self._lateral_desire() if active else NavDesire.none
     speed_cap = self._longitudinal_cap() if active else 0.0
+    cur_step = self._current_step() if active else None
+    next_step = self._upcoming_step() if active else None
+    lane_side, lane_keep_m = self._lane_guidance_hint() if active else (custom.NkaoudNavigationSP.LaneSide.none, 0.0)
 
     # -- nkaoudNavigationSP --
     nav_msg = messaging.new_message('nkaoudNavigationSP')
     nav = nav_msg.nkaoudNavigationSP
+    nav.enabled = self.params.get_bool("NkaoudNavEnabled")
     nav.active = active
     nav.onRoute = active and not self.rerouting
+    nav.routeId = self.route.route_id if self.route is not None else ""
     nav.rerouting = self.rerouting
-    nav.arrived = self.arrived
-    nav.navDesire = desire
     nav.maneuverTargetSpeed = float(speed_cap)
+    nav.recommendedDesire = desire
     if self.route is not None:
-      nav.distanceRemaining = max(0.0, self.route.distance_total - self.last_distance_along)
       nav.distanceToManeuver = self._distance_to_maneuver()
-    nav.laneCurrentIndex = self.lane_current
-    nav.laneTotalCount = self.lane_total
-    nav.laneConfidence = self.lane_conf
-    nav.highwaySuppressed = self._highway_suppressed
+      nav.crossTrackDistance = float(self.cross_track_m)
+    if next_step is not None:
+      nav.maneuverType = next_step.maneuver_type
+      nav.maneuverModifier = next_step.maneuver_modifier
+      nav.upcomingRoadClasses = ",".join(next_step.road_classes)
+    if cur_step is not None:
+      nav.currentRoadClasses = ",".join(cur_step.road_classes)
+    nav.recommendedLaneSide = lane_side
+    nav.laneKeepDistance = float(lane_keep_m)
+    nav.missedManeuverCount = 0
     self.pm.send('nkaoudNavigationSP', nav_msg)
 
     # -- navRoute (polyline) — only re-publish on new route --
@@ -1046,14 +1072,11 @@ class NkaoudNavd:
     inst_msg = messaging.new_message('navInstruction')
     inst = inst_msg.navInstruction
     if active:
-      cur_step = self._current_step()
-      next_step = self._upcoming_step()
       dist = self._distance_to_maneuver()
       inst.maneuverDistance = dist
       if next_step is not None:
         inst.maneuverType = next_step.maneuver_type
         inst.maneuverModifier = next_step.maneuver_modifier
-        inst.roadName = next_step.name
       if self.route is not None:
         dist_rem = max(0.0, self.route.distance_total - self.last_distance_along)
         inst.distanceRemaining = dist_rem
@@ -1068,8 +1091,8 @@ class NkaoudNavd:
           if dist < b.distance_along_geometry:
             active_banner = b
         inst.showFull = dist < active_banner.distance_along_geometry
-        inst.primaryText = active_banner.primary_text
-        inst.secondaryText = active_banner.secondary_text
+        inst.maneuverPrimaryText = active_banner.primary_text
+        inst.maneuverSecondaryText = active_banner.secondary_text
     self.pm.send('navInstruction', inst_msg)
 
 
