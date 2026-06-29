@@ -83,6 +83,12 @@ ZONE_THRESHOLDS: dict[str, tuple[float, float]] = {
 }
 SLOW_START_FACTOR = 4.0  # slow-down starts at this multiple of turn_cue_m
 
+# Navigation zone scaling by speed. At 120 km/h and above, the zone gets
+# +200 % buffer (3x the base distance total). Below that it scales linearly
+# with speed.
+NAV_ZONE_SCALE_MAX_SPEED_MS = 120.0 / 3.6
+NAV_ZONE_SCALE_MAX_EXTRA = 2.0
+
 HIGHWAY_ROAD_CLASSES: frozenset[str] = frozenset({"motorway", "motorway_link", "trunk"})
 RAMP_MANEUVER_TYPES: frozenset[str] = frozenset({"off ramp", "on ramp", "fork", "merge"})
 
@@ -213,6 +219,14 @@ def _max_curvature(geometry: list[Coordinate], max_dist_m: float = CURVATURE_LOO
 
 def _bearing_delta(a: float, b: float) -> float:
   return abs((a - b + 540.0) % 360.0 - 180.0)
+
+
+def _scaled_nav_zone_distance(base_m: float, v_ego: float) -> float:
+  if base_m <= 0.0:
+    return 0.0
+  speed_ratio = max(0.0, min(v_ego / NAV_ZONE_SCALE_MAX_SPEED_MS, 1.0))
+  scale = 1.0 + NAV_ZONE_SCALE_MAX_EXTRA * speed_ratio
+  return base_m * scale
 
 
 # ===========================================================================
@@ -738,7 +752,8 @@ class NkaoudNavd:
     if _road_class(cur_step) != "highway":
       return
     dist = self._distance_to_maneuver()
-    _, lane_keep_m = ZONE_THRESHOLDS["highway"]
+    _, lane_keep_m_base = ZONE_THRESHOLDS["highway"]
+    lane_keep_m = _scaled_nav_zone_distance(lane_keep_m_base, self.last_v_ego)
     # Only suppress when the driver blinkers OUTSIDE the nav zone
     if dist > lane_keep_m or self.route is None:
       self._highway_suppressed = True
@@ -782,7 +797,9 @@ class NkaoudNavd:
 
     modifier = next_step.maneuver_modifier
     road_class = _road_class(cur_step)
-    turn_cue_m, lane_keep_m = ZONE_THRESHOLDS[road_class]
+    turn_cue_m_base, lane_keep_m_base = ZONE_THRESHOLDS[road_class]
+    turn_cue_m = _scaled_nav_zone_distance(turn_cue_m_base, self.last_v_ego)
+    lane_keep_m = _scaled_nav_zone_distance(lane_keep_m_base, self.last_v_ego)
 
     # ---- ZONE 1: TURN CUE ------------------------------------------------
     if dist <= turn_cue_m and modifier in (SHARP_TURN_LEFT | SHARP_TURN_RIGHT):
@@ -934,7 +951,8 @@ class NkaoudNavd:
 
     cur_step = self._current_step()
     road_class = _road_class(cur_step)
-    turn_cue_m, _ = ZONE_THRESHOLDS[road_class]
+    turn_cue_m_base, _ = ZONE_THRESHOLDS[road_class]
+    turn_cue_m = _scaled_nav_zone_distance(turn_cue_m_base, self.last_v_ego)
     slow_start_m = turn_cue_m * SLOW_START_FACTOR
 
     dist = self._distance_to_maneuver()
