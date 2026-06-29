@@ -105,6 +105,20 @@ _TOLERANCE_IDX_TO_PCT = [75, 100, 125]          # % of v_target; index default =
 _ACCEL_IDX_TO_INT100 = [200, 250, 300]          # int*100 m/s²; index default = 1 (2.5 m/s²)
 _LANE_CHANGE_COOLDOWN_IDX_TO_S = [0.0, 1.0, 2.0, 3.0, 5.0]
 
+
+def _param_index(raw: object, default: int) -> int:
+  if raw is None:
+    return default
+  if isinstance(raw, int):
+    return raw
+  if isinstance(raw, bytes):
+    try:
+      raw = raw.decode("utf-8")
+    except Exception:
+      return default
+  raw_s = str(raw).strip()
+  return int(raw_s) if raw_s.isdigit() else default
+
 # ---------------------------------------------------------------------------
 # Highway default
 # ---------------------------------------------------------------------------
@@ -467,23 +481,23 @@ class NkaoudNavd:
     self._highway_default_enabled = self.params.get_bool("NkaoudNavHighwayDefault")
 
     raw_tol = self.params.get("NkaoudNavTurnTolerance")
-    tol_idx = int(raw_tol) if raw_tol and raw_tol.isdigit() else 1
+    tol_idx = _param_index(raw_tol, 1)
     tol_pct = _TOLERANCE_IDX_TO_PCT[max(0, min(tol_idx, len(_TOLERANCE_IDX_TO_PCT) - 1))]
     self._turn_tolerance = tol_pct / 100.0
 
     raw_accel = self.params.get("NkaoudNavMaxLatAccel")
-    accel_idx = int(raw_accel) if raw_accel and raw_accel.isdigit() else 1
+    accel_idx = _param_index(raw_accel, 1)
     accel_int100 = _ACCEL_IDX_TO_INT100[max(0, min(accel_idx, len(_ACCEL_IDX_TO_INT100) - 1))]
     self._max_lat_accel = accel_int100 / 100.0
 
     raw_cooldown = self.params.get("NkaoudNavLaneChangeCooldown")
-    cooldown_idx = int(raw_cooldown) if raw_cooldown and raw_cooldown.isdigit() else 2
+    cooldown_idx = _param_index(raw_cooldown, 2)
     self._lane_change_cooldown_s = _LANE_CHANGE_COOLDOWN_IDX_TO_S[
       max(0, min(cooldown_idx, len(_LANE_CHANGE_COOLDOWN_IDX_TO_S) - 1))
     ]
 
     raw_pref = self.params.get("NkaoudNavHighwayLanePref")
-    self._highway_lane_pref = int(raw_pref) if raw_pref and raw_pref.isdigit() else _LANE_PREF_CENTER
+    self._highway_lane_pref = _param_index(raw_pref, _LANE_PREF_CENTER)
 
   # -------------------------------------------------------------------------
   # Main loop
