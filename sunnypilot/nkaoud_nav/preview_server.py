@@ -28,7 +28,7 @@ from openpilot.sunnypilot.nkaoud_nav.adjacent_vehicle_detector import (
   BUF_GEOMETRY_PATH, CAPTURE_MAX_BYTES, CAPTURE_MAX_FILES, MAX_DETECTOR_HZ, PREVIEW_DETECTOR_CROP_PATH,
   PREVIEW_FULL_FRAME_CROP_PATH, PREVIEW_MODEL_INPUT_PATH, PREVIEW_PNG_PATH,
   PREVIEW_PNG_PATH_FULL, PREVIEW_PNG_PATH_LIMITED, PREVIEW_RAW_U_PATH, PREVIEW_RAW_V_PATH,
-  PREVIEW_RAW_Y_PATH, PREVIEW_REQUEST_PATH, TUNING_DEFAULTS, TUNING_KEYS,
+  PREVIEW_RAW_Y_PATH, PREVIEW_REQUEST_PATH, TUNING_DEFAULTS, TUNING_DEFAULTS_BY_CAMERA, TUNING_KEYS,
   active_camera, capture_delete_all, capture_files, capture_hz, capture_set_request,
   capture_stats, frame_info, load_tuning, save_tuning,
 )
@@ -379,9 +379,15 @@ def _tuning_json() -> bytes:
                      "_frame_w": info.get("frame_w"), "_frame_h": info.get("frame_h")}).encode()
 
 
+def _camera_defaults(keys: list[str], camera: str | None = None) -> dict[str, float]:
+  cam = camera or active_camera()
+  defaults = TUNING_DEFAULTS_BY_CAMERA.get(cam, TUNING_DEFAULTS)
+  return {key: defaults[key] for key in keys}
+
+
 def _tuning_post(route: str, body: bytes) -> tuple[int, str, bytes]:
   if route == "/reset":
-    return 200, "application/json", json.dumps(save_tuning(dict(TUNING_DEFAULTS))).encode()
+    return 200, "application/json", json.dumps(save_tuning(_camera_defaults(list(TUNING_KEYS)))).encode()
   if route != "/tuning":
     return 404, "text/plain; charset=utf-8", b"not found"
   try:
@@ -471,7 +477,6 @@ _PAGE_TEMPLATE = """<!doctype html>
   <script>
     const SLIDERS = __SLIDERS__;
     const IMAGES = __IMAGES__;
-    const DEFAULTS = __DEFAULTS__;
     const controls = document.getElementById('controls');
     const els = {};
     function fmt(s, v) { return parseFloat(v).toFixed(s.step < 1 ? 2 : 0); }
@@ -508,7 +513,11 @@ _PAGE_TEMPLATE = """<!doctype html>
                          body: JSON.stringify(body) })
         .then(r => r.ok ? r.json() : null).then(j => { if (j) apply(j); }).catch(() => {});
     }
-    document.getElementById('reset').addEventListener('click', () => post(DEFAULTS));
+    function resetDefaults() {
+      fetch('/reset', { method: 'POST' })
+        .then(r => r.ok ? r.json() : null).then(j => { if (j) apply(j); }).catch(() => {});
+    }
+    document.getElementById('reset').addEventListener('click', resetDefaults);
     let curCam = null;
     fetch('/tuning.json').then(r => r.json()).then(state => { curCam = state._camera; apply(state); }).catch(() => {});
     // Reload sliders only when the selected camera changes (avoids overwriting
@@ -537,14 +546,12 @@ def _render_tuning_page(title: str, lead: str, images: list[dict[str, str]], key
     f'<img id="{im["id"]}" src="{im["route"]}" alt="(waiting...)"></div>'
     for im in images
   )
-  defaults = {k: TUNING_DEFAULTS[k] for k in keys}
   return (_PAGE_TEMPLATE
           .replace("__TITLE__", title)
           .replace("__LEAD__", lead)
           .replace("__IMAGES_HTML__", imgs_html)
           .replace("__SLIDERS__", _sliders_json(keys))
           .replace("__IMAGES__", json.dumps([{"id": im["id"], "route": im["route"]} for im in images]))
-          .replace("__DEFAULTS__", json.dumps(defaults))
           ).encode()
 
 
