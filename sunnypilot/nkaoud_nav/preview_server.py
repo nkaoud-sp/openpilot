@@ -28,9 +28,9 @@ from openpilot.sunnypilot.nkaoud_nav.adjacent_vehicle_detector import (
   BUF_GEOMETRY_PATH, CAPTURE_MAX_BYTES, CAPTURE_MAX_FILES, MAX_DETECTOR_HZ, PREVIEW_DETECTOR_CROP_PATH,
   PREVIEW_FULL_FRAME_CROP_PATH, PREVIEW_MODEL_INPUT_PATH, PREVIEW_PNG_PATH,
   PREVIEW_PNG_PATH_FULL, PREVIEW_PNG_PATH_LIMITED, PREVIEW_RAW_U_PATH, PREVIEW_RAW_V_PATH,
-  PREVIEW_RAW_Y_PATH, PREVIEW_REQUEST_PATH, TUNING_DEFAULTS, TUNING_KEYS,
+  PREVIEW_RAW_Y_PATH, PREVIEW_REQUEST_PATH, TUNING_KEYS,
   active_camera, capture_delete_all, capture_files, capture_hz, capture_set_request,
-  capture_stats, frame_info, load_tuning, save_tuning,
+  capture_stats, frame_info, load_tuning, save_tuning, tuning_defaults,
 )
 from openpilot.sunnypilot.nkaoud_nav.token_server import get_local_ip
 
@@ -376,12 +376,13 @@ def _tuning_json() -> bytes:
   # the crop sliders to the live stream; apply() ignores non-slider keys.
   info = frame_info()
   return json.dumps({**load_tuning(), "_camera": active_camera(),
-                     "_frame_w": info.get("frame_w"), "_frame_h": info.get("frame_h")}).encode()
+                     "_frame_w": info.get("frame_w"), "_frame_h": info.get("frame_h"),
+                     "_defaults": tuning_defaults()}).encode()
 
 
 def _tuning_post(route: str, body: bytes) -> tuple[int, str, bytes]:
   if route == "/reset":
-    return 200, "application/json", json.dumps(save_tuning(dict(TUNING_DEFAULTS))).encode()
+    return 200, "application/json", json.dumps(save_tuning(tuning_defaults())).encode()
   if route != "/tuning":
     return 404, "text/plain; charset=utf-8", b"not found"
   try:
@@ -471,7 +472,7 @@ _PAGE_TEMPLATE = """<!doctype html>
   <script>
     const SLIDERS = __SLIDERS__;
     const IMAGES = __IMAGES__;
-    const DEFAULTS = __DEFAULTS__;
+    let defaults = __DEFAULTS__;
     const controls = document.getElementById('controls');
     const els = {};
     function fmt(s, v) { return parseFloat(v).toFixed(s.step < 1 ? 2 : 0); }
@@ -494,6 +495,13 @@ _PAGE_TEMPLATE = """<!doctype html>
     });
     function apply(state) {
       if (state._camera) document.getElementById('cam').textContent = state._camera;
+      if (state._defaults) {
+        const nextDefaults = {};
+        SLIDERS.forEach(s => {
+          if (state._defaults[s.key] !== undefined) nextDefaults[s.key] = state._defaults[s.key];
+        });
+        defaults = nextDefaults;
+      }
       // Auto-range the crop sliders to the live frame size of this camera.
       if (state._frame_w && els['crop_x']) { els['crop_x'].inp.max = state._frame_w; els['crop_w'].inp.max = state._frame_w; }
       if (state._frame_h && els['crop_y']) { els['crop_y'].inp.max = state._frame_h; els['crop_h'].inp.max = state._frame_h; }
@@ -508,7 +516,7 @@ _PAGE_TEMPLATE = """<!doctype html>
                          body: JSON.stringify(body) })
         .then(r => r.ok ? r.json() : null).then(j => { if (j) apply(j); }).catch(() => {});
     }
-    document.getElementById('reset').addEventListener('click', () => post(DEFAULTS));
+    document.getElementById('reset').addEventListener('click', () => post(defaults));
     let curCam = null;
     fetch('/tuning.json').then(r => r.json()).then(state => { curCam = state._camera; apply(state); }).catch(() => {});
     // Reload sliders only when the selected camera changes (avoids overwriting
@@ -537,7 +545,7 @@ def _render_tuning_page(title: str, lead: str, images: list[dict[str, str]], key
     f'<img id="{im["id"]}" src="{im["route"]}" alt="(waiting...)"></div>'
     for im in images
   )
-  defaults = {k: TUNING_DEFAULTS[k] for k in keys}
+  defaults = {k: tuning_defaults()[k] for k in keys}
   return (_PAGE_TEMPLATE
           .replace("__TITLE__", title)
           .replace("__LEAD__", lead)

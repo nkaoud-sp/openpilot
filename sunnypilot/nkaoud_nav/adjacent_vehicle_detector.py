@@ -279,6 +279,25 @@ DEFAULT_CROP_H = _env_float("NKAOUD_VISUAL_VEHICLE_CROP_H", float(DETECT_CROP_H)
 MAX_DETECTOR_HZ = 20
 DEFAULT_HZ = float(max(1, min(MAX_DETECTOR_HZ, int(_env_float("NKAOUD_VISUAL_VEHICLE_HZ", 1.0)))))
 
+CAMERA_CROP_DEFAULT_OVERRIDES: dict[str, dict[str, float]] = {
+  "driver": {
+    "crop_x": 1365.0,
+    "crop_y": 231.0,
+    "crop_w": 543.0,
+    "crop_h": 530.0,
+    "hz": 5.0,
+    "blocked_threshold": 0.90,
+  },
+  "wide": {
+    "crop_x": 903.0,
+    "crop_y": 509.0,
+    "crop_w": 855.0,
+    "crop_h": 281.0,
+    "hz": 5.0,
+    "blocked_threshold": 0.90,
+  },
+}
+
 # Live tuning: a small JSON the web portal writes and the detector re-reads
 # (mtime-gated) every frame, so ROI/gate/confidence can be adjusted on-road
 # without a restart. Persisted under /data so it survives reboots. The file is
@@ -422,6 +441,13 @@ TUNING_DEFAULTS: dict[str, float] = {
 }
 
 
+def tuning_defaults(camera: str | None = None) -> dict[str, float]:
+  cam = camera or active_camera()
+  values = dict(TUNING_DEFAULTS)
+  values.update(CAMERA_CROP_DEFAULT_OVERRIDES.get(cam, {}))
+  return values
+
+
 def _load_all_tuning() -> dict[str, Any]:
   try:
     data = json.loads(Path(TUNING_PATH).read_text())
@@ -433,7 +459,7 @@ def _load_all_tuning() -> dict[str, Any]:
 def load_tuning(camera: str | None = None) -> dict[str, float]:
   """Tuning values for `camera` (or the active one), defaults filled in."""
   cam = camera or active_camera()
-  values = dict(TUNING_DEFAULTS)
+  values = tuning_defaults(cam)
   data = _load_all_tuning().get(cam, {})
   if isinstance(data, dict):
     for key in TUNING_KEYS:
@@ -603,7 +629,7 @@ class VisualVehicleDetector:
     self.crop_w = DEFAULT_CROP_W
     self.crop_h = DEFAULT_CROP_H
     self.camera = active_camera(self.params)
-    self._tuning_mtime = -1.0
+    self._tuning_mtime = -2.0
     self._refresh_tuning()
 
   def _refresh_tuning(self, camera: str | None = None) -> None:
