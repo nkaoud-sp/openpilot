@@ -6,7 +6,7 @@ A supported vehicle is one that just works when you install a comma device. All 
 
 # 340 Supported Cars
 
-|Make|Model|Supported Package|ACC|No ACC accel below|No ALC below|Steering Torque|Resume from stop|<a href="##"><img width=2000></a>Hardware Needed<br>&nbsp;|Video|Setup Video|
+|Make|Model|Supported Package|ACC|NoACC accel below|No ALC below|Steering Torque|Resume from stop|<a href="##"><img width=2000></a>Hardware Needed<br>&nbsp;|Video|Setup Video|
 |---|---|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 |Acura|ILX 2016-18|Technology Plus Package or AcuraWatch Plus|openpilot|26 mph|25 mph|[![star](assets/icon-star-empty.svg)](##)|[![star](assets/icon-star-empty.svg)](##)|<details><summary>Parts</summary><sub>- 1 Honda Nidec connector<br>- 1 OBD-C cable (2 ft)<br>- 1 comma four<br>- 1 comma power v3<br>- 1 harness box<br>- 1 mount<br><a href="https://comma.ai/shop/comma-3x?harness=Acura ILX 2016-18">Buy Here</a></sub></details>|||
 |Acura|ILX 2019|All|openpilot|26 mph|25 mph|[![star](assets/icon-star-empty.svg)](##)|[![star](assets/icon-star-empty.svg)](##)|<details><summary>Parts</summary><sub>- 1 Honda Nidec connector<br>- 1 OBD-C cable (2 ft)<br>- 1 comma four<br>- 1 comma power v3<br>- 1 harness box<br>- 1 mount<br><a href="https://comma.ai/shop/comma-3x?harness=Acura ILX 2019">Buy Here</a></sub></details>|||
