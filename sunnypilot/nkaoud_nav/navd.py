@@ -104,6 +104,13 @@ HIGHWAY_CLASSES = ("motorway", "motorway_link", "trunk")
 HIGHWAY_DEFAULT_MIN_SPEED_MS = 60.0 / 3.6      # ~60 km/h; below this we don't auto-position
 HIGHWAY_DEFAULT_MIN_DIST_M = 1500.0            # only target center when next maneuver is at least this far
 
+# Highway lane preference (NkaoudNavHighwayLanePref, set in the nav settings UI):
+# which lane to hold while cruising a highway/main road with no imminent
+# maneuver. Default is center to preserve the previous always-center behavior.
+HIGHWAY_LANE_PREF_LEFT = 0
+HIGHWAY_LANE_PREF_CENTER = 1
+HIGHWAY_LANE_PREF_RIGHT = 2
+
 # Phase 11: "Share" destination -- HTTP fetch when the picker writes a new
 # NkaoudNavShareTrigger token. Retries on failure are bounded so a wrong
 # URL doesn't hammer the endpoint forever.
@@ -795,10 +802,19 @@ class NkaoudNavd:
     strict = 1
     return int(0.5 + loose - (loose - strict) * progress)
 
+  def _highway_lane_pref(self) -> int:
+    """User-selected highway cruise lane (NkaoudNavHighwayLanePref). Defaults
+    to center on any missing/garbled value."""
+    try:
+      return int(self.params.get("NkaoudNavHighwayLanePref", return_default=True))
+    except (TypeError, ValueError):
+      return HIGHWAY_LANE_PREF_CENTER
+
   def _highway_default_desire(self, cur_step, dist: float):
-    """When cruising on a motorway with no imminent maneuver, drift to
-    the center lane. ceil(N/2) means: 3-lane -> 2 (center), 4-lane ->
-    2 (center-left), 5-lane -> 3 (center)."""
+    """When cruising on a highway/main road with no imminent maneuver, hold the
+    user's preferred lane (NkaoudNavHighwayLanePref): left most, center, or
+    right most. Center uses ceil(N/2): 3-lane -> 2 (center), 4-lane -> 2
+    (center-left), 5-lane -> 3 (center)."""
     if cur_step is None or not cur_step.road_classes:
       return NavDesire.none
     if not any(c in HIGHWAY_CLASSES for c in cur_step.road_classes):
@@ -810,13 +826,19 @@ class NkaoudNavd:
       return NavDesire.none
     if self.lane_conf == "unknown" or self.lane_total <= 1 or self.lane_current <= 0:
       return NavDesire.none
-    target = math.ceil(self.lane_total / 2)
-    # ceil(N/2) deliberately biases center-LEFT on even-lane roads:
-    #   2 -> 1 (leftmost; no real center)
-    #   3 -> 2 (middle)
-    #   4 -> 2 (one in from leftmost; matches "leftmost - 1" intent)
-    #   5 -> 3 (true center)
-    #   6 -> 3 (center-left)
+    pref = self._highway_lane_pref()
+    if pref == HIGHWAY_LANE_PREF_LEFT:
+      target = 1
+    elif pref == HIGHWAY_LANE_PREF_RIGHT:
+      target = self.lane_total
+    else:
+      # Center. ceil(N/2) deliberately biases center-LEFT on even-lane roads:
+      #   2 -> 1 (leftmost; no real center)
+      #   3 -> 2 (middle)
+      #   4 -> 2 (one in from leftmost; matches "leftmost - 1" intent)
+      #   5 -> 3 (true center)
+      #   6 -> 3 (center-left)
+      target = math.ceil(self.lane_total / 2)
     if self.lane_current == target:
       return NavDesire.none
     side = "left" if self.lane_current > target else "right"

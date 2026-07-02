@@ -82,6 +82,15 @@ class NavSettingsLayout(Widget):
                             "other than \"Off\"); blind-spot monitor still gates execution. Experimental."),
       param="NkaoudNavControlSteer",
     )
+    self._highway_lane_pref = multiple_button_item_sp(
+      title=lambda: tr("Highway Lane Preference"),
+      description=lambda: tr("Which lane to hold while cruising a highway / main road with no upcoming maneuver. " +
+                            "Requires \"Steer / Lane-Change With The Route\"; blind-spot monitor still gates any " +
+                            "lane change."),
+      buttons=[lambda: tr("Left Most"), lambda: tr("Center"), lambda: tr("Right Most")],
+      param="NkaoudNavHighwayLanePref",
+      button_width=280,
+    )
 
     items = [
       self._token_button,
@@ -92,6 +101,7 @@ class NavSettingsLayout(Widget):
       self._show_banner,
       self._control_speed,
       self._control_steer,
+      self._highway_lane_pref,
     ]
     return items
 
