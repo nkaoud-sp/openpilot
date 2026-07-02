@@ -1,3 +1,5 @@
+import time
+
 from cereal import log, custom
 from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_MDL
@@ -28,6 +30,16 @@ NAV_LANE_CHANGE_DIRS = {
 
 LANE_CHANGE_SPEED_MIN = 20 * CV.MPH_TO_MS
 LANE_CHANGE_TIME_MAX = 10.
+
+# nkaoud_nav: extra clearance gate for NAV-initiated lane changes only (the
+# driver-blinker path is unchanged). On top of BSM, the visual vehicle
+# detector's car-probability on the target side must stay below the threshold,
+# and BOTH signals (BSM clear AND visual clear) must hold continuously for
+# NAV_LC_VISUAL_CLEAR_TIME before the change may start; any breach resets it.
+# Only the probability is used here -- never the detector's block/clear boolean.
+VISUAL_CONF_BLOCK_THRESHOLD = 0.60   # P(car present) >= this blocks the side ("< 60%")
+VISUAL_STALE_TIME = 1.0              # s; detector state older than this counts as no signal
+NAV_LC_VISUAL_CLEAR_TIME = 4.0       # s; BSM + visual must both stay clear this long
 
 DESIRES = {
   LaneChangeDirection.none: {
@@ -63,6 +75,8 @@ class DesireHelper:
     self.lane_change_direction = LaneChangeDirection.none
     self.lane_change_timer = 0.0
     self.lane_change_ll_prob = 1.0
+    self.nav_lc_clear_timer = 0.0
+    self.nav_lc_initiated = False
     self.keep_pulse_timer = 0.0
     self.prev_one_blinker = False
     self.desire = log.Desire.none
@@ -74,7 +88,31 @@ class DesireHelper:
   def get_lane_change_direction(CS):
     return LaneChangeDirection.left if CS.leftBlinker else LaneChangeDirection.right
 
-  def update(self, carstate, lateral_active, lane_change_prob, nav_desire="none"):
+  def _visual_side_clear(self, direction, vs) -> bool:
+    """True when the visual vehicle detector does NOT see a likely car on the
+    target side. Falls back to True (BSM-only) whenever there is no usable
+    per-side signal: no message, a stale message, or no side probability.
+    Only the car-probability is consulted -- never the block/clear boolean."""
+    if vs is None or direction == LaneChangeDirection.none:
+      return True
+    # The detector stamps monotonicTime with time.monotonic(); CLOCK_MONOTONIC
+    # is system-wide, so it is directly comparable across processes.
+    if (time.monotonic() - float(vs.monotonicTime)) > VISUAL_STALE_TIME:
+      return True
+    side = "left" if direction == LaneChangeDirection.left else "right"
+    # Worst (highest) car-probability across every zone reporting this side, over
+    # the active classifier zones and the wide+driver dual-camera zones.
+    worst = None
+    for zones in (vs.classifier.zones, vs.wideZones, vs.driverZones):
+      for z in zones:
+        if str(z.name) == side and bool(z.hasProbability):
+          p = float(z.probability)
+          worst = p if worst is None else max(worst, p)
+    if worst is None:
+      return True  # no per-side probability -> fall back to BSM only
+    return worst < VISUAL_CONF_BLOCK_THRESHOLD
+
+  def update(self, carstate, lateral_active, lane_change_prob, nav_desire="none", visual_vehicle_state=None):
     self.alc.update_params()
     self.lane_turn_controller.update_params()
     v_ego = carstate.vEgo
@@ -101,6 +139,10 @@ class DesireHelper:
         if (driver_kicked or nav_requesting_lc) and not below_lane_change_speed:
           self.lane_change_state = LaneChangeState.preLaneChange
           self.lane_change_ll_prob = 1.0
+          self.nav_lc_clear_timer = 0.0
+          # Ownership: the clearance gate applies only when the route initiated
+          # this maneuver. A simultaneous driver blinker keeps the driver path.
+          self.nav_lc_initiated = nav_requesting_lc and not driver_kicked
           # Initialize lane change direction (nav wins if both are active)
           self.lane_change_direction = nav_lc_dir if nav_requesting_lc else self.get_lane_change_direction(carstate)
 
@@ -121,13 +163,32 @@ class DesireHelper:
 
         self.alc.update_lane_change(blindspot_detected, carstate.brakePressed)
 
+        # nkaoud_nav: sustained BSM + visual clearance gate for nav-initiated
+        # lane changes. The change may only start once BOTH BSM is clear AND the
+        # visual detector's target-side car-probability is below threshold, held
+        # continuously for NAV_LC_VISUAL_CLEAR_TIME. Any breach of either resets
+        # the timer. Visual falls back to BSM-only when it has no fresh reading.
+        visual_clear = self._visual_side_clear(self.lane_change_direction, visual_vehicle_state)
+        nav_gate_clear = (not blindspot_detected) and visual_clear
+        if nav_gate_clear:
+          self.nav_lc_clear_timer += DT_MDL
+        else:
+          self.nav_lc_clear_timer = 0.0
+
         # Exit only when neither driver nor nav is asking, or speed dropped.
         if ((not one_blinker and not nav_requesting_lc) or below_lane_change_speed):
           self.lane_change_state = LaneChangeState.off
           self.lane_change_direction = LaneChangeDirection.none
-        elif (torque_applied or self.alc.auto_lane_change_allowed or nav_requesting_lc) and not blindspot_detected:
-          # Nav-requested lane changes advance as soon as BSM is clear,
-          # respecting the alc timer the user set via their own settings.
+        elif torque_applied and not blindspot_detected:
+          # Driver physically nudged: honor immediately (BSM-gated), even while a
+          # nav request is active. Preserves the driver's instant-override path.
+          self.lane_change_state = LaneChangeState.laneChangeStarting
+        elif self.nav_lc_initiated:
+          # Nav-initiated: gated by the sustained BSM + visual clearance above.
+          if nav_gate_clear and self.nav_lc_clear_timer >= NAV_LC_VISUAL_CLEAR_TIME:
+            self.lane_change_state = LaneChangeState.laneChangeStarting
+        elif self.alc.auto_lane_change_allowed and not blindspot_detected:
+          # Driver-blinker auto-timer path, unchanged.
           self.lane_change_state = LaneChangeState.laneChangeStarting
 
       # LaneChangeState.laneChangeStarting

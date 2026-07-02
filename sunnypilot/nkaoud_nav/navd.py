@@ -758,10 +758,17 @@ class NkaoudNavd:
 
   def _lc_or_keep(self, side: str):
     """Pick laneChange* (auto-execute) or keep* (bias) based on whether
-    the user has AutoLaneChange enabled + we're outside the cooldown."""
+    the user has AutoLaneChange enabled + we're outside the cooldown.
+
+    We keep asserting laneChange* while DesireHelper is still in preLaneChange
+    (not just when it's idle at 'off'): the downstream BSM + visual clearance
+    gate can hold the change in preLaneChange for several seconds, and dropping
+    back to keep* there would clear nav_requesting_lc and abort the pending
+    change before the gate ever completes. Once it actually starts
+    (laneChangeStarting) we back off as before."""
     alc_timer = self.params.get("AutoLaneChangeTimer", return_default=True)
     auto_lc_allowed = (alc_timer is not None and int(alc_timer) != AUTO_LANE_CHANGE_OFF
-                       and self._last_lane_change_state == "off"
+                       and self._last_lane_change_state in ("off", "preLaneChange")
                        and time.monotonic() >= self._lc_cooldown_until_t)
     if auto_lc_allowed:
       return NavDesire.laneChangeLeft if side == "left" else NavDesire.laneChangeRight
