@@ -5,7 +5,13 @@ import time
 import pyray as rl
 
 from openpilot.selfdrive.ui.ui_state import ui_state
-from openpilot.system.ui.lib.application import gui_app
+# Reuse the exact gate thresholds so the reason pill can't drift from the
+# actual desire_helper lane-change gate.
+from openpilot.selfdrive.controls.lib.desire_helper import (
+  LANE_CHANGE_SPEED_MIN, VISUAL_CONF_BLOCK_THRESHOLD, VISUAL_STALE_TIME,
+)
+from openpilot.system.ui.lib.application import gui_app, FontWeight
+from openpilot.system.ui.lib.text_measure import measure_text_cached
 
 
 PARAM_REFRESH_S = 0.5
@@ -17,6 +23,12 @@ LANE_CHANGE_OVERLAY_DISTANCE_M = 180.0
 LANE_PREP_OVERLAY_DISTANCE_M = 100.0
 OVERLAY_TINT_MIN_ALPHA = 96
 OVERLAY_TINT_MAX_ALPHA = 255
+
+# Reason pill (shown under the flashing arrow while a nav lane change is held).
+PILL_FONT_SIZE = 40
+PILL_BLOCK_COLOR = rl.Color(200, 45, 45, 225)   # a real blocker (BSM / camera / speed)
+PILL_WAIT_COLOR = rl.Color(70, 70, 74, 210)     # clear, just serving the confirmation hold
+PILL_TEXT_COLOR = rl.Color(255, 255, 255, 255)
 
 
 class NavTurnArrow:
@@ -38,6 +50,7 @@ class NavTurnArrow:
       "sharp_right": gui_app.texture("../../sunnypilot/selfdrive/assets/nav_turn_arrows/arrow_ct_v.png"),
       "sharp_left": gui_app.texture("../../sunnypilot/selfdrive/assets/nav_turn_arrows/arrow_ct_v.png", flip_x=True),
     }
+    self._pill_font = gui_app.font(FontWeight.BOLD)
 
   def _refresh_params(self) -> None:
     now = time.monotonic()
@@ -115,6 +128,54 @@ class NavTurnArrow:
       return OVERLAY_TINT_MAX_ALPHA
     return OVERLAY_TINT_MIN_ALPHA
 
+  @staticmethod
+  def _visual_side_max_prob(side: str) -> float | None:
+    """Worst (highest) car-probability the visual detector reports on `side`,
+    or None when there's no fresh per-side signal. Mirrors the aggregation in
+    desire_helper._visual_side_clear (probability only, ignoring block flags)."""
+    sm = ui_state.sm
+    if sm.recv_frame.get("visualVehicleDetectorStateSP", 0) <= 0:
+      return None
+    vs = sm["visualVehicleDetectorStateSP"]
+    if (time.monotonic() - float(vs.monotonicTime)) > VISUAL_STALE_TIME:
+      return None
+    worst = None
+    for zones in (vs.classifier.zones, vs.wideZones, vs.driverZones):
+      for z in zones:
+        if str(z.name) == side and bool(z.hasProbability):
+          p = float(z.probability)
+          worst = p if worst is None else max(worst, p)
+    return worst
+
+  def _lane_change_block_reason(self, side: str) -> tuple[str, bool] | None:
+    """(text, is_hard_block) for why a nav lane change to `side` hasn't started
+    yet, or None once it's actually executing. Derived from the same signals
+    the desire_helper gate uses: below-speed, blind spot, visual car; otherwise
+    it's clear and just serving the sustained-clearance confirmation hold."""
+    sm = ui_state.sm
+    lcs = self._normalize(sm["modelV2"].meta.laneChangeState)
+    if lcs in ("lanechangestarting", "lanechangefinishing"):
+      return None  # under way, not held
+    cs = sm["carState"]
+    if cs.vEgo < LANE_CHANGE_SPEED_MIN:
+      return ("Too slow", True)
+    if (cs.leftBlindspot if side == "left" else cs.rightBlindspot):
+      return ("Blind spot", True)
+    vp = self._visual_side_max_prob(side)
+    if vp is not None and vp >= VISUAL_CONF_BLOCK_THRESHOLD:
+      return (f"Camera {vp * 100:.0f}%", True)
+    return ("Confirming", False)
+
+  def _draw_pill(self, center_x: float, top_y: float, text: str, bg: rl.Color) -> None:
+    pad_x, pad_y = 30.0, 14.0
+    text_w = measure_text_cached(self._pill_font, text, PILL_FONT_SIZE, 0).x
+    w = text_w + 2 * pad_x
+    h = PILL_FONT_SIZE + 2 * pad_y
+    x = center_x - w / 2
+    rl.draw_rectangle_rounded(rl.Rectangle(x, top_y, w, h), 0.5, 16, bg)
+    rl.draw_text_ex(self._pill_font, text, rl.Vector2(int(x + pad_x), int(top_y + pad_y)),
+                    PILL_FONT_SIZE, 0, PILL_TEXT_COLOR)
+
   def render(self, rect: rl.Rectangle) -> None:
     self._refresh_params()
     if not (self._enabled and self._show_banner):
@@ -143,3 +204,14 @@ class NavTurnArrow:
     pos_y = rect.y + (rect.height - draw_h) / 2
     tint = rl.Color(255, 255, 255, self._flash_alpha())
     rl.draw_texture_ex(texture, rl.Vector2(pos_x, pos_y), 0.0, scale, tint)
+
+    # nkaoud_nav: reason pill under the arrow, only for actual lane-change
+    # desires (not keep/turn cues that share the same texture). Explains why a
+    # held nav lane change hasn't started -- or that it's confirming clearance.
+    desire = self._normalize(nav_sp.recommendedDesire)
+    if desire in ("lanechangeleft", "lanechangeright"):
+      reason = self._lane_change_block_reason("left" if desire.endswith("left") else "right")
+      if reason is not None:
+        text, is_block = reason
+        self._draw_pill(rect.x + rect.width / 2, pos_y + draw_h + 24, text,
+                        PILL_BLOCK_COLOR if is_block else PILL_WAIT_COLOR)
