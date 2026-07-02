@@ -8,7 +8,7 @@ from openpilot.selfdrive.ui.ui_state import ui_state
 # Reuse the exact gate thresholds so the reason pill can't drift from the
 # actual desire_helper lane-change gate.
 from openpilot.selfdrive.controls.lib.desire_helper import (
-  LANE_CHANGE_SPEED_MIN, VISUAL_CONF_BLOCK_THRESHOLD, VISUAL_STALE_TIME,
+  VISUAL_CONF_BLOCK_THRESHOLD, VISUAL_STALE_TIME,
 )
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.text_measure import measure_text_cached
@@ -24,10 +24,10 @@ LANE_PREP_OVERLAY_DISTANCE_M = 100.0
 OVERLAY_TINT_MIN_ALPHA = 96
 OVERLAY_TINT_MAX_ALPHA = 255
 
-# Reason pill (shown under the flashing arrow while a nav lane change is held).
+# Reason pill (shown under the flashing arrow only while a nav lane change is
+# actually blocked by BSM / camera / speed).
 PILL_FONT_SIZE = 40
-PILL_BLOCK_COLOR = rl.Color(200, 45, 45, 225)   # a real blocker (BSM / camera / speed)
-PILL_WAIT_COLOR = rl.Color(70, 70, 74, 210)     # clear, just serving the confirmation hold
+PILL_BLOCK_COLOR = rl.Color(200, 45, 45, 225)
 PILL_TEXT_COLOR = rl.Color(255, 255, 255, 255)
 
 
@@ -147,24 +147,21 @@ class NavTurnArrow:
           worst = p if worst is None else max(worst, p)
     return worst
 
-  def _lane_change_block_reason(self, side: str) -> tuple[str, bool] | None:
-    """(text, is_hard_block) for why a nav lane change to `side` hasn't started
-    yet, or None once it's actually executing. Derived from the same signals
-    the desire_helper gate uses: below-speed, blind spot, visual car; otherwise
-    it's clear and just serving the sustained-clearance confirmation hold."""
+  def _lane_change_block_reason(self, side: str) -> str | None:
+    """Short reason a wanted nav lane change toward `side` is currently blocked,
+    or None when the side is clear (the keep* bias is free to proceed). Mirrors
+    the desire_helper keep* gate: blind spot, or visual car above threshold."""
     sm = ui_state.sm
     lcs = self._normalize(sm["modelV2"].meta.laneChangeState)
     if lcs in ("lanechangestarting", "lanechangefinishing"):
-      return None  # under way, not held
+      return None  # a state-machine change is under way, not blocked
     cs = sm["carState"]
-    if cs.vEgo < LANE_CHANGE_SPEED_MIN:
-      return ("Too slow", True)
     if (cs.leftBlindspot if side == "left" else cs.rightBlindspot):
-      return ("Blind spot", True)
+      return "Blind spot"
     vp = self._visual_side_max_prob(side)
     if vp is not None and vp >= VISUAL_CONF_BLOCK_THRESHOLD:
-      return (f"Camera {vp * 100:.0f}%", True)
-    return ("Confirming", False)
+      return f"Camera {vp * 100:.0f}%"
+    return None
 
   def _draw_pill(self, center_x: float, top_y: float, text: str, bg: rl.Color) -> None:
     pad_x, pad_y = 30.0, 14.0
@@ -205,13 +202,11 @@ class NavTurnArrow:
     tint = rl.Color(255, 255, 255, self._flash_alpha())
     rl.draw_texture_ex(texture, rl.Vector2(pos_x, pos_y), 0.0, scale, tint)
 
-    # nkaoud_nav: reason pill under the arrow, only for actual lane-change
-    # desires (not keep/turn cues that share the same texture). Explains why a
-    # held nav lane change hasn't started -- or that it's confirming clearance.
+    # nkaoud_nav: reason pill under the arrow, only for the route's lane-change
+    # cues (keep* is navd's cautious lane change; laneChange* handled too for
+    # completeness). Shown only while that move is actually blocked.
     desire = self._normalize(nav_sp.recommendedDesire)
-    if desire in ("lanechangeleft", "lanechangeright"):
+    if desire in ("keepleft", "keepright", "lanechangeleft", "lanechangeright"):
       reason = self._lane_change_block_reason("left" if desire.endswith("left") else "right")
       if reason is not None:
-        text, is_block = reason
-        self._draw_pill(rect.x + rect.width / 2, pos_y + draw_h + 24, text,
-                        PILL_BLOCK_COLOR if is_block else PILL_WAIT_COLOR)
+        self._draw_pill(rect.x + rect.width / 2, pos_y + draw_h + 24, reason, PILL_BLOCK_COLOR)

@@ -764,22 +764,24 @@ class NkaoudNavd:
     return self._highway_default_desire(cur_step, dist)
 
   def _lc_or_keep(self, side: str):
-    """Pick laneChange* (auto-execute) or keep* (bias) based on whether
-    the user has AutoLaneChange enabled + we're outside the cooldown.
+    """Desire for a wanted lateral move toward `side`.
 
-    We keep asserting laneChange* while DesireHelper is still in preLaneChange
-    (not just when it's idle at 'off'): the downstream BSM + visual clearance
-    gate can hold the change in preLaneChange for several seconds, and dropping
-    back to keep* there would clear nav_requesting_lc and abort the pending
-    change before the gate ever completes. Once it actually starts
-    (laneChangeStarting) we back off as before."""
+    We emit keep* -- a gentle, continuous lane-position bias that in practice
+    behaves as a cautious lane change -- when the user has an AutoLaneChange
+    timer set and we're outside the post-lane-change cooldown. Otherwise we
+    emit `none`; we deliberately do NOT fall back to a weaker soft bias.
+
+    Downstream, desire_helper holds keep* to the same clearance signals as a
+    real lane change (target-side BSM + visual). nav no longer emits the
+    laneChange* state-machine path, so the machine stays 'off' during nav
+    moves and the cooldown only ever arms after a DRIVER blinker lane change."""
     alc_timer = self.params.get("AutoLaneChangeTimer", return_default=True)
     auto_lc_allowed = (alc_timer is not None and int(alc_timer) != AUTO_LANE_CHANGE_OFF
-                       and self._last_lane_change_state in ("off", "preLaneChange")
+                       and self._last_lane_change_state == "off"
                        and time.monotonic() >= self._lc_cooldown_until_t)
     if auto_lc_allowed:
-      return NavDesire.laneChangeLeft if side == "left" else NavDesire.laneChangeRight
-    return NavDesire.keepLeft if side == "left" else NavDesire.keepRight
+      return NavDesire.keepLeft if side == "left" else NavDesire.keepRight
+    return NavDesire.none
 
   def _target_lane(self, side: str, dist: float, lane_keep_m: float, turn_cue_m: float) -> int | None:
     """1-indexed target lane. Lerps from 'any lane on the correct side'

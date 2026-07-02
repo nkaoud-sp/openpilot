@@ -232,7 +232,18 @@ class DesireHelper:
     nav_name = str(nav_desire)
     if (nav_name in NAV_DESIRE_MAP and nav_name != "none"
         and self.lane_change_state in (LaneChangeState.off, LaneChangeState.preLaneChange)):
-      self.desire = NAV_DESIRE_MAP[nav_name]
+      if nav_name in ("keepLeft", "keepRight"):
+        # keep* is navd's cautious lane-change bias, so hold it to the same
+        # clearance signals as a real lane change: only bias toward a side while
+        # that side's BSM is clear AND the visual detector is below threshold.
+        # Drop the bias (desire stays none) the instant either isn't clear.
+        keep_dir = LaneChangeDirection.left if nav_name == "keepLeft" else LaneChangeDirection.right
+        keep_bsm = carstate.leftBlindspot if keep_dir == LaneChangeDirection.left else carstate.rightBlindspot
+        if not keep_bsm and self._visual_side_clear(keep_dir, visual_vehicle_state):
+          self.desire = NAV_DESIRE_MAP[nav_name]
+      else:
+        # turnLeft / turnRight cues are not lane changes -- apply directly.
+        self.desire = NAV_DESIRE_MAP[nav_name]
 
     # Send keep pulse once per second during LaneChangeStart.preLaneChange
     if self.lane_change_state in (LaneChangeState.off, LaneChangeState.laneChangeStarting):
