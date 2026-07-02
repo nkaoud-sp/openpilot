@@ -51,11 +51,24 @@ class NavTurnArrow:
   def _normalize(value: object) -> str:
     return str(value or "").strip().lower().replace(" ", "").replace("_", "")
 
+  @staticmethod
+  def _side_from_modifier(modifier: str) -> str | None:
+    """Left/right for a normalized maneuver modifier, or None when it carries
+    no side (straight / arrive / depart / unknown)."""
+    if modifier in ("left", "sharpleft", "slightleft", "uturn"):
+      return "left"
+    if modifier in ("right", "sharpright", "slightright"):
+      return "right"
+    return None
+
   def _select_key(self, nav_sp, inst, dist_to_maneuver: float) -> str | None:
     desire = self._normalize(nav_sp.recommendedDesire)
     maneuver_type = self._normalize(inst.maneuverType or nav_sp.maneuverType)
     modifier = self._normalize(inst.maneuverModifier or nav_sp.maneuverModifier)
 
+    # Lane-change / lane-prep cues have no maneuver-modifier equivalent, so they
+    # can only come from the steering desire (which navd populates when
+    # NkaoudNavControlSteer is on).
     if desire in ("lanechangeleft", "lanechangeright"):
       if dist_to_maneuver <= LANE_CHANGE_OVERLAY_DISTANCE_M:
         return "lane_change_left" if desire.endswith("left") else "lane_change_right"
@@ -66,10 +79,23 @@ class NavTurnArrow:
         return "lane_change_left" if desire.endswith("left") else "lane_change_right"
       return None
 
-    if desire not in ("turnleft", "turnright") or dist_to_maneuver > TURN_OVERLAY_DISTANCE_M:
+    # Turn cues are driven by the upcoming maneuver itself -- the same
+    # navInstruction data the maneuver banner uses -- so the arrow shows on a
+    # normal drive. Previously this required recommendedDesire to be
+    # turnLeft/turnRight, but navd only emits that when NkaoudNavControlSteer is
+    # enabled; with steering control off (the default) the arrow never appeared
+    # even though the banner did.
+    if dist_to_maneuver > TURN_OVERLAY_DISTANCE_M:
       return None
 
-    side = "left" if desire.endswith("left") else "right"
+    # Prefer the steering desire's side when present, else the maneuver modifier.
+    if desire in ("turnleft", "turnright"):
+      side = "left" if desire.endswith("left") else "right"
+    else:
+      side = self._side_from_modifier(modifier)
+    if side is None:
+      return None
+
     if "roundabout" in maneuver_type or "rotary" in maneuver_type:
       return f"roundabout_{side}"
     if "uturn" in (modifier, maneuver_type):
