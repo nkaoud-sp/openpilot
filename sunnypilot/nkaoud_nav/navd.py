@@ -36,7 +36,7 @@ from openpilot.sunnypilot.nkaoud_nav.route_client import (
 from openpilot.sunnypilot.nkaoud_nav.share_client import (
   ShareFetchError, fetch_share_destination,
 )
-from openpilot.sunnypilot.selfdrive.controls.lib.lane_position import FILTER_MODE_WIDTH, LanePositionEstimator
+from openpilot.sunnypilot.selfdrive.controls.lib.lane_position import FILTER_MODE_BOTH_OR, LanePositionEstimator
 
 NavDesire = custom.NkaoudNavigationSP.NavDesire
 
@@ -350,7 +350,7 @@ class NkaoudNavd:
 
     if self.sm.updated['modelV2']:
       mv2 = self.sm['modelV2']
-      self.lane_current, self.lane_total, self.lane_conf = self.lane_position_est.update(mv2, filter_mode=FILTER_MODE_WIDTH)
+      self.lane_current, self.lane_total, self.lane_conf = self.lane_position_est.update(mv2, filter_mode=FILTER_MODE_BOTH_OR)
       # Track DesireHelper's lane-change state via modelV2.meta so we don't
       # ask for a fresh lane change while one is already running (or right
       # after one ends).
