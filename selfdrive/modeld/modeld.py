@@ -411,8 +411,14 @@ def main(demo=False):
       l_lane_change_prob = desire_state[log.Desire.laneChangeLeft]
       r_lane_change_prob = desire_state[log.Desire.laneChangeRight]
       lane_change_prob = l_lane_change_prob + r_lane_change_prob
+      # nkaoud_nav: only honor the route's lateral intent while navd is alive
+      # and has a GPS fix (msg.valid). SubMaster holds the last message after
+      # a publisher dies, so without this a stale keep*/turn* would bias
+      # steering indefinitely.
+      nav_ok = sm.alive['nkaoudNavigationSP'] and sm.valid['nkaoudNavigationSP']
+      nav_desire = sm['nkaoudNavigationSP'].recommendedDesire if nav_ok else "none"
       DH.update(sm['carState'], sm['carControl'].latActive, lane_change_prob,
-                nav_desire=sm['nkaoudNavigationSP'].recommendedDesire,
+                nav_desire=nav_desire,
                 visual_vehicle_state=sm['visualVehicleDetectorStateSP'])
       modelv2_send.modelV2.meta.laneChangeState = DH.lane_change_state
       modelv2_send.modelV2.meta.laneChangeDirection = DH.lane_change_direction

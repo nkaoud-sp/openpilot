@@ -194,7 +194,6 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"NkaoudNavControlSpeed", {PERSISTENT | BACKUP, BOOL, "0"}},      // allow nav to influence longitudinal target speed
     {"NkaoudNavControlSteer", {PERSISTENT | BACKUP, BOOL, "0"}},      // allow nav to influence steering (desire flag injection)
     {"NkaoudNavPolylineStyle", {PERSISTENT | BACKUP, INT, "1"}},      // 0=solid, 1=smooth, 2=glow, 3=chevrons
-    {"NkaoudNavHighwayLanePref", {PERSISTENT | BACKUP, INT, "1"}},    // highway cruise lane target: 0=left most, 1=center, 2=right most
     {"NkaoudNavShareEndpoint", {PERSISTENT | BACKUP, STRING, ""}},    // HTTP(S) URL that returns {"latitude":x,"longitude":y,"place_name":"..."} for the Share preset
     {"NkaoudNavShareTrigger", {PERSISTENT, STRING, ""}},              // ephemeral token bumped each time the user taps Share; navd refetches when it changes
     {"CustomAccLongPressIncrement", {PERSISTENT | BACKUP, INT, "5"}},

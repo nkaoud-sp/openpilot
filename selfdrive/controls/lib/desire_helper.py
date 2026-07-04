@@ -2,6 +2,7 @@ import time
 
 from cereal import log, custom
 from openpilot.common.constants import CV
+from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.sunnypilot.selfdrive.controls.lib.auto_lane_change import AutoLaneChangeController, AutoLaneChangeMode
 from openpilot.sunnypilot.selfdrive.controls.lib.lane_turn_desire import LaneTurnController
@@ -13,9 +14,10 @@ TurnDirection = custom.ModelDataV2SP.TurnDirection
 # nkaoud_nav: map our NavDesire enum onto the upstream log.Desire. Keys are
 # the string names (pycapnp returns _EnumValueProxy objects on read that
 # don't hash the same way as the schema constants used at write time, so
-# we normalize via str()). The laneChange* values are NOT used here as a
-# direct desire override -- they kick the LaneChangeState machine and let
-# its existing logic produce the right desire as the lane change executes.
+# we normalize via str()). navd publishes pure route INTENT (turn*/keep*
+# only); every permission and safety gate is applied here, where carstate,
+# BSM, the visual detector, and the lane-change state machine are all fresh
+# at 20 Hz.
 NAV_DESIRE_MAP = {
   "none": log.Desire.none,
   "turnLeft": log.Desire.turnLeft,
@@ -23,23 +25,25 @@ NAV_DESIRE_MAP = {
   "keepLeft": log.Desire.keepLeft,
   "keepRight": log.Desire.keepRight,
 }
-NAV_LANE_CHANGE_DIRS = {
-  "laneChangeLeft": LaneChangeDirection.left,
-  "laneChangeRight": LaneChangeDirection.right,
-}
 
 LANE_CHANGE_SPEED_MIN = 20 * CV.MPH_TO_MS
 LANE_CHANGE_TIME_MAX = 10.
 
-# nkaoud_nav: extra clearance gate for NAV-initiated lane changes only (the
-# driver-blinker path is unchanged). On top of BSM, the visual vehicle
-# detector's car-probability on the target side must stay below the threshold,
-# and BOTH signals (BSM clear AND visual clear) must hold continuously for
-# NAV_LC_VISUAL_CLEAR_TIME before the change may start; any breach resets it.
-# Only the probability is used here -- never the detector's block/clear boolean.
+# nkaoud_nav: clearance gate for the route's keep* bias. On top of BSM, the
+# visual vehicle detector's car-probability on the target side must stay
+# below the threshold. Only the probability is used here -- never the
+# detector's block/clear boolean.
 VISUAL_CONF_BLOCK_THRESHOLD = 0.60   # P(car present) >= this blocks the side ("< 60%")
 VISUAL_STALE_TIME = 1.0              # s; detector state older than this counts as no signal
-NAV_LC_VISUAL_CLEAR_TIME = 4.0       # s; BSM + visual must both stay clear this long
+
+# nkaoud_nav: keep* episode limits. The bias is open-loop (nothing confirms a
+# lane change completed), so cap any continuous episode, and hold off after
+# ANY lane change finishes to give the model and navd's lane estimate time to
+# settle -- otherwise a just-stale "wrong lane" reading chains into a second
+# move.
+NAV_KEEP_EPISODE_MAX_S = 10.0
+NAV_KEEP_COOLDOWN_S = 4.0
+NAV_PARAM_READ_FRAMES = 50           # re-read NkaoudNavControlSteer every ~2.5 s
 
 DESIRES = {
   LaneChangeDirection.none: {
@@ -75,18 +79,37 @@ class DesireHelper:
     self.lane_change_direction = LaneChangeDirection.none
     self.lane_change_timer = 0.0
     self.lane_change_ll_prob = 1.0
-    self.nav_lc_clear_timer = 0.0
-    self.nav_lc_initiated = False
     self.keep_pulse_timer = 0.0
     self.prev_one_blinker = False
     self.desire = log.Desire.none
     self.alc = AutoLaneChangeController(self)
     self.lane_turn_controller = LaneTurnController(self)
     self.lane_turn_direction = TurnDirection.none
+    # nkaoud_nav gating state
+    self.params = Params()
+    self.nav_steer_enabled = False
+    self.nav_param_counter = 0
+    self.nav_keep_timer = 0.0        # continuous keep* emission time
+    self.nav_cooldown_timer = 0.0    # counts down after any lane change ends
+    self.prev_lane_change_state = LaneChangeState.off
+    self.prev_nav_keep = ""
 
   @staticmethod
   def get_lane_change_direction(CS):
     return LaneChangeDirection.left if CS.leftBlinker else LaneChangeDirection.right
+
+  def _update_nav_params(self) -> None:
+    if self.nav_param_counter % NAV_PARAM_READ_FRAMES == 0:
+      self.nav_steer_enabled = self.params.get_bool("NkaoudNavControlSteer")
+    self.nav_param_counter += 1
+
+  def _update_nav_cooldown(self) -> None:
+    """Arm the nav keep* cooldown when ANY lane change finishes (driver or
+    otherwise) and count it down while the machine is idle."""
+    if self.prev_lane_change_state != LaneChangeState.off and self.lane_change_state == LaneChangeState.off:
+      self.nav_cooldown_timer = NAV_KEEP_COOLDOWN_S
+    self.prev_lane_change_state = self.lane_change_state
+    self.nav_cooldown_timer = max(0.0, self.nav_cooldown_timer - DT_MDL)
 
   def _visual_side_clear(self, direction, vs) -> bool:
     """True when the visual vehicle detector does NOT see a likely car on the
@@ -115,14 +138,10 @@ class DesireHelper:
   def update(self, carstate, lateral_active, lane_change_prob, nav_desire="none", visual_vehicle_state=None):
     self.alc.update_params()
     self.lane_turn_controller.update_params()
+    self._update_nav_params()
     v_ego = carstate.vEgo
     one_blinker = carstate.leftBlinker != carstate.rightBlinker
     below_lane_change_speed = v_ego < LANE_CHANGE_SPEED_MIN
-
-    # nkaoud_nav: is the route asking for an active lane change right now?
-    nav_name_pre = str(nav_desire)
-    nav_lc_dir = NAV_LANE_CHANGE_DIRS.get(nav_name_pre, LaneChangeDirection.none)
-    nav_requesting_lc = nav_lc_dir != LaneChangeDirection.none
 
     # Lane turn controller update
     self.lane_turn_controller.update_lane_turn(blindspot_left=carstate.leftBlindspot, blindspot_right=carstate.rightBlindspot,
@@ -133,26 +152,18 @@ class DesireHelper:
       self.lane_change_state = LaneChangeState.off
       self.lane_change_direction = LaneChangeDirection.none
     else:
-      # LaneChangeState.off -- enter on driver blinker or nav request.
+      # LaneChangeState.off -- enter on driver blinker only. Route keep*
+      # intent never touches this machine; it is applied as a desire bias
+      # below.
       if self.lane_change_state == LaneChangeState.off:
-        driver_kicked = one_blinker and not self.prev_one_blinker
-        if (driver_kicked or nav_requesting_lc) and not below_lane_change_speed:
+        if one_blinker and not self.prev_one_blinker and not below_lane_change_speed:
           self.lane_change_state = LaneChangeState.preLaneChange
           self.lane_change_ll_prob = 1.0
-          self.nav_lc_clear_timer = 0.0
-          # Ownership: the clearance gate applies only when the route initiated
-          # this maneuver. A simultaneous driver blinker keeps the driver path.
-          self.nav_lc_initiated = nav_requesting_lc and not driver_kicked
-          # Initialize lane change direction (nav wins if both are active)
-          self.lane_change_direction = nav_lc_dir if nav_requesting_lc else self.get_lane_change_direction(carstate)
+          self.lane_change_direction = self.get_lane_change_direction(carstate)
 
       # LaneChangeState.preLaneChange
       elif self.lane_change_state == LaneChangeState.preLaneChange:
-        # Direction: nav request takes precedence (it doesn't toggle blinkers).
-        if nav_requesting_lc:
-          self.lane_change_direction = nav_lc_dir
-        else:
-          self.lane_change_direction = self.get_lane_change_direction(carstate)
+        self.lane_change_direction = self.get_lane_change_direction(carstate)
 
         torque_applied = carstate.steeringPressed and \
                          ((carstate.steeringTorque > 0 and self.lane_change_direction == LaneChangeDirection.left) or
@@ -163,32 +174,12 @@ class DesireHelper:
 
         self.alc.update_lane_change(blindspot_detected, carstate.brakePressed)
 
-        # nkaoud_nav: sustained BSM + visual clearance gate for nav-initiated
-        # lane changes. The change may only start once BOTH BSM is clear AND the
-        # visual detector's target-side car-probability is below threshold, held
-        # continuously for NAV_LC_VISUAL_CLEAR_TIME. Any breach of either resets
-        # the timer. Visual falls back to BSM-only when it has no fresh reading.
-        visual_clear = self._visual_side_clear(self.lane_change_direction, visual_vehicle_state)
-        nav_gate_clear = (not blindspot_detected) and visual_clear
-        if nav_gate_clear:
-          self.nav_lc_clear_timer += DT_MDL
-        else:
-          self.nav_lc_clear_timer = 0.0
-
-        # Exit only when neither driver nor nav is asking, or speed dropped.
-        if ((not one_blinker and not nav_requesting_lc) or below_lane_change_speed):
+        if not one_blinker or below_lane_change_speed:
           self.lane_change_state = LaneChangeState.off
           self.lane_change_direction = LaneChangeDirection.none
         elif torque_applied and not blindspot_detected:
-          # Driver physically nudged: honor immediately (BSM-gated), even while a
-          # nav request is active. Preserves the driver's instant-override path.
           self.lane_change_state = LaneChangeState.laneChangeStarting
-        elif self.nav_lc_initiated:
-          # Nav-initiated: gated by the sustained BSM + visual clearance above.
-          if nav_gate_clear and self.nav_lc_clear_timer >= NAV_LC_VISUAL_CLEAR_TIME:
-            self.lane_change_state = LaneChangeState.laneChangeStarting
         elif self.alc.auto_lane_change_allowed and not blindspot_detected:
-          # Driver-blinker auto-timer path, unchanged.
           self.lane_change_state = LaneChangeState.laneChangeStarting
 
       # LaneChangeState.laneChangeStarting
@@ -224,25 +215,38 @@ class DesireHelper:
     else:
       self.desire = DESIRES[self.lane_change_direction][self.lane_change_state]
 
-    # nkaoud_nav: when a route-derived desire is present (and isn't a
-    # lane-change request -- those drive the LaneChangeState machine above),
-    # override the desire here. Gated at navd by NkaoudNavControlSteer.
-    # We leave actively-running lane changes alone so we don't yank the
-    # wheel mid-maneuver.
+    # nkaoud_nav: apply the route's lateral intent. navd publishes what the
+    # route WANTS; every gate lives here. Nothing is applied unless the user
+    # enabled NkaoudNavControlSteer, lateral is active, and the lane-change
+    # state machine is idle (an in-flight driver maneuver always wins).
+    self._update_nav_cooldown()
     nav_name = str(nav_desire)
-    if (nav_name in NAV_DESIRE_MAP and nav_name != "none"
-        and self.lane_change_state in (LaneChangeState.off, LaneChangeState.preLaneChange)):
-      if nav_name in ("keepLeft", "keepRight"):
-        # keep* is navd's cautious lane-change bias, so hold it to the same
-        # clearance signals as a real lane change: only bias toward a side while
-        # that side's BSM is clear AND the visual detector is below threshold.
-        # Drop the bias (desire stays none) the instant either isn't clear.
+    nav_keep = nav_name in ("keepLeft", "keepRight")
+    # Track continuous keep* emission; reset whenever the intent stops or
+    # flips sides so each new episode gets a fresh budget.
+    if not nav_keep or nav_name != self.prev_nav_keep:
+      self.nav_keep_timer = 0.0
+    self.prev_nav_keep = nav_name if nav_keep else ""
+
+    if (self.nav_steer_enabled and lateral_active
+        and self.lane_change_state == LaneChangeState.off and nav_name != "none"):
+      if nav_keep:
+        # keep* is a cautious, open-loop lane-change bias. Gates: driver not
+        # signaling, AutoLaneChange enabled, out of the post-change cooldown,
+        # target-side BSM clear, visual detector below threshold, and the
+        # episode budget not exhausted (a stuck "wrong lane" estimate must
+        # not bias steering forever).
         keep_dir = LaneChangeDirection.left if nav_name == "keepLeft" else LaneChangeDirection.right
         keep_bsm = carstate.leftBlindspot if keep_dir == LaneChangeDirection.left else carstate.rightBlindspot
-        if not keep_bsm and self._visual_side_clear(keep_dir, visual_vehicle_state):
+        if (not one_blinker
+            and self.alc.lane_change_set_timer != AutoLaneChangeMode.OFF
+            and self.nav_cooldown_timer <= 0.0
+            and self.nav_keep_timer < NAV_KEEP_EPISODE_MAX_S
+            and not keep_bsm
+            and self._visual_side_clear(keep_dir, visual_vehicle_state)):
           self.desire = NAV_DESIRE_MAP[nav_name]
-      else:
-        # turnLeft / turnRight cues are not lane changes -- apply directly.
+          self.nav_keep_timer += DT_MDL
+      elif nav_name in ("turnLeft", "turnRight"):
         self.desire = NAV_DESIRE_MAP[nav_name]
 
     # Send keep pulse once per second during LaneChangeStart.preLaneChange

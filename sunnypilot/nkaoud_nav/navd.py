@@ -27,11 +27,10 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import Ratekeeper
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.nkaoud_nav.geometry import (
-  Coordinate, closest_segment_index, distance_along_geometry,
-  route_bearing_at, total_geometry_length,
+  Coordinate, closest_segment_index, distance_along_geometry, route_bearing_at,
 )
 from openpilot.sunnypilot.nkaoud_nav.route_client import (
-  Banner, LaneOption, RouteData, RouteFetchError, fetch_route,
+  Banner, RouteData, RouteFetchError, fetch_route,
 )
 from openpilot.sunnypilot.nkaoud_nav.share_client import (
   ShareFetchError, fetch_share_destination,
@@ -48,6 +47,7 @@ BEARING_MISALIGN_COUNTER_MIN = 3
 
 ARRIVAL_DISTANCE_M = 25.0          # consider the destination reached within this
 MIN_REROUTE_INTERVAL_S = 8.0       # back off so reroutes don't spam the API
+PARAM_REFRESH_S = 0.5              # throttle for per-tick param reads
 
 # Turn-slowdown target speed (ported from old fork's
 # navigation_test_maneuver_target_speed / TURN_SLOWDOWN_MIN_SPEED_MS).
@@ -79,37 +79,19 @@ DEFAULT_RANGES = (200.0, 50.0)   # surface streets / "turn" / unknown
 
 # Phase 8: cross-track reroute -- catches gradual drift off-route that
 # bearing misalignment won't see because the heading stays roughly correct.
+# (Also covers the old missed-maneuver detector: driving past a turn departs
+# the post-turn geometry, which shows up as cross-track within seconds.)
 CROSS_TRACK_THRESHOLD_M = 30.0
 CROSS_TRACK_COUNTER_MIN = 25     # ~5 s at 5 Hz
 
-# Phase 8: missed-maneuver detection. After step_idx advances past a step
-# whose upcoming maneuver was a left/right/uturn, expect a meaningful
-# heading change. If we didn't turn, trip the counter.
-MISS_HEADING_CHANGE_DEG = 30.0   # required absolute heading delta after the maneuver
-MISS_OBSERVATION_S = 2.5         # how long we wait before evaluating
-MISS_COUNTER_MIN = 1
-
-# Phase 9: active lane-change cooldown -- once a nav-triggered lane change
-# finishes, give the lane-position estimator and the model time to settle
-# before we consider another one. Otherwise the (just-old) "wrong lane"
-# reading would chain into a second lane change.
-NAV_LC_COOLDOWN_S = 4.0
-AUTO_LANE_CHANGE_OFF = -1        # AutoLaneChangeTimer param value meaning "off"
-
-# Phase 10: highway-cruising default lane. When the next maneuver is far
-# enough away that the lane-keep window hasn't opened, target the center
-# lane on motorway-class roads so passes and either-side exits stay
-# reachable.
-HIGHWAY_CLASSES = ("motorway", "motorway_link", "trunk")
-HIGHWAY_DEFAULT_MIN_SPEED_MS = 60.0 / 3.6      # ~60 km/h; below this we don't auto-position
-HIGHWAY_DEFAULT_MIN_DIST_M = 1500.0            # only target center when next maneuver is at least this far
-
-# Highway lane preference (NkaoudNavHighwayLanePref, set in the nav settings UI):
-# which lane to hold while cruising a highway/main road with no imminent
-# maneuver. Default is center to preserve the previous always-center behavior.
-HIGHWAY_LANE_PREF_LEFT = 0
-HIGHWAY_LANE_PREF_CENTER = 1
-HIGHWAY_LANE_PREF_RIGHT = 2
+# Steering keep* intent is restricted to the maneuver types where advance
+# lane positioning actually pays off (long approach, hard-to-recover miss).
+# Surface-street turns are left to the model + the turn cue; the UI advisory
+# arrow still covers every maneuver type.
+LANE_POSITION_MANEUVERS = ("off ramp", "on ramp", "fork", "merge")
+# Lane-fix confidence required to INITIATE a steering bias. Any reading may
+# stop one (that fails safe), but a low-confidence read must never start one.
+STEER_LANE_CONFS = ("high", "medium")
 
 # Phase 11: "Share" destination -- HTTP fetch when the picker writes a new
 # NkaoudNavShareTrigger token. Retries on failure are bounded so a wrong
@@ -203,12 +185,16 @@ def _location_from_llk(llk) -> tuple[Coordinate | None, float | None, float]:
   return pos, bearing, v_ego
 
 
-class RouteFetcher:
-  """Runs Mapbox fetches off the main loop. One in-flight request at a time."""
+class ThreadedFetcher:
+  """Runs a blocking fetch function off the main loop. One in-flight request
+  at a time; a newer submit invalidates any older in-flight result."""
 
-  def __init__(self) -> None:
+  def __init__(self, fetch_fn, error_cls: type[Exception], name: str) -> None:
+    self._fetch_fn = fetch_fn
+    self._error_cls = error_cls
+    self._name = name
     self._thread: threading.Thread | None = None
-    self._result: RouteData | None = None
+    self._result = None
     self._error: str | None = None
     self._request_id: int = 0
     self._lock = threading.Lock()
@@ -216,79 +202,30 @@ class RouteFetcher:
   def in_flight(self) -> bool:
     return self._thread is not None and self._thread.is_alive()
 
-  def submit(self, origin: Coordinate, destination: Coordinate, token: str,
-             bearing: float | None) -> int:
+  def submit(self, *args) -> int:
     with self._lock:
       self._request_id += 1
       rid = self._request_id
       self._result = None
       self._error = None
     self._thread = threading.Thread(
-      target=self._run, args=(rid, origin, destination, token, bearing),
-      name="nkaoud_navd_fetch", daemon=True,
+      target=self._run, args=(rid, args), name=self._name, daemon=True,
     )
     self._thread.start()
     return rid
 
-  def _run(self, rid: int, origin: Coordinate, destination: Coordinate,
-           token: str, bearing: float | None) -> None:
+  def _run(self, rid: int, args: tuple) -> None:
     try:
-      result = fetch_route(origin, destination, token, bearing_deg=bearing)
+      result = self._fetch_fn(*args)
       with self._lock:
         if rid == self._request_id:
           self._result = result
-    except RouteFetchError as e:
+    except self._error_cls as e:
       with self._lock:
         if rid == self._request_id:
           self._error = str(e)
 
-  def take_result(self) -> tuple[RouteData | None, str | None]:
-    with self._lock:
-      r, e = self._result, self._error
-      self._result = None
-      self._error = None
-      return r, e
-
-
-class ShareFetcher:
-  """GET-based fetch for the 'Share' destination. Same shape as RouteFetcher
-  (one in-flight request, take_result returns (data, error))."""
-
-  def __init__(self) -> None:
-    self._thread: threading.Thread | None = None
-    self._result: dict | None = None
-    self._error: str | None = None
-    self._request_id: int = 0
-    self._lock = threading.Lock()
-
-  def in_flight(self) -> bool:
-    return self._thread is not None and self._thread.is_alive()
-
-  def submit(self, url: str) -> int:
-    with self._lock:
-      self._request_id += 1
-      rid = self._request_id
-      self._result = None
-      self._error = None
-    self._thread = threading.Thread(
-      target=self._run, args=(rid, url),
-      name="nkaoud_navd_share_fetch", daemon=True,
-    )
-    self._thread.start()
-    return rid
-
-  def _run(self, rid: int, url: str) -> None:
-    try:
-      result = fetch_share_destination(url)
-      with self._lock:
-        if rid == self._request_id:
-          self._result = result
-    except ShareFetchError as e:
-      with self._lock:
-        if rid == self._request_id:
-          self._error = str(e)
-
-  def take_result(self) -> tuple[dict | None, str | None]:
+  def take_result(self):
     with self._lock:
       r, e = self._result, self._error
       self._result = None
@@ -303,8 +240,8 @@ class NkaoudNavd:
     self.pm = messaging.PubMaster(['nkaoudNavigationSP', 'navRoute', 'navInstruction'])
     self.rk = Ratekeeper(5.0)
 
-    self.fetcher = RouteFetcher()
-    self.share_fetcher = ShareFetcher()
+    self.fetcher = ThreadedFetcher(fetch_route, RouteFetchError, "nkaoud_navd_fetch")
+    self.share_fetcher = ThreadedFetcher(fetch_share_destination, ShareFetchError, "nkaoud_navd_share_fetch")
     self._last_share_trigger: str | None = None
     self._share_next_retry_t: float = 0.0
     self._share_attempts: int = 0
@@ -325,13 +262,8 @@ class NkaoudNavd:
     self.lane_conf: str = "unknown"
     self.cross_track_m: float = 0.0
     self.cross_track_counter: int = 0
-    self.missed_counter: int = 0
-    self._prev_step_idx: int = 0
-    self._missed_watch_until_t: float = 0.0
-    self._missed_watch_bearing: float | None = None
-    self._missed_watch_modifier: str = ""
-    self._last_lane_change_state: str = "off"
-    self._lc_cooldown_until_t: float = 0.0
+    self._enabled: bool = False
+    self._next_param_t: float = 0.0
     self._last_logged_desire: str = "none"
     self._last_logged_modifier: str = ""
     self._last_logged_advisory: str = "none"
@@ -350,15 +282,12 @@ class NkaoudNavd:
     self.last_v_ego = v_ego
 
     if self.sm.updated['modelV2']:
-      mv2 = self.sm['modelV2']
-      self.lane_current, self.lane_total, self.lane_conf = self.lane_position_est.update(mv2, filter_mode=FILTER_MODE_BOTH_OR)
-      # Track DesireHelper's lane-change state via modelV2.meta so we don't
-      # ask for a fresh lane change while one is already running (or right
-      # after one ends).
-      lcs = str(mv2.meta.laneChangeState)
-      if self._last_lane_change_state != "off" and lcs == "off":
-        self._lc_cooldown_until_t = time.monotonic() + NAV_LC_COOLDOWN_S
-      self._last_lane_change_state = lcs
+      self.lane_current, self.lane_total, self.lane_conf = self.lane_position_est.update(self.sm['modelV2'], filter_mode=FILTER_MODE_BOTH_OR)
+
+    now = time.monotonic()
+    if now >= self._next_param_t:
+      self._next_param_t = now + PARAM_REFRESH_S
+      self._enabled = self.params.get_bool("NkaoudNavEnabled")
 
     self._maybe_drain_fetcher()
     self._handle_share_trigger()
@@ -508,18 +437,6 @@ class NkaoudNavd:
         new_idx = i
       else:
         break
-
-    # On step boundary, snapshot bearing if the step we just entered came
-    # from a turn maneuver. After MISS_OBSERVATION_S we'll compare against
-    # current bearing -- no significant change = we drove straight through
-    # the turn point = missed.
-    if new_idx != self._prev_step_idx and new_idx < len(self.route.steps):
-      entered_step = self.route.steps[new_idx]
-      if entered_step.maneuver_modifier in TURN_MANEUVER_MODIFIERS:
-        self._missed_watch_until_t = time.monotonic() + MISS_OBSERVATION_S
-        self._missed_watch_bearing = self.last_bearing
-        self._missed_watch_modifier = entered_step.maneuver_modifier
-    self._prev_step_idx = new_idx
     self.step_idx = new_idx
 
   def _maybe_reroute(self) -> None:
@@ -531,7 +448,6 @@ class NkaoudNavd:
       # Still update counters so we don't false-trigger the instant the
       # backoff expires.
       self._update_cross_track_counter()
-      self._update_missed_counter()
       return
 
     geom = self.route.geometry
@@ -549,7 +465,6 @@ class NkaoudNavd:
       self.bearing_misalign_counter = 0
 
     self._update_cross_track_counter()
-    self._update_missed_counter()
 
     if self.bearing_misalign_counter > BEARING_MISALIGN_COUNTER_MIN:
       cloudlog.info("nkaoud_navd: reroute trigger -- bearing misaligned")
@@ -559,34 +474,12 @@ class NkaoudNavd:
       cloudlog.info(f"nkaoud_navd: reroute trigger -- cross-track {self.cross_track_m:.1f} m")
       self.cross_track_counter = 0
       self._try_fetch_initial()
-    elif self.missed_counter > MISS_COUNTER_MIN:
-      cloudlog.info(f"nkaoud_navd: reroute trigger -- missed {self._missed_watch_modifier} turn")
-      self.missed_counter = 0
-      self._missed_watch_until_t = 0.0
-      self._try_fetch_initial()
 
   def _update_cross_track_counter(self) -> None:
     if self.cross_track_m > CROSS_TRACK_THRESHOLD_M and self.last_v_ego >= BEARING_MISALIGN_MIN_SPEED_MS:
       self.cross_track_counter += 1
     else:
       self.cross_track_counter = 0
-
-  def _update_missed_counter(self) -> None:
-    # Wait until the observation window closes, then judge by heading change.
-    if self._missed_watch_until_t <= 0.0:
-      return
-    if time.monotonic() < self._missed_watch_until_t:
-      return
-    pre = self._missed_watch_bearing
-    cur = self.last_bearing
-    self._missed_watch_until_t = 0.0
-    if pre is None or cur is None:
-      return
-    delta = _bearing_delta(cur, pre)
-    if delta < MISS_HEADING_CHANGE_DEG:
-      self.missed_counter += 1
-    else:
-      self.missed_counter = 0
 
   # ---- publishing ----
   def _publish(self) -> None:
@@ -598,7 +491,7 @@ class NkaoudNavd:
     msg = messaging.new_message('nkaoudNavigationSP')
     msg.valid = bool(self.sm['liveLocationKalman'].gpsOK)
     nav = msg.nkaoudNavigationSP
-    nav.enabled = self.params.get_bool("NkaoudNavEnabled")
+    nav.enabled = self._enabled
     nav.active = self.route is not None and self.destination is not None
     nav.onRoute = nav.active and not self.rerouting
     nav.routeId = self.route.route_id if self.route is not None else ""
@@ -626,7 +519,8 @@ class NkaoudNavd:
     nav.currentRoadClasses = ",".join(cur_step.road_classes) if cur_step else ""
     nav.upcomingRoadClasses = ",".join(upcoming.road_classes) if upcoming else ""
     nav.crossTrackDistance = float(self.cross_track_m)
-    nav.missedManeuverCount = int(self.missed_counter)
+    # missedManeuverCount is retired (cross-track covers missed turns); the
+    # schema field stays and defaults to 0.
 
     # Log when the upcoming-maneuver modifier or our recommendation changes,
     # rate-limited to once per change so the swaglog isn't flooded.
@@ -726,56 +620,48 @@ class NkaoudNavd:
     return max(0.0, step_end - self.last_distance_along)
 
   def _recommended_desire(self):
-    """Phase 7-10 lateral influence.
+    """Route lateral INTENT -- what the route wants, with no permission
+    gating. Every gate (NkaoudNavControlSteer, AutoLaneChange timer, lane
+    change state, post-change cooldown, BSM/visual clearance, episode
+    timeout) lives in desire_helper, which sees that state fresh at 20 Hz.
 
-    Gated by NkaoudNavControlSteer. Order of precedence (only one fires):
-      1. Direct turn cue within turn_cue_m -> turnLeft/turnRight.
-      2. Lane-positioning for an upcoming maneuver within lane_keep_m.
-         Target lane is incremental -- loose at the far edge of the
-         window (any lane on the correct side), strict at the near edge
-         (outermost lane).
-      3. Highway-cruise default -- when no maneuver is imminent and the
-         current step is motorway-class, target the center lane so we
-         keep our options open.
+      * turnLeft/turnRight inside the turn-cue window.
+      * keepLeft/keepRight -- a cautious lane-change bias -- inside the
+        lane-keep window, only for ramp-class maneuvers and only when a
+        medium+ confidence lane fix says we actually need to move.
     """
-    if not self.params.get_bool("NkaoudNavControlSteer"):
-      return NavDesire.none
     cur_step = self._current_step()
     upcoming = self._upcoming_step()
-    if cur_step is None:
+    if cur_step is None or upcoming is None:
       return NavDesire.none
     dist = self._distance_to_maneuver()
+    if dist <= 0.0:
+      return NavDesire.none
 
-    # Imminent maneuver path
-    if upcoming is not None and dist > 0.0:
-      lane_keep_m, turn_cue_m = _ranges_for(upcoming.maneuver_type)
-      if dist <= lane_keep_m:
-        modifier = upcoming.maneuver_modifier
-        if dist <= turn_cue_m:
-          if modifier in LEFT_TURN_MODIFIERS:
-            return NavDesire.turnLeft
-          if modifier in RIGHT_TURN_MODIFIERS:
-            return NavDesire.turnRight
-          return NavDesire.none
+    lane_keep_m, turn_cue_m = _ranges_for(upcoming.maneuver_type)
+    modifier = upcoming.maneuver_modifier
+    if dist <= turn_cue_m:
+      if modifier in LEFT_TURN_MODIFIERS:
+        return NavDesire.turnLeft
+      if modifier in RIGHT_TURN_MODIFIERS:
+        return NavDesire.turnRight
+      return NavDesire.none
 
-        side = self._route_side(cur_step, dist, modifier)
-        if side:
-          target = self._target_lane(side, dist, lane_keep_m, turn_cue_m)
-          if target is not None and self._need_to_move(side, target):
-            return self._lc_or_keep(side)
-        return NavDesire.none
-
-    # Highway-cruise default path -- only reached when no imminent maneuver
-    # tweaks lateral. Target the center lane on motorway-class roads.
-    return self._highway_default_desire(cur_step, dist)
+    if dist > lane_keep_m or upcoming.maneuver_type not in LANE_POSITION_MANEUVERS:
+      return NavDesire.none
+    if self.lane_conf not in STEER_LANE_CONFS or self.lane_total <= 0 or self.lane_current <= 0:
+      return NavDesire.none
+    side = self._route_side(cur_step, dist, modifier)
+    if not side or self._positioned_for(side, dist, lane_keep_m, turn_cue_m):
+      return NavDesire.none
+    return NavDesire.keepLeft if side == "left" else NavDesire.keepRight
 
   def _advisory_lane_side(self) -> str:
-    """Side of a lane move the route currently wants, for the UI's flashing
-    lane-change arrow. Purely advisory: unlike _recommended_desire this is
-    NOT gated by NkaoudNavControlSteer / AutoLaneChangeTimer / the post-change
-    cooldown, so the driver still gets the visual cue when nav isn't allowed
-    to make the move itself. Empty inside the turn-cue window -- the turn
-    arrow owns that zone."""
+    """Side of a lane move to cue with the UI's flashing arrow. Broader than
+    the steering intent: covers every maneuver type, and falls back to the
+    route's side when there is no usable lane fix (we can't tell whether
+    we're already positioned, so cue the side maps-style). Empty inside the
+    turn-cue window -- the turn arrow owns that zone."""
     cur_step = self._current_step()
     upcoming = self._upcoming_step()
     if cur_step is None or upcoming is None:
@@ -790,96 +676,22 @@ class NkaoudNavd:
     if not side:
       return ""
     if self.lane_conf == "unknown" or self.lane_total <= 0 or self.lane_current <= 0:
-      # No lane fix: we can't tell whether we're already positioned, so keep
-      # cueing the route's side (same call maps-style lane guidance makes).
       return side
-    target = self._target_lane(side, dist, lane_keep_m, turn_cue_m)
-    if target is None or not self._need_to_move(side, target):
-      return ""
-    return side
+    return "" if self._positioned_for(side, dist, lane_keep_m, turn_cue_m) else side
 
-  def _lc_or_keep(self, side: str):
-    """Desire for a wanted lateral move toward `side`.
-
-    We emit keep* -- a gentle, continuous lane-position bias that in practice
-    behaves as a cautious lane change -- when the user has an AutoLaneChange
-    timer set and we're outside the post-lane-change cooldown. Otherwise we
-    emit `none`; we deliberately do NOT fall back to a weaker soft bias.
-
-    Downstream, desire_helper holds keep* to the same clearance signals as a
-    real lane change (target-side BSM + visual). nav no longer emits the
-    laneChange* state-machine path, so the machine stays 'off' during nav
-    moves and the cooldown only ever arms after a DRIVER blinker lane change."""
-    alc_timer = self.params.get("AutoLaneChangeTimer", return_default=True)
-    auto_lc_allowed = (alc_timer is not None and int(alc_timer) != AUTO_LANE_CHANGE_OFF
-                       and self._last_lane_change_state == "off"
-                       and time.monotonic() >= self._lc_cooldown_until_t)
-    if auto_lc_allowed:
-      return NavDesire.keepLeft if side == "left" else NavDesire.keepRight
-    return NavDesire.none
-
-  def _target_lane(self, side: str, dist: float, lane_keep_m: float, turn_cue_m: float) -> int | None:
-    """1-indexed target lane. Lerps from 'any lane on the correct side'
-    at lane_keep_m to 'outermost' at turn_cue_m so the requirement
-    tightens as we approach the maneuver."""
-    if side not in ("left", "right") or self.lane_total <= 0:
-      return None
+  def _positioned_for(self, side: str, dist: float, lane_keep_m: float, turn_cue_m: float) -> bool:
+    """True when the current lane already satisfies the route's `side`
+    requirement. Two fixed rules (replacing the old loose->strict lerp,
+    which downstream could only ever consume as this boolean): the outer
+    half of the window requires being in the correct half of the road, the
+    inner half requires the outermost lane. Callers must have checked that
+    a usable lane fix exists."""
     n = self.lane_total
-    if n == 1:
-      return 1
-    span = lane_keep_m - turn_cue_m
-    progress = 1.0 if span <= 0 else max(0.0, min(1.0, 1.0 - (dist - turn_cue_m) / span))
-    half_tolerance = math.ceil(n / 2)
-    if side == "right":
-      loose = n - half_tolerance + 1   # smallest acceptable on right (e.g. lane 3 of 4)
-      strict = n                       # outermost lane
-      return int(0.5 + loose + (strict - loose) * progress)
-    # side == "left"
-    loose = half_tolerance             # largest acceptable on left (e.g. lane 2 of 4)
-    strict = 1
-    return int(0.5 + loose - (loose - strict) * progress)
-
-  def _highway_lane_pref(self) -> int:
-    """User-selected highway cruise lane (NkaoudNavHighwayLanePref). Defaults
-    to center on any missing/garbled value."""
-    try:
-      return int(self.params.get("NkaoudNavHighwayLanePref", return_default=True))
-    except (TypeError, ValueError):
-      return HIGHWAY_LANE_PREF_CENTER
-
-  def _highway_default_desire(self, cur_step, dist: float):
-    """When cruising on a highway/main road with no imminent maneuver, hold the
-    user's preferred lane (NkaoudNavHighwayLanePref): left most, center, or
-    right most. Center uses ceil(N/2): 3-lane -> 2 (center), 4-lane -> 2
-    (center-left), 5-lane -> 3 (center)."""
-    if cur_step is None or not cur_step.road_classes:
-      return NavDesire.none
-    if not any(c in HIGHWAY_CLASSES for c in cur_step.road_classes):
-      return NavDesire.none
-    # Don't fight the imminent-maneuver logic at the boundary.
-    if dist > 0.0 and dist < HIGHWAY_DEFAULT_MIN_DIST_M:
-      return NavDesire.none
-    if self.last_v_ego < HIGHWAY_DEFAULT_MIN_SPEED_MS:
-      return NavDesire.none
-    if self.lane_conf == "unknown" or self.lane_total <= 1 or self.lane_current <= 0:
-      return NavDesire.none
-    pref = self._highway_lane_pref()
-    if pref == HIGHWAY_LANE_PREF_LEFT:
-      target = 1
-    elif pref == HIGHWAY_LANE_PREF_RIGHT:
-      target = self.lane_total
-    else:
-      # Center. ceil(N/2) deliberately biases center-LEFT on even-lane roads:
-      #   2 -> 1 (leftmost; no real center)
-      #   3 -> 2 (middle)
-      #   4 -> 2 (one in from leftmost; matches "leftmost - 1" intent)
-      #   5 -> 3 (true center)
-      #   6 -> 3 (center-left)
-      target = math.ceil(self.lane_total / 2)
-    if self.lane_current == target:
-      return NavDesire.none
-    side = "left" if self.lane_current > target else "right"
-    return self._lc_or_keep(side)
+    cur = self.lane_current
+    if dist > (lane_keep_m + turn_cue_m) / 2:
+      # Correct half; the middle lane of an odd count satisfies either side.
+      return cur > n / 2 if side == "right" else cur <= math.ceil(n / 2)
+    return cur == n if side == "right" else cur == 1
 
   def _route_side(self, cur_step, dist_to_maneuver: float, modifier: str) -> str:
     """Which half of the road the route wants for the upcoming maneuver.
@@ -924,20 +736,6 @@ class NkaoudNavd:
     if all(i >= n / 2 for i in active_idx):
       return "right"
     return ""
-
-  def _need_to_move(self, side: str, target_lane: int) -> bool:
-    """Whether we should move toward `side` to reach target_lane.
-    Confidence-tolerant for now -- accepts high / medium / low reads.
-    Only 'unknown' blocks (that's literally no lane data)."""
-    if self.lane_conf == "unknown" or self.lane_total <= 0:
-      return False
-    if self.lane_current <= 0:
-      return False
-    if side == "right":
-      return self.lane_current < target_lane
-    if side == "left":
-      return self.lane_current > target_lane
-    return False
 
   def _maneuver_target_speed(self) -> float:
     """Turn-slowdown target speed (m/s).

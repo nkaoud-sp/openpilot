@@ -75,21 +75,12 @@ class NavSettingsLayout(Widget):
     )
     self._control_steer = toggle_item_sp(
       title=lambda: tr("Steer / Lane-Change With The Route"),
-      description=lambda: tr("Lets the route bias steering (turnLeft / turnRight near a turn, keepLeft / keepRight " +
-                            "when off-side of the road) AND trigger active lane changes via the standard " +
-                            "openpilot pipeline when the route requires moving to a different lane. Lane " +
-                            "changes require an AutoLaneChange timer set in your steering settings (anything " +
-                            "other than \"Off\"); blind-spot monitor still gates execution. Experimental."),
+      description=lambda: tr("Lets the route bias steering: turnLeft / turnRight near a turn, and a cautious " +
+                            "keepLeft / keepRight lane-change bias ahead of highway exits, forks and merges " +
+                            "when you're not in the right lane. The bias requires an AutoLaneChange timer set " +
+                            "in your steering settings (anything other than \"Off\") and only applies while the " +
+                            "blind-spot monitor and camera see the target side clear. Experimental."),
       param="NkaoudNavControlSteer",
-    )
-    self._highway_lane_pref = multiple_button_item_sp(
-      title=lambda: tr("Highway Lane Preference"),
-      description=lambda: tr("Which lane to hold while cruising a highway / main road with no upcoming maneuver. " +
-                            "Requires \"Steer / Lane-Change With The Route\"; blind-spot monitor still gates any " +
-                            "lane change."),
-      buttons=[lambda: tr("Left Most"), lambda: tr("Center"), lambda: tr("Right Most")],
-      param="NkaoudNavHighwayLanePref",
-      button_width=280,
     )
 
     items = [
@@ -101,7 +92,6 @@ class NavSettingsLayout(Widget):
       self._show_banner,
       self._control_speed,
       self._control_steer,
-      self._highway_lane_pref,
     ]
     return items
 
