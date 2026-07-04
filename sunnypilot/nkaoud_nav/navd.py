@@ -334,6 +334,7 @@ class NkaoudNavd:
     self._lc_cooldown_until_t: float = 0.0
     self._last_logged_desire: str = "none"
     self._last_logged_modifier: str = ""
+    self._last_logged_advisory: str = "none"
 
   # ---- core loop ----
   def step(self) -> None:
@@ -621,6 +622,7 @@ class NkaoudNavd:
     else:
       nav.recommendedLaneSide = "none"
     nav.laneKeepDistance = float(lane_keep_m if side else 0.0)
+    nav.advisoryLaneChange = self._advisory_lane_side() or "none"
     nav.currentRoadClasses = ",".join(cur_step.road_classes) if cur_step else ""
     nav.upcomingRoadClasses = ",".join(upcoming.road_classes) if upcoming else ""
     nav.crossTrackDistance = float(self.cross_track_m)
@@ -638,6 +640,10 @@ class NkaoudNavd:
                     f"(dist={nav.distanceToManeuver:.1f}m, lane={self.lane_current}/{self.lane_total} "
                     f"conf={self.lane_conf})")
       self._last_logged_desire = desire_str
+    advisory_str = str(nav.advisoryLaneChange)
+    if advisory_str != self._last_logged_advisory:
+      cloudlog.info(f"nkaoud_navd: advisoryLaneChange={advisory_str} (dist={nav.distanceToManeuver:.1f}m, lane={self.lane_current}/{self.lane_total})")
+      self._last_logged_advisory = advisory_str
 
     self.pm.send('nkaoudNavigationSP', msg)
 
@@ -762,6 +768,35 @@ class NkaoudNavd:
     # Highway-cruise default path -- only reached when no imminent maneuver
     # tweaks lateral. Target the center lane on motorway-class roads.
     return self._highway_default_desire(cur_step, dist)
+
+  def _advisory_lane_side(self) -> str:
+    """Side of a lane move the route currently wants, for the UI's flashing
+    lane-change arrow. Purely advisory: unlike _recommended_desire this is
+    NOT gated by NkaoudNavControlSteer / AutoLaneChangeTimer / the post-change
+    cooldown, so the driver still gets the visual cue when nav isn't allowed
+    to make the move itself. Empty inside the turn-cue window -- the turn
+    arrow owns that zone."""
+    cur_step = self._current_step()
+    upcoming = self._upcoming_step()
+    if cur_step is None or upcoming is None:
+      return ""
+    dist = self._distance_to_maneuver()
+    if dist <= 0.0:
+      return ""
+    lane_keep_m, turn_cue_m = _ranges_for(upcoming.maneuver_type)
+    if not (turn_cue_m < dist <= lane_keep_m):
+      return ""
+    side = self._route_side(cur_step, dist, upcoming.maneuver_modifier)
+    if not side:
+      return ""
+    if self.lane_conf == "unknown" or self.lane_total <= 0 or self.lane_current <= 0:
+      # No lane fix: we can't tell whether we're already positioned, so keep
+      # cueing the route's side (same call maps-style lane guidance makes).
+      return side
+    target = self._target_lane(side, dist, lane_keep_m, turn_cue_m)
+    if target is None or not self._need_to_move(side, target):
+      return ""
+    return side
 
   def _lc_or_keep(self, side: str):
     """Desire for a wanted lateral move toward `side`.

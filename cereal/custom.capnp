@@ -489,6 +489,12 @@ struct NkaoudNavigationSP @0xcb9fd56c7057593a {
   crossTrackDistance @14 :Float32;       # m; perpendicular distance to route geometry
   missedManeuverCount @15 :Int32;        # ticks we appear to have driven past a turn without executing
 
+  # Advisory lane-change cue for the UI's flashing arrow. Unlike
+  # recommendedDesire this is NOT gated by NkaoudNavControlSteer /
+  # AutoLaneChangeTimer, so the driver still gets the visual cue when nav
+  # isn't allowed to make the move itself.
+  advisoryLaneChange @16 :LaneSide;
+
   enum NavDesire {
     none @0;
     turnLeft @1;

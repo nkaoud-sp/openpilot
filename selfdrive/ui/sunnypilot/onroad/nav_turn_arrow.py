@@ -21,6 +21,9 @@ MIN_OVERLAY_SIZE = 280
 TURN_OVERLAY_DISTANCE_M = 150.0
 LANE_CHANGE_OVERLAY_DISTANCE_M = 180.0
 LANE_PREP_OVERLAY_DISTANCE_M = 100.0
+# Advisory cue needs a wider window: highway exits/forks want the lane move
+# started well before the surface-street distances above.
+ADVISORY_OVERLAY_DISTANCE_M = 500.0
 OVERLAY_TINT_MIN_ALPHA = 96
 OVERLAY_TINT_MAX_ALPHA = 255
 
@@ -79,9 +82,8 @@ class NavTurnArrow:
     maneuver_type = self._normalize(inst.maneuverType or nav_sp.maneuverType)
     modifier = self._normalize(inst.maneuverModifier or nav_sp.maneuverModifier)
 
-    # Lane-change / lane-prep cues have no maneuver-modifier equivalent, so they
-    # can only come from the steering desire (which navd populates when
-    # NkaoudNavControlSteer is on).
+    # Lane-change / lane-prep cues, preferably from the steering desire (which
+    # navd populates when NkaoudNavControlSteer is on).
     if desire in ("lanechangeleft", "lanechangeright"):
       if dist_to_maneuver <= LANE_CHANGE_OVERLAY_DISTANCE_M:
         return "lane_change_left" if desire.endswith("left") else "lane_change_right"
@@ -98,6 +100,20 @@ class NavTurnArrow:
     # turnLeft/turnRight, but navd only emits that when NkaoudNavControlSteer is
     # enabled; with steering control off (the default) the arrow never appeared
     # even though the banner did.
+    turn_key = self._turn_key(desire, maneuver_type, modifier, dist_to_maneuver)
+    if turn_key is not None:
+      return turn_key
+
+    # Advisory lane-change cue from navd -- published regardless of the
+    # NkaoudNavControlSteer / AutoLaneChangeTimer gates, so the flashing arrow
+    # still appears when nav isn't allowed to make the move itself. Fallback
+    # only: the turn arrow keeps precedence inside its own window.
+    advisory = self._normalize(nav_sp.advisoryLaneChange)
+    if advisory in ("left", "right") and dist_to_maneuver <= ADVISORY_OVERLAY_DISTANCE_M:
+      return f"lane_change_{advisory}"
+    return None
+
+  def _turn_key(self, desire: str, maneuver_type: str, modifier: str, dist_to_maneuver: float) -> str | None:
     if dist_to_maneuver > TURN_OVERLAY_DISTANCE_M:
       return None
 
@@ -204,9 +220,15 @@ class NavTurnArrow:
 
     # nkaoud_nav: reason pill under the arrow, only for the route's lane-change
     # cues (keep* is navd's cautious lane change; laneChange* handled too for
-    # completeness). Shown only while that move is actually blocked.
+    # completeness; advisory covers steer-control-off). Shown only while that
+    # move is actually blocked / unsafe on the cued side.
     desire = self._normalize(nav_sp.recommendedDesire)
     if desire in ("keepleft", "keepright", "lanechangeleft", "lanechangeright"):
-      reason = self._lane_change_block_reason("left" if desire.endswith("left") else "right")
+      cue_side = "left" if desire.endswith("left") else "right"
+    else:
+      advisory = self._normalize(nav_sp.advisoryLaneChange)
+      cue_side = advisory if advisory in ("left", "right") else None
+    if cue_side is not None:
+      reason = self._lane_change_block_reason(cue_side)
       if reason is not None:
         self._draw_pill(rect.x + rect.width / 2, pos_y + draw_h + 24, reason, PILL_BLOCK_COLOR)
