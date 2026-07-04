@@ -10,6 +10,7 @@ from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.selfdrive.controls.lib.desire_helper import (
   VISUAL_CONF_BLOCK_THRESHOLD, VISUAL_STALE_TIME,
 )
+from openpilot.sunnypilot.selfdrive.controls.lib.auto_lane_change import AutoLaneChangeMode
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 
@@ -33,6 +34,7 @@ class NavTurnArrow:
   def __init__(self) -> None:
     self._enabled = False
     self._show_banner = False
+    self._lane_cue_enabled = False
     self._next_param_check = 0.0
     self._textures = {
       "turn_right": gui_app.texture("../../sunnypilot/selfdrive/assets/nav_turn_arrows/arrow_ct_r.png"),
@@ -57,6 +59,16 @@ class NavTurnArrow:
     self._next_param_check = now + PARAM_REFRESH_S
     self._enabled = ui_state.params.get_bool("NkaoudNavEnabled")
     self._show_banner = ui_state.params.get_bool("NkaoudNavShowBanner")
+    # The lane-change arrow means "the car wants to make this move", so only
+    # show it when the car is actually allowed to: steering with the route
+    # enabled AND an AutoLaneChange timer set. Turn arrows are navigation
+    # cues for the driver and stay regardless.
+    try:
+      alc_timer = int(ui_state.params.get("AutoLaneChangeTimer", return_default=True))
+    except (TypeError, ValueError):
+      alc_timer = AutoLaneChangeMode.OFF
+    self._lane_cue_enabled = (ui_state.params.get_bool("NkaoudNavControlSteer")
+                              and alc_timer != AutoLaneChangeMode.OFF)
 
   @staticmethod
   def _normalize(value: object) -> str:
@@ -84,15 +96,16 @@ class NavTurnArrow:
     if turn_key is not None:
       return turn_key
 
-    # Lane-change cue: navd's advisoryLaneChange is pure display intent
-    # (maneuver positioning AND highway cruise preference), never gated by
-    # NkaoudNavControlSteer / AutoLaneChangeTimer, so the flashing arrow
-    # appears even when nav isn't allowed to make the move itself. All cue
-    # windowing lives in navd; the turn arrow keeps precedence in its own
-    # window.
-    advisory = self._normalize(nav_sp.advisoryLaneChange)
-    if advisory in ("left", "right"):
-      return f"lane_change_{advisory}"
+    # Lane-change cue from navd's advisoryLaneChange (maneuver positioning
+    # AND highway cruise preference). Cue windowing lives in navd; display
+    # permission lives here -- shown only while the car may actually make
+    # the move (_lane_cue_enabled), because a "car wants to change lanes"
+    # arrow makes no sense when steering with the route is off. The turn
+    # arrow keeps precedence in its own window.
+    if self._lane_cue_enabled:
+      advisory = self._normalize(nav_sp.advisoryLaneChange)
+      if advisory in ("left", "right"):
+        return f"lane_change_{advisory}"
     return None
 
   def _turn_key(self, desire: str, maneuver_type: str, modifier: str, dist_to_maneuver: float) -> str | None:
@@ -201,9 +214,10 @@ class NavTurnArrow:
     rl.draw_texture_ex(texture, rl.Vector2(pos_x, pos_y), 0.0, scale, tint)
 
     # nkaoud_nav: reason pill under the arrow while the route wants a lane
-    # move and that side is currently blocked / unsafe.
-    advisory = self._normalize(nav_sp.advisoryLaneChange)
-    if advisory in ("left", "right"):
-      reason = self._lane_change_block_reason(advisory)
-      if reason is not None:
-        self._draw_pill(rect.x + rect.width / 2, pos_y + draw_h + 24, reason, PILL_BLOCK_COLOR)
+    # move the car may act on and that side is currently blocked / unsafe.
+    if self._lane_cue_enabled:
+      advisory = self._normalize(nav_sp.advisoryLaneChange)
+      if advisory in ("left", "right"):
+        reason = self._lane_change_block_reason(advisory)
+        if reason is not None:
+          self._draw_pill(rect.x + rect.width / 2, pos_y + draw_h + 24, reason, PILL_BLOCK_COLOR)
