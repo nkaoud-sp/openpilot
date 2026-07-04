@@ -75,12 +75,23 @@ class NavSettingsLayout(Widget):
     )
     self._control_steer = toggle_item_sp(
       title=lambda: tr("Steer / Lane-Change With The Route"),
-      description=lambda: tr("Lets the route bias steering: turnLeft / turnRight near a turn, and a cautious " +
+      description=lambda: tr("Lets the route bias steering: turnLeft / turnRight near a turn, a cautious " +
                             "keepLeft / keepRight lane-change bias ahead of highway exits, forks and merges " +
-                            "when you're not in the right lane. The bias requires an AutoLaneChange timer set " +
-                            "in your steering settings (anything other than \"Off\") and only applies while the " +
-                            "blind-spot monitor and camera see the target side clear. Experimental."),
+                            "when you're not in the right lane, and toward your Highway Lane Preference while " +
+                            "cruising. The bias requires an AutoLaneChange timer set in your steering settings " +
+                            "(anything other than \"Off\") and only applies while the blind-spot monitor and " +
+                            "camera see the target side clear. Experimental."),
       param="NkaoudNavControlSteer",
+    )
+    self._highway_lane_pref = multiple_button_item_sp(
+      title=lambda: tr("Highway Lane Preference"),
+      description=lambda: tr("Which lane to prefer while cruising a highway / main road with no upcoming " +
+                            "maneuver. The flashing arrow shows the wanted move (with a pill explaining what " +
+                            "blocks it); steering toward it requires \"Steer / Lane-Change With The Route\" and " +
+                            "a confident lane fix, and the blind-spot monitor and camera still gate any move."),
+      buttons=[lambda: tr("Left Most"), lambda: tr("Center"), lambda: tr("Right Most")],
+      param="NkaoudNavHighwayLanePref",
+      button_width=280,
     )
 
     items = [
@@ -92,6 +103,7 @@ class NavSettingsLayout(Widget):
       self._show_banner,
       self._control_speed,
       self._control_steer,
+      self._highway_lane_pref,
     ]
     return items
 

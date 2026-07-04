@@ -19,9 +19,6 @@ FLASH_PERIOD_S = 0.7
 OVERLAY_SCREEN_FRACTION = 0.5
 MIN_OVERLAY_SIZE = 280
 TURN_OVERLAY_DISTANCE_M = 150.0
-# Lane-change cue window is wider than the turn window: highway exits/forks
-# want the lane move started well before a surface-street turn cue.
-ADVISORY_OVERLAY_DISTANCE_M = 500.0
 OVERLAY_TINT_MIN_ALPHA = 96
 OVERLAY_TINT_MAX_ALPHA = 255
 
@@ -87,12 +84,14 @@ class NavTurnArrow:
     if turn_key is not None:
       return turn_key
 
-    # Lane-change cue: navd's advisoryLaneChange is pure display intent, never
-    # gated by NkaoudNavControlSteer / AutoLaneChangeTimer, so the flashing
-    # arrow appears even when nav isn't allowed to make the move itself. The
-    # turn arrow keeps precedence inside its own window.
+    # Lane-change cue: navd's advisoryLaneChange is pure display intent
+    # (maneuver positioning AND highway cruise preference), never gated by
+    # NkaoudNavControlSteer / AutoLaneChangeTimer, so the flashing arrow
+    # appears even when nav isn't allowed to make the move itself. All cue
+    # windowing lives in navd; the turn arrow keeps precedence in its own
+    # window.
     advisory = self._normalize(nav_sp.advisoryLaneChange)
-    if advisory in ("left", "right") and dist_to_maneuver <= ADVISORY_OVERLAY_DISTANCE_M:
+    if advisory in ("left", "right"):
       return f"lane_change_{advisory}"
     return None
 

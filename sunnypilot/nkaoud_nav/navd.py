@@ -93,6 +93,26 @@ LANE_POSITION_MANEUVERS = ("off ramp", "on ramp", "fork", "merge")
 # stop one (that fails safe), but a low-confidence read must never start one.
 STEER_LANE_CONFS = ("high", "medium")
 
+# Highway-cruise lane preference (NkaoudNavHighwayLanePref): while cruising a
+# motorway-class road with no imminent maneuver, bias toward the preferred
+# lane. Pure intent, like everything else here -- desire_helper applies every
+# safety gate (BSM, visual, cooldown, episode budget). Being a comfort
+# feature driven entirely by the lane estimate, it trusts only a
+# HIGH-confidence fix (maneuver positioning accepts medium+).
+HIGHWAY_CLASSES = ("motorway", "motorway_link", "trunk")
+HIGHWAY_CRUISE_MIN_SPEED_MS = 60.0 / 3.6   # ~60 km/h; below this we don't auto-position
+HIGHWAY_CRUISE_MIN_DIST_M = 1500.0         # only cruise-bias when the next maneuver is at least this far
+HIGHWAY_LANE_PREF_LEFT = 0
+HIGHWAY_LANE_PREF_CENTER = 1
+HIGHWAY_LANE_PREF_RIGHT = 2
+
+# Without a usable lane fix the maneuver advisory can't tell whether we're
+# already positioned, so cap how early that (possibly redundant) cue starts.
+# With a fix the advisory runs the full lane-keep window and simply stops
+# once we're positioned -- it must mirror the steering intent so a keep*
+# bias is never active without the arrow explaining it.
+ADVISORY_NO_FIX_CUE_M = 500.0
+
 # Phase 11: "Share" destination -- HTTP fetch when the picker writes a new
 # NkaoudNavShareTrigger token. Retries on failure are bounded so a wrong
 # URL doesn't hammer the endpoint forever.
@@ -263,6 +283,7 @@ class NkaoudNavd:
     self.cross_track_m: float = 0.0
     self.cross_track_counter: int = 0
     self._enabled: bool = False
+    self._highway_pref: int = HIGHWAY_LANE_PREF_CENTER
     self._next_param_t: float = 0.0
     self._last_logged_desire: str = "none"
     self._last_logged_modifier: str = ""
@@ -288,6 +309,10 @@ class NkaoudNavd:
     if now >= self._next_param_t:
       self._next_param_t = now + PARAM_REFRESH_S
       self._enabled = self.params.get_bool("NkaoudNavEnabled")
+      try:
+        self._highway_pref = int(self.params.get("NkaoudNavHighwayLanePref", return_default=True))
+      except (TypeError, ValueError):
+        self._highway_pref = HIGHWAY_LANE_PREF_CENTER
 
     self._maybe_drain_fetcher()
     self._handle_share_trigger()
@@ -629,55 +654,88 @@ class NkaoudNavd:
       * keepLeft/keepRight -- a cautious lane-change bias -- inside the
         lane-keep window, only for ramp-class maneuvers and only when a
         medium+ confidence lane fix says we actually need to move.
+      * keepLeft/keepRight toward the preferred highway lane while cruising
+        with no imminent maneuver (high-confidence fix only).
     """
     cur_step = self._current_step()
+    if cur_step is None:
+      return NavDesire.none
     upcoming = self._upcoming_step()
-    if cur_step is None or upcoming is None:
-      return NavDesire.none
     dist = self._distance_to_maneuver()
-    if dist <= 0.0:
-      return NavDesire.none
 
-    lane_keep_m, turn_cue_m = _ranges_for(upcoming.maneuver_type)
-    modifier = upcoming.maneuver_modifier
-    if dist <= turn_cue_m:
-      if modifier in LEFT_TURN_MODIFIERS:
-        return NavDesire.turnLeft
-      if modifier in RIGHT_TURN_MODIFIERS:
-        return NavDesire.turnRight
-      return NavDesire.none
+    if upcoming is not None and dist > 0.0:
+      lane_keep_m, turn_cue_m = _ranges_for(upcoming.maneuver_type)
+      modifier = upcoming.maneuver_modifier
+      if dist <= turn_cue_m:
+        if modifier in LEFT_TURN_MODIFIERS:
+          return NavDesire.turnLeft
+        if modifier in RIGHT_TURN_MODIFIERS:
+          return NavDesire.turnRight
+        return NavDesire.none
+      if dist <= lane_keep_m:
+        # Inside a maneuver window the maneuver owns lateral -- never
+        # cruise-bias here, even when no positioning move is wanted.
+        if (upcoming.maneuver_type in LANE_POSITION_MANEUVERS
+            and self.lane_conf in STEER_LANE_CONFS and self.lane_total > 0 and self.lane_current > 0):
+          side = self._route_side(cur_step, dist, modifier)
+          if side and not self._positioned_for(side, dist, lane_keep_m, turn_cue_m):
+            return NavDesire.keepLeft if side == "left" else NavDesire.keepRight
+        return NavDesire.none
 
-    if dist > lane_keep_m or upcoming.maneuver_type not in LANE_POSITION_MANEUVERS:
-      return NavDesire.none
-    if self.lane_conf not in STEER_LANE_CONFS or self.lane_total <= 0 or self.lane_current <= 0:
-      return NavDesire.none
-    side = self._route_side(cur_step, dist, modifier)
-    if not side or self._positioned_for(side, dist, lane_keep_m, turn_cue_m):
-      return NavDesire.none
-    return NavDesire.keepLeft if side == "left" else NavDesire.keepRight
+    side = self._cruise_lane_side(cur_step, dist)
+    if side:
+      return NavDesire.keepLeft if side == "left" else NavDesire.keepRight
+    return NavDesire.none
+
+  def _cruise_lane_side(self, cur_step, dist: float) -> str:
+    """Side of a move toward the preferred highway cruising lane
+    (NkaoudNavHighwayLanePref), or '' when none is wanted. Only on
+    motorway-class roads, at speed, with no imminent maneuver, and with a
+    HIGH-confidence lane fix -- a comfort feature must never act (or cue)
+    on a guess. Center uses ceil(N/2): 3 lanes -> 2, 4 -> 2 (center-left),
+    5 -> 3."""
+    if not cur_step.road_classes or not any(c in HIGHWAY_CLASSES for c in cur_step.road_classes):
+      return ""
+    if 0.0 < dist < HIGHWAY_CRUISE_MIN_DIST_M:
+      return ""
+    if self.last_v_ego < HIGHWAY_CRUISE_MIN_SPEED_MS:
+      return ""
+    if self.lane_conf != "high" or self.lane_total <= 1 or self.lane_current <= 0:
+      return ""
+    if self._highway_pref == HIGHWAY_LANE_PREF_LEFT:
+      target = 1
+    elif self._highway_pref == HIGHWAY_LANE_PREF_RIGHT:
+      target = self.lane_total
+    else:
+      target = math.ceil(self.lane_total / 2)
+    if self.lane_current == target:
+      return ""
+    return "left" if self.lane_current > target else "right"
 
   def _advisory_lane_side(self) -> str:
     """Side of a lane move to cue with the UI's flashing arrow. Broader than
-    the steering intent: covers every maneuver type, and falls back to the
-    route's side when there is no usable lane fix (we can't tell whether
-    we're already positioned, so cue the side maps-style). Empty inside the
-    turn-cue window -- the turn arrow owns that zone."""
+    the steering intent for maneuvers (covers every maneuver type, and falls
+    back to the route's side when there is no usable lane fix), identical to
+    it for highway cruising. Empty inside the turn-cue window -- the turn
+    arrow owns that zone."""
     cur_step = self._current_step()
+    if cur_step is None:
+      return ""
     upcoming = self._upcoming_step()
-    if cur_step is None or upcoming is None:
-      return ""
     dist = self._distance_to_maneuver()
-    if dist <= 0.0:
-      return ""
-    lane_keep_m, turn_cue_m = _ranges_for(upcoming.maneuver_type)
-    if not (turn_cue_m < dist <= lane_keep_m):
-      return ""
-    side = self._route_side(cur_step, dist, upcoming.maneuver_modifier)
-    if not side:
-      return ""
-    if self.lane_conf == "unknown" or self.lane_total <= 0 or self.lane_current <= 0:
-      return side
-    return "" if self._positioned_for(side, dist, lane_keep_m, turn_cue_m) else side
+
+    if upcoming is not None and dist > 0.0:
+      lane_keep_m, turn_cue_m = _ranges_for(upcoming.maneuver_type)
+      if turn_cue_m < dist <= lane_keep_m:
+        side = self._route_side(cur_step, dist, upcoming.maneuver_modifier)
+        if side:
+          if self.lane_conf == "unknown" or self.lane_total <= 0 or self.lane_current <= 0:
+            return side if dist <= ADVISORY_NO_FIX_CUE_M else ""
+          if not self._positioned_for(side, dist, lane_keep_m, turn_cue_m):
+            return side
+        return ""
+
+    return self._cruise_lane_side(cur_step, dist)
 
   def _positioned_for(self, side: str, dist: float, lane_keep_m: float, turn_cue_m: float) -> bool:
     """True when the current lane already satisfies the route's `side`
