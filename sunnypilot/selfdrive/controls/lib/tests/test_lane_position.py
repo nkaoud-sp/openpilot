@@ -119,6 +119,41 @@ def test_separation_only_blocks_when_inner_strong_outer_weak():
   assert est.debug.width_vote_right is False
 
 
+def test_separation_uses_relative_outer_weakness():
+  # A barely-strong inner line should not call a mid-confidence outer line fake.
+  est = LanePositionEstimator()
+  model = make_model(
+    dist_left=9.25,
+    dist_right=5.55,
+    lane_ys=(-5.4, -1.8, 1.8, 5.4),
+    lane_probs=(0.36, 0.62, 0.62, 0.36),
+  )
+  current, total, _ = _settle(est, model, FILTER_MODE_SEPARATION, 3)
+  assert (current, total) == (3, 4)
+  assert est.debug.blocked_left is False
+  assert est.debug.blocked_right is False
+  assert est.debug.separation_vote_left is False
+  assert est.debug.separation_vote_right is False
+
+
+def test_separation_blocks_mid_outer_when_inner_is_much_stronger():
+  # With a very strong inner line, a mid-confidence outer line is still
+  # suspicious if the relative gap is large enough.
+  est = LanePositionEstimator()
+  model = make_model(
+    dist_left=9.25,
+    dist_right=5.55,
+    lane_ys=(-5.4, -1.8, 1.8, 5.4),
+    lane_probs=(0.45, 0.90, 0.90, 0.45),
+  )
+  current, total, _ = _settle(est, model, FILTER_MODE_SEPARATION, 3)
+  assert (current, total) == (2, 2)
+  assert est.debug.blocked_left is True
+  assert est.debug.blocked_right is True
+  assert est.debug.separation_vote_left is True
+  assert est.debug.separation_vote_right is True
+
+
 def test_both_or_blocks_on_separation_alone():
   est = LanePositionEstimator()
   model = make_model(

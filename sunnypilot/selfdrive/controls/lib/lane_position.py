@@ -43,7 +43,8 @@ EDGE_HYSTERESIS = 0.25     # lane-widths past the half-integer boundary before f
 
 # Edge-lane blocking filter tunables
 LANE_LINE_PROB_STRONG = 0.6
-LANE_LINE_PROB_WEAK = 0.35
+LANE_LINE_PROB_OUTER_WEAK_MAX = 0.50
+LANE_LINE_PROB_OUTER_WEAK_GAP = 0.30
 EDGE_LANE_NARROW_RATIO = 0.8
 EDGE_BLOCK_COUNTER_ON = 3
 EDGE_BLOCK_COUNTER_OFF = 1
@@ -149,6 +150,14 @@ class LanePositionEstimator:
       return counter > EDGE_BLOCK_COUNTER_OFF
     return counter >= EDGE_BLOCK_COUNTER_ON
 
+  @staticmethod
+  def _outer_line_weak_relative_to_inner(inner_prob: float, outer_prob: float) -> bool:
+    return (
+      inner_prob >= LANE_LINE_PROB_STRONG
+      and outer_prob <= LANE_LINE_PROB_OUTER_WEAK_MAX
+      and (inner_prob - outer_prob) >= LANE_LINE_PROB_OUTER_WEAK_GAP
+    )
+
   def update(self, modelV2, max_lanes: int = LANE_POSITION_MAX_LANES, filter_mode: int = FILTER_MODE_NONE):
     road_edges = list(modelV2.roadEdges)
     road_edge_stds = list(modelV2.roadEdgeStds)
@@ -239,13 +248,11 @@ class LanePositionEstimator:
 
     separation_vote_left = (
       current_lane > 1
-      and left_inner_prob >= LANE_LINE_PROB_STRONG
-      and left_outer_prob <= LANE_LINE_PROB_WEAK
+      and self._outer_line_weak_relative_to_inner(left_inner_prob, left_outer_prob)
     )
     separation_vote_right = (
       current_lane < total_lanes
-      and right_inner_prob >= LANE_LINE_PROB_STRONG
-      and right_outer_prob <= LANE_LINE_PROB_WEAK
+      and self._outer_line_weak_relative_to_inner(right_inner_prob, right_outer_prob)
     )
 
     if filter_mode == FILTER_MODE_WIDTH:
