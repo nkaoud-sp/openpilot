@@ -33,7 +33,7 @@ LANE_CHANGE_TIME_MAX = 10.
 # visual vehicle detector's car-probability on the target side must stay
 # below the threshold. Only the probability is used here -- never the
 # detector's block/clear boolean.
-VISUAL_CONF_BLOCK_THRESHOLD = 0.60   # P(car present) >= this blocks the side ("< 60%")
+VISUAL_CONF_BLOCK_THRESHOLD = 0.80   # 0.60   # P(car present) >= this blocks the side ("< 60%")
 VISUAL_STALE_TIME = 1.0              # s; detector state older than this counts as no signal
 
 # nkaoud_nav: keep* episode limits. The bias is open-loop (nothing confirms a
