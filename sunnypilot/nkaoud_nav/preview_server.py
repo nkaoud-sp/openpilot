@@ -368,7 +368,10 @@ CROP_ROUTES = {
 # each portal just shows its own subset.
 TUNE_KEYS = ["right_x1", "right_y1", "right_x2", "right_y2",
              "min_box_w", "min_box_h", "min_bottom_y", "confidence"]
-CROP_KEYS = ["crop_x", "crop_y", "crop_w", "crop_h", "hz", "blocked_threshold"]
+# Classifier reference ROI (driver/wide). Tuned once in the reference orientation;
+# the detector auto-mirrors it for the augmented side.
+ROI_KEYS = ["roi_x1", "roi_y1", "roi_x2", "roi_y2"]
+CROP_KEYS = ["crop_x", "crop_y", "crop_w", "crop_h", *ROI_KEYS, "hz", "blocked_threshold"]
 
 
 def _tuning_json() -> bytes:
@@ -409,6 +412,10 @@ _SLIDER_RANGES = {
   "crop_y":       (0.0, 1208.0, 1.0),
   "crop_w":       (64.0, 1928.0, 1.0),
   "crop_h":       (64.0, 1208.0, 1.0),
+  "roi_x1":       (0.0, 1.0, 0.01),
+  "roi_y1":       (0.0, 1.0, 0.01),
+  "roi_x2":       (0.0, 1.0, 0.01),
+  "roi_y2":       (0.0, 1.0, 0.01),
   "hz":           (1.0, float(MAX_DETECTOR_HZ), 1.0),
   "blocked_threshold": (0.05, 0.95, 0.01),
 }
@@ -425,6 +432,10 @@ _SLIDER_LABELS = {
   "crop_y":       "Crop box  Y (px)",
   "crop_w":       "Crop box  width (px)",
   "crop_h":       "Crop box  height (px)",
+  "roi_x1":       "Classifier ROI  left (x1)  [auto-mirrored]",
+  "roi_y1":       "Classifier ROI  top (y1)",
+  "roi_x2":       "Classifier ROI  right (x2)  [auto-mirrored]",
+  "roi_y2":       "Classifier ROI  bottom (y2)",
   "hz":           "Detector rate (Hz)",
   "blocked_threshold": "Blocked threshold (driver cam)",
 }
@@ -566,7 +577,9 @@ TUNING_PAGE = _render_tuning_page(
 
 CROP_PAGE = _render_tuning_page(
   "Visual Vehicle Detector &mdash; Crop &amp; Rate",
-  "Drag the crop box (yellow rectangle) over the area you want YOLO to see, and set the detector rate. Saved to the device instantly.",
+  "Drag the crop box (yellow rectangle) over the area you want the model to see, and set the detector rate. " +
+  "For the driver/wide classifier, the ROI sliders cut the region inside the crop that is fed to the model; " +
+  "you tune it once (reference side) and the opposite side is auto-mirrored. Saved to the device instantly.",
   [{"id": "full", "route": "/full_frame.png", "cap": "full frame + crop box"},
    {"id": "crop", "route": "/detector_crop.png", "cap": "resulting crop"}],
   CROP_KEYS,

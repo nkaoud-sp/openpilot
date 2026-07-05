@@ -212,6 +212,30 @@ def load_classifier_recipe(camera: str) -> ClassifierRecipe:
     pos_index=int(car_idx) if car_idx is not None else base.pos_index,
     side_crops=side_crops)
 
+
+def side_is_augmented(recipe: ClassifierRecipe, side: str | None) -> bool:
+  """True when `side` is the mirrored (augmented) side relative to the model's
+  reference orientation: its per-side mirror flag (new side_crops schema) or the
+  legacy mirror_left (LEFT-only) toggle. The reference side returns False."""
+  if recipe.side_crops and side and side in recipe.side_crops:
+    return bool(recipe.side_crops[side].mirror)
+  return bool(side == "left" and recipe.mirror_left)
+
+
+def reference_roi_frac(recipe: ClassifierRecipe) -> tuple[float, float, float, float]:
+  """The single ROI (fractions of the crop) the portal tunes, taken in the
+  model's reference (un-augmented, mirror==False) orientation. The augmented
+  side's ROI is derived from this as its horizontal mirror at inference time."""
+  def _from(crop_mode: str, roi_frac: tuple[float, float, float, float], left_crop_px: int):
+    if crop_mode == "remove_left_keep_rest":
+      return (left_crop_px / recipe.src_w if recipe.src_w else 0.0, 0.0, 1.0, 1.0)
+    return roi_frac
+  if recipe.side_crops:
+    for cfg in recipe.side_crops.values():
+      if not cfg.mirror:
+        return _from(cfg.crop_mode, cfg.roi_frac, cfg.left_crop_px)
+  return _from(recipe.crop_mode, recipe.roi_frac, recipe.left_crop_px)
+
 # COCO class IDs from Ultralytics YOLO exports.
 VEHICLE_CLASS_IDS = {1, 2, 3, 5, 7}  # bicycle, car, motorcycle, bus, truck
 
@@ -411,6 +435,13 @@ TUNING_KEYS: dict[str, tuple[float, float]] = {
   "right_y1": (0.0, 1.0),
   "right_x2": (0.0, 1.0),
   "right_y2": (0.0, 1.0),
+  # Classifier reference ROI (fractions of the crop, in the right/un-augmented
+  # orientation). The augmented side is auto-derived as its horizontal mirror,
+  # so only this single ROI is tuned; it overrides model_config.json side_crops.
+  "roi_x1": (0.0, 1.0),
+  "roi_y1": (0.0, 1.0),
+  "roi_x2": (0.0, 1.0),
+  "roi_y2": (0.0, 1.0),
   "min_box_w": (0.0, 1.0),
   "min_box_h": (0.0, 1.0),
   "min_bottom_y": (0.0, 1.0),
@@ -428,6 +459,12 @@ TUNING_DEFAULTS: dict[str, float] = {
   "right_y1": DEFAULT_RIGHT_Y1,
   "right_x2": DEFAULT_RIGHT_X2,
   "right_y2": DEFAULT_RIGHT_Y2,
+  # Base ROI fallback (whole crop). Classifier cameras override these in
+  # tuning_defaults() with the model's reference-side ROI.
+  "roi_x1": 0.0,
+  "roi_y1": 0.0,
+  "roi_x2": 1.0,
+  "roi_y2": 1.0,
   "min_box_w": DEFAULT_MIN_BOX_W,
   "min_box_h": DEFAULT_MIN_BOX_H,
   "min_bottom_y": DEFAULT_MIN_BOTTOM_Y,
@@ -445,6 +482,12 @@ def tuning_defaults(camera: str | None = None) -> dict[str, float]:
   cam = camera or active_camera()
   values = dict(TUNING_DEFAULTS)
   values.update(CAMERA_CROP_DEFAULT_OVERRIDES.get(cam, {}))
+  # Seed the classifier ROI defaults from the model's reference-side ROI so the
+  # portal opens on the shipped ROI and "Reset" restores it. The augmented side
+  # is auto-mirrored from this at inference time.
+  if cam in CLASSIFIER_CAMERAS:
+    rx1, ry1, rx2, ry2 = reference_roi_frac(load_classifier_recipe(cam))
+    values.update({"roi_x1": rx1, "roi_y1": ry1, "roi_x2": rx2, "roi_y2": ry2})
   return values
 
 
@@ -621,6 +664,9 @@ class VisualVehicleDetector:
     self.right_roi: tuple[float, float, float, float] = (
       DEFAULT_RIGHT_X1, DEFAULT_RIGHT_Y1, DEFAULT_RIGHT_X2, DEFAULT_RIGHT_Y2,
     )
+    # Classifier reference ROI (right/un-augmented orientation), live-tuned. The
+    # augmented side is auto-mirrored from this in _preprocess_classifier.
+    self.roi_frac_tuned: tuple[float, float, float, float] = (0.0, 0.0, 1.0, 1.0)
     self.min_box_w_frac = DEFAULT_MIN_BOX_W
     self.min_box_h_frac = DEFAULT_MIN_BOX_H
     self.min_bottom_y_frac = DEFAULT_MIN_BOTTOM_Y
@@ -646,6 +692,7 @@ class VisualVehicleDetector:
     self._tuning_mtime = mtime
     t = load_tuning(cam)
     self.right_roi = (t["right_x1"], t["right_y1"], t["right_x2"], t["right_y2"])
+    self.roi_frac_tuned = (t["roi_x1"], t["roi_y1"], t["roi_x2"], t["roi_y2"])
     self.min_box_w_frac = t["min_box_w"]
     self.min_box_h_frac = t["min_box_h"]
     self.min_bottom_y_frac = t["min_bottom_y"]
@@ -1047,25 +1094,23 @@ class VisualVehicleDetector:
   def _preprocess_classifier(self, detector_rgb: np.ndarray,
                              recipe: ClassifierRecipe,
                              side: str | None = None) -> tuple[np.ndarray, dict[str, int], np.ndarray]:
-    """Reproduce the model's training preprocessing, driven by its recipe:
-    cut the region (roi_inset = fixed inner ROI; remove_left_keep_rest = chop N px
-    off the left), bilinear-resize to res_w x res_h, normalize, NCHW. Verified
-    byte-identical to the per-model training preprocess for both models. If the
-    recipe carries side_crops for the current side, its crop overrides apply."""
+    """Reproduce the model's training preprocessing: cut the ROI region,
+    bilinear-resize to res_w x res_h, normalize, NCHW. Verified byte-identical
+    to the per-model training preprocess for both models.
+
+    The live-tuned reference ROI (self.roi_frac_tuned) drives the crop: it is
+    applied directly on the reference side and horizontally mirrored on the
+    augmented side, so one tuned ROI covers both. This overrides any side_crops
+    from model_config.json (which is now just the shipped default seed)."""
     h, w = detector_rgb.shape[:2]
-    side_cfg = recipe.side_crops.get(side) if (recipe.side_crops and side) else None
-    crop_mode = side_cfg.crop_mode if side_cfg else recipe.crop_mode
-    roi_frac = side_cfg.roi_frac if side_cfg else recipe.roi_frac
-    left_crop_px = side_cfg.left_crop_px if side_cfg else recipe.left_crop_px
-    if crop_mode == "remove_left_keep_rest":
-      x1 = int(np.clip(left_crop_px, 0, w - 1))
-      y1, x2, y2 = 0, w, h
-    else:  # roi_inset
-      fx1, fy1, fx2, fy2 = roi_frac
-      x1 = int(np.clip(round(fx1 * w), 0, w - 1))
-      y1 = int(np.clip(round(fy1 * h), 0, h - 1))
-      x2 = int(np.clip(round(fx2 * w), x1 + 1, w))
-      y2 = int(np.clip(round(fy2 * h), y1 + 1, h))
+    # One reference ROI, auto-mirrored for the augmented side.
+    rx1, ry1, rx2, ry2 = self.roi_frac_tuned
+    fx1, fy1, fx2, fy2 = (1.0 - rx2, ry1, 1.0 - rx1, ry2) if side_is_augmented(recipe, side) \
+      else (rx1, ry1, rx2, ry2)
+    x1 = int(np.clip(round(fx1 * w), 0, w - 1))
+    y1 = int(np.clip(round(fy1 * h), 0, h - 1))
+    x2 = int(np.clip(round(fx2 * w), x1 + 1, w))
+    y2 = int(np.clip(round(fy2 * h), y1 + 1, h))
     roi = detector_rgb[y1:y2, x1:x2]
     # Bilinear stretch to match the training resize (PIL is already a dep here).
     from PIL import Image
@@ -1176,9 +1221,9 @@ class VisualVehicleDetector:
       "roi": [roi["roi_x1"], roi["roi_y1"], roi["roi_x2"], roi["roi_y2"]],
       "src_crop": [int(detector_rgb.shape[1]), int(detector_rgb.shape[0])],
       "expected_src": [recipe.src_w, recipe.src_h],
-      "crop_mode": (recipe.side_crops[side].crop_mode
-                    if (recipe.side_crops and side and side in recipe.side_crops)
-                    else recipe.crop_mode),
+      "crop_mode": "roi_inset",  # tuned reference ROI, auto-mirrored per side
+      "roi_ref": [round(v, 4) for v in self.roi_frac_tuned],
+      "augmented": side_is_augmented(recipe, side),
       "norm": CLASSIFIER_NORM,
       "pos_index": recipe.pos_index,
     }
@@ -1840,13 +1885,8 @@ class VisualVehicleDetector:
     # then XORs on top: side_crops[side].mirror when present (new schema), else
     # the legacy mirror_left flag (toggles only on the LEFT zone).
     mirror = camera == "driver"
-    if recipe is not None:
-      side_cfg = recipe.side_crops.get(side) if (recipe.side_crops and side) else None
-      if side_cfg is not None:
-        if side_cfg.mirror:
-          mirror = not mirror
-      elif side == "left" and recipe.mirror_left:
-        mirror = not mirror
+    if recipe is not None and side_is_augmented(recipe, side):
+      mirror = not mirror
     # Extracting + converting the whole ~2MP frame every tick is the bottleneck,
     # and the model only sees the crop, so read just the crop's bytes from the
     # NV12 buffer on the hot path. A portal preview needs the whole oriented
