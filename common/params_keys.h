@@ -193,6 +193,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"NkaoudNavShowBanner", {PERSISTENT | BACKUP, BOOL, "1"}},        // show maneuver banner widget
     {"NkaoudNavControlSpeed", {PERSISTENT | BACKUP, BOOL, "0"}},      // allow nav to influence longitudinal target speed
     {"NkaoudNavControlSteer", {PERSISTENT | BACKUP, BOOL, "0"}},      // allow nav to influence steering (desire flag injection)
+    {"NkaoudNavVisualBlockThreshold", {PERSISTENT | BACKUP, FLOAT, "0.80"}}, // P(camera car present) threshold that blocks nav lane-change bias
     {"NkaoudNavPolylineStyle", {PERSISTENT | BACKUP, INT, "1"}},      // 0=solid, 1=smooth, 2=glow, 3=chevrons
     {"NkaoudNavHighwayLanePref", {PERSISTENT | BACKUP, INT, "1"}},    // highway cruise lane target: 0=left most, 1=center, 2=right most
     {"NkaoudNavShareEndpoint", {PERSISTENT | BACKUP, STRING, ""}},    // HTTP(S) URL that returns {"latitude":x,"longitude":y,"place_name":"..."} for the Share preset

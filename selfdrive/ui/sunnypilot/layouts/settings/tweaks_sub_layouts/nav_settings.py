@@ -10,7 +10,7 @@ from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.nav_t
 )
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr
-from openpilot.system.ui.sunnypilot.widgets.list_view import toggle_item_sp, simple_button_item_sp, multiple_button_item_sp
+from openpilot.system.ui.sunnypilot.widgets.list_view import toggle_item_sp, simple_button_item_sp, multiple_button_item_sp, option_item_sp
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.network import NavButton
 from openpilot.system.ui.widgets.scroller_tici import Scroller
@@ -83,6 +83,17 @@ class NavSettingsLayout(Widget):
                             "camera see the target side clear. Experimental."),
       param="NkaoudNavControlSteer",
     )
+    self._visual_block_threshold = option_item_sp(
+      title=lambda: tr("Camera Block Threshold"),
+      description=lambda: tr("For route-requested lane changes, block the move when the visual vehicle detector's " +
+                            "target-side car probability reaches this value. Lower is more conservative."),
+      param="NkaoudNavVisualBlockThreshold",
+      min_value=50,
+      max_value=95,
+      value_change_step=1,
+      label_callback=lambda value: f"{value}%",
+      use_float_scaling=True,
+    )
     self._highway_lane_pref = multiple_button_item_sp(
       title=lambda: tr("Highway Lane Preference"),
       description=lambda: tr("Which lane to prefer while cruising a highway / main road with no upcoming " +
@@ -104,6 +115,7 @@ class NavSettingsLayout(Widget):
       self._show_banner,
       self._control_speed,
       self._control_steer,
+      self._visual_block_threshold,
       self._highway_lane_pref,
     ]
     return items

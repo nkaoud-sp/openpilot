@@ -33,7 +33,10 @@ LANE_CHANGE_TIME_MAX = 10.
 # visual vehicle detector's car-probability on the target side must stay
 # below the threshold. Only the probability is used here -- never the
 # detector's block/clear boolean.
-VISUAL_CONF_BLOCK_THRESHOLD = 0.80   # 0.60   # P(car present) >= this blocks the side ("< 60%")
+VISUAL_CONF_BLOCK_THRESHOLD_DEFAULT = 0.80
+VISUAL_CONF_BLOCK_THRESHOLD_MIN = 0.05
+VISUAL_CONF_BLOCK_THRESHOLD_MAX = 0.95
+VISUAL_CONF_BLOCK_THRESHOLD_PARAM = "NkaoudNavVisualBlockThreshold"
 VISUAL_STALE_TIME = 1.0              # s; detector state older than this counts as no signal
 
 # nkaoud_nav: keep* episode limits. The bias is open-loop (nothing confirms a
@@ -44,6 +47,16 @@ VISUAL_STALE_TIME = 1.0              # s; detector state older than this counts 
 NAV_KEEP_EPISODE_MAX_S = 10.0
 NAV_KEEP_COOLDOWN_S = 4.0
 NAV_PARAM_READ_FRAMES = 50           # re-read NkaoudNavControlSteer every ~2.5 s
+
+
+def visual_conf_block_threshold(params: Params) -> float:
+  try:
+    raw = params.get(VISUAL_CONF_BLOCK_THRESHOLD_PARAM, return_default=True)
+    threshold = float(raw)
+  except (TypeError, ValueError):
+    threshold = VISUAL_CONF_BLOCK_THRESHOLD_DEFAULT
+  return max(VISUAL_CONF_BLOCK_THRESHOLD_MIN, min(VISUAL_CONF_BLOCK_THRESHOLD_MAX, threshold))
+
 
 DESIRES = {
   LaneChangeDirection.none: {
@@ -88,6 +101,7 @@ class DesireHelper:
     # nkaoud_nav gating state
     self.params = Params()
     self.nav_steer_enabled = False
+    self.visual_conf_block_threshold = VISUAL_CONF_BLOCK_THRESHOLD_DEFAULT
     self.nav_param_counter = 0
     self.nav_keep_timer = 0.0        # continuous keep* emission time
     self.nav_cooldown_timer = 0.0    # counts down after any lane change ends
@@ -101,6 +115,7 @@ class DesireHelper:
   def _update_nav_params(self) -> None:
     if self.nav_param_counter % NAV_PARAM_READ_FRAMES == 0:
       self.nav_steer_enabled = self.params.get_bool("NkaoudNavControlSteer")
+      self.visual_conf_block_threshold = visual_conf_block_threshold(self.params)
     self.nav_param_counter += 1
 
   def _update_nav_cooldown(self) -> None:
@@ -133,7 +148,7 @@ class DesireHelper:
           worst = p if worst is None else max(worst, p)
     if worst is None:
       return True  # no per-side probability -> fall back to BSM only
-    return worst < VISUAL_CONF_BLOCK_THRESHOLD
+    return worst < self.visual_conf_block_threshold
 
   def update(self, carstate, lateral_active, lane_change_prob, nav_desire="none", visual_vehicle_state=None):
     self.alc.update_params()

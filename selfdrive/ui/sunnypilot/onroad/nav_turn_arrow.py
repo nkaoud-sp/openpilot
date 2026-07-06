@@ -8,7 +8,7 @@ from openpilot.selfdrive.ui.ui_state import ui_state
 # Reuse the exact gate thresholds so the reason pill can't drift from the
 # actual desire_helper lane-change gate.
 from openpilot.selfdrive.controls.lib.desire_helper import (
-  VISUAL_CONF_BLOCK_THRESHOLD, VISUAL_STALE_TIME,
+  VISUAL_CONF_BLOCK_THRESHOLD_DEFAULT, VISUAL_STALE_TIME, visual_conf_block_threshold,
 )
 from openpilot.sunnypilot.selfdrive.controls.lib.auto_lane_change import AutoLaneChangeMode
 from openpilot.system.ui.lib.application import gui_app, FontWeight
@@ -35,6 +35,7 @@ class NavTurnArrow:
     self._enabled = False
     self._show_banner = False
     self._lane_cue_enabled = False
+    self._visual_conf_block_threshold = VISUAL_CONF_BLOCK_THRESHOLD_DEFAULT
     self._next_param_check = 0.0
     self._textures = {
       "turn_right": gui_app.texture("../../sunnypilot/selfdrive/assets/nav_turn_arrows/arrow_ct_r.png"),
@@ -69,6 +70,7 @@ class NavTurnArrow:
       alc_timer = AutoLaneChangeMode.OFF
     self._lane_cue_enabled = (ui_state.params.get_bool("NkaoudNavControlSteer")
                               and alc_timer != AutoLaneChangeMode.OFF)
+    self._visual_conf_block_threshold = visual_conf_block_threshold(ui_state.params)
 
   @staticmethod
   def _normalize(value: object) -> str:
@@ -170,7 +172,7 @@ class NavTurnArrow:
     if (cs.leftBlindspot if side == "left" else cs.rightBlindspot):
       return "Blind spot"
     vp = self._visual_side_max_prob(side)
-    if vp is not None and vp >= VISUAL_CONF_BLOCK_THRESHOLD:
+    if vp is not None and vp >= self._visual_conf_block_threshold:
       return f"Camera {vp * 100:.0f}%"
     return None
 
