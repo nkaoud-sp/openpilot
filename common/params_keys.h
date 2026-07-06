@@ -188,7 +188,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // and turn-slowdown target speed published on nkaoudNavigationSP.
     {"NkaoudNavEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},           // master on/off, gates the navd process
     {"NkaoudNavMapboxToken", {PERSISTENT | BACKUP, STRING, ""}},      // user-provided Mapbox access token
-    {"NkaoudNavDestination", {PERSISTENT | BACKUP, JSON}},            // {latitude, longitude, place_name} or null
+    {"NkaoudNavDestination", {CLEAR_ON_MANAGER_START, JSON}},         // active destination for this boot only
     {"NkaoudNavShowPolyline", {PERSISTENT | BACKUP, BOOL, "1"}},      // overlay route polyline on driving view
     {"NkaoudNavShowBanner", {PERSISTENT | BACKUP, BOOL, "1"}},        // show maneuver banner widget
     {"NkaoudNavControlSpeed", {PERSISTENT | BACKUP, BOOL, "0"}},      // allow nav to influence longitudinal target speed
@@ -196,7 +196,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"NkaoudNavPolylineStyle", {PERSISTENT | BACKUP, INT, "1"}},      // 0=solid, 1=smooth, 2=glow, 3=chevrons
     {"NkaoudNavHighwayLanePref", {PERSISTENT | BACKUP, INT, "1"}},    // highway cruise lane target: 0=left most, 1=center, 2=right most
     {"NkaoudNavShareEndpoint", {PERSISTENT | BACKUP, STRING, ""}},    // HTTP(S) URL that returns {"latitude":x,"longitude":y,"place_name":"..."} for the Share preset
-    {"NkaoudNavShareTrigger", {PERSISTENT, STRING, ""}},              // ephemeral token bumped each time the user taps Share; navd refetches when it changes
+    {"NkaoudNavShareTrigger", {CLEAR_ON_MANAGER_START, STRING, ""}},  // ephemeral token bumped each time the user taps Share; navd refetches when it changes
     {"CustomAccLongPressIncrement", {PERSISTENT | BACKUP, INT, "5"}},
     {"CustomAccShortPressIncrement", {PERSISTENT | BACKUP, INT, "1"}},
     {"DeviceBootMode", {PERSISTENT | BACKUP, INT, "0"}},

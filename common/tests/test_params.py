@@ -35,6 +35,18 @@ class TestParams:
     assert self.params.get("DongleId") is not None
     assert not os.path.isfile(undefined_param)
 
+  def test_nkaoud_nav_session_cleared_manager_start(self):
+    self.params.put_bool("NkaoudNavEnabled", True)
+    self.params.put("NkaoudNavMapboxToken", "test-token")
+    self.params.put("NkaoudNavDestination", {"latitude": 1.0, "longitude": 2.0, "place_name": "Test"})
+    self.params.put("NkaoudNavShareTrigger", "123")
+
+    self.params.clear_all(ParamKeyFlag.CLEAR_ON_MANAGER_START)
+    assert self.params.get_bool("NkaoudNavEnabled")
+    assert self.params.get("NkaoudNavMapboxToken") == "test-token"
+    assert self.params.get("NkaoudNavDestination") is None
+    assert self.params.get("NkaoudNavShareTrigger") is None
+
   def test_params_two_things(self):
     self.params.put("DongleId", "bob")
     self.params.put("AthenadPid", 123)
