@@ -35,7 +35,7 @@ from openpilot.sunnypilot.nkaoud_nav.route_client import (
 from openpilot.sunnypilot.nkaoud_nav.share_client import (
   ShareFetchError, fetch_share_destination,
 )
-from openpilot.sunnypilot.selfdrive.controls.lib.lane_position import FILTER_MODE_BOTH_OR, LanePositionEstimator
+from openpilot.sunnypilot.selfdrive.controls.lib.lane_position import FILTER_MODE_NONE, LanePositionEstimator
 
 NavDesire = custom.NkaoudNavigationSP.NavDesire
 
@@ -284,6 +284,7 @@ class NkaoudNavd:
     self.cross_track_counter: int = 0
     self._enabled: bool = False
     self._highway_pref: int = HIGHWAY_LANE_PREF_CENTER
+    self._lane_edge_filter_mode: int = FILTER_MODE_NONE
     self._next_param_t: float = 0.0
     self._last_logged_desire: str = "none"
     self._last_logged_modifier: str = ""
@@ -303,7 +304,9 @@ class NkaoudNavd:
     self.last_v_ego = v_ego
 
     if self.sm.updated['modelV2']:
-      self.lane_current, self.lane_total, self.lane_conf = self.lane_position_est.update(self.sm['modelV2'], filter_mode=FILTER_MODE_BOTH_OR)
+      self.lane_current, self.lane_total, self.lane_conf = self.lane_position_est.update(
+        self.sm['modelV2'], filter_mode=self._lane_edge_filter_mode,
+      )
 
     now = time.monotonic()
     if now >= self._next_param_t:
@@ -313,6 +316,10 @@ class NkaoudNavd:
         self._highway_pref = int(self.params.get("NkaoudNavHighwayLanePref", return_default=True))
       except (TypeError, ValueError):
         self._highway_pref = HIGHWAY_LANE_PREF_CENTER
+      try:
+        self._lane_edge_filter_mode = int(self.params.get("LaneEdgeFilterMode", return_default=True))
+      except (TypeError, ValueError):
+        self._lane_edge_filter_mode = FILTER_MODE_NONE
 
     self._maybe_drain_fetcher()
     self._handle_share_trigger()
