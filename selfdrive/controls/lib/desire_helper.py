@@ -104,7 +104,6 @@ class DesireHelper:
     self.visual_conf_block_threshold = VISUAL_CONF_BLOCK_THRESHOLD_DEFAULT
     self.nav_param_counter = 0
     self.nav_keep_timer = 0.0        # continuous keep* emission time
-    self.nav_keep_pulse_timer = 1.0  # start each nav keep* episode with an immediate model pulse
     self.nav_cooldown_timer = 0.0    # counts down after any lane change ends
     self.prev_lane_change_state = LaneChangeState.off
     self.prev_nav_keep = ""
@@ -242,7 +241,6 @@ class DesireHelper:
     # flips sides so each new episode gets a fresh budget.
     if not nav_keep or nav_name != self.prev_nav_keep:
       self.nav_keep_timer = 0.0
-      self.nav_keep_pulse_timer = 1.0
     self.prev_nav_keep = nav_name if nav_keep else ""
 
     if (self.nav_steer_enabled and lateral_active
@@ -263,11 +261,6 @@ class DesireHelper:
             and self._visual_side_clear(keep_dir, visual_vehicle_state)):
           self.desire = NAV_DESIRE_MAP[nav_name]
           self.nav_keep_timer += DT_MDL
-          if self.nav_keep_pulse_timer >= 1.0:
-            self.nav_keep_pulse_timer = 0.0
-          else:
-            self.nav_keep_pulse_timer += DT_MDL
-            self.desire = log.Desire.none
       elif nav_name in ("turnLeft", "turnRight"):
         self.desire = NAV_DESIRE_MAP[nav_name]
 
