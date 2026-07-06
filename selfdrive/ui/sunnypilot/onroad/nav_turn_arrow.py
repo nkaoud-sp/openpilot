@@ -34,7 +34,8 @@ class NavTurnArrow:
   def __init__(self) -> None:
     self._enabled = False
     self._show_banner = False
-    self._lane_cue_enabled = False
+    self._nav_steer_enabled = False
+    self._alc_timer = AutoLaneChangeMode.OFF
     self._visual_conf_block_threshold = VISUAL_CONF_BLOCK_THRESHOLD_DEFAULT
     self._next_param_check = 0.0
     self._textures = {
@@ -60,16 +61,11 @@ class NavTurnArrow:
     self._next_param_check = now + PARAM_REFRESH_S
     self._enabled = ui_state.params.get_bool("NkaoudNavEnabled")
     self._show_banner = ui_state.params.get_bool("NkaoudNavShowBanner")
-    # The lane-change arrow means "the car wants to make this move", so only
-    # show it when the car is actually allowed to: steering with the route
-    # enabled AND an AutoLaneChange timer set. Turn arrows are navigation
-    # cues for the driver and stay regardless.
+    self._nav_steer_enabled = ui_state.params.get_bool("NkaoudNavControlSteer")
     try:
-      alc_timer = int(ui_state.params.get("AutoLaneChangeTimer", return_default=True))
+      self._alc_timer = int(ui_state.params.get("AutoLaneChangeTimer", return_default=True))
     except (TypeError, ValueError):
-      alc_timer = AutoLaneChangeMode.OFF
-    self._lane_cue_enabled = (ui_state.params.get_bool("NkaoudNavControlSteer")
-                              and alc_timer != AutoLaneChangeMode.OFF)
+      self._alc_timer = AutoLaneChangeMode.OFF
     self._visual_conf_block_threshold = visual_conf_block_threshold(ui_state.params)
 
   @staticmethod
@@ -100,14 +96,11 @@ class NavTurnArrow:
 
     # Lane-change cue from navd's advisoryLaneChange (maneuver positioning
     # AND highway cruise preference). Cue windowing lives in navd; display
-    # permission lives here -- shown only while the car may actually make
-    # the move (_lane_cue_enabled), because a "car wants to change lanes"
-    # arrow makes no sense when steering with the route is off. The turn
-    # arrow keeps precedence in its own window.
-    if self._lane_cue_enabled:
-      advisory = self._normalize(nav_sp.advisoryLaneChange)
-      if advisory in ("left", "right"):
-        return f"lane_change_{advisory}"
+    # is intentionally not gated by steering / ALC permissions. The arrow
+    # means "nav wants this move"; the pill explains why controls won't act.
+    advisory = self._normalize(nav_sp.advisoryLaneChange)
+    if advisory in ("left", "right"):
+      return f"lane_change_{advisory}"
     return None
 
   def _turn_key(self, desire: str, maneuver_type: str, modifier: str, dist_to_maneuver: float) -> str | None:
@@ -163,7 +156,11 @@ class NavTurnArrow:
   def _lane_change_block_reason(self, side: str) -> str | None:
     """Short reason a wanted nav lane change toward `side` is currently blocked,
     or None when the side is clear (the keep* bias is free to proceed). Mirrors
-    the desire_helper keep* gate: blind spot, or visual car above threshold."""
+    the desire_helper keep* gate."""
+    if not self._nav_steer_enabled:
+      return "Route steer off"
+    if self._alc_timer == AutoLaneChangeMode.OFF:
+      return "Auto lane off"
     sm = ui_state.sm
     lcs = self._normalize(sm["modelV2"].meta.laneChangeState)
     if lcs in ("lanechangestarting", "lanechangefinishing"):
@@ -216,10 +213,9 @@ class NavTurnArrow:
     rl.draw_texture_ex(texture, rl.Vector2(pos_x, pos_y), 0.0, scale, tint)
 
     # nkaoud_nav: reason pill under the arrow while the route wants a lane
-    # move the car may act on and that side is currently blocked / unsafe.
-    if self._lane_cue_enabled:
-      advisory = self._normalize(nav_sp.advisoryLaneChange)
-      if advisory in ("left", "right"):
-        reason = self._lane_change_block_reason(advisory)
-        if reason is not None:
-          self._draw_pill(rect.x + rect.width / 2, pos_y + draw_h + 24, reason, PILL_BLOCK_COLOR)
+    # move and that move is currently blocked / not enabled.
+    advisory = self._normalize(nav_sp.advisoryLaneChange)
+    if advisory in ("left", "right"):
+      reason = self._lane_change_block_reason(advisory)
+      if reason is not None:
+        self._draw_pill(rect.x + rect.width / 2, pos_y + draw_h + 24, reason, PILL_BLOCK_COLOR)
