@@ -157,6 +157,9 @@ class NavTurnArrow:
     """Short reason a wanted nav lane change toward `side` is currently blocked,
     or None when the side is clear (the keep* bias is free to proceed). Mirrors
     the desire_helper keep* gate."""
+    nav_reason = str(ui_state.sm["nkaoudNavigationSP"].advisoryLaneChangeBlockReason or "").strip()
+    if nav_reason:
+      return nav_reason
     if not self._nav_steer_enabled:
       return "Route steer off"
     if self._alc_timer == AutoLaneChangeMode.OFF:

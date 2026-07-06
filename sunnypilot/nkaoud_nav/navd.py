@@ -547,7 +547,9 @@ class NkaoudNavd:
     else:
       nav.recommendedLaneSide = "none"
     nav.laneKeepDistance = float(lane_keep_m if side else 0.0)
-    nav.advisoryLaneChange = self._advisory_lane_side() or "none"
+    advisory_side, advisory_reason = self._advisory_lane_change()
+    nav.advisoryLaneChange = advisory_side or "none"
+    nav.advisoryLaneChangeBlockReason = advisory_reason
     nav.currentRoadClasses = ",".join(cur_step.road_classes) if cur_step else ""
     nav.upcomingRoadClasses = ",".join(upcoming.road_classes) if upcoming else ""
     nav.crossTrackDistance = float(self.cross_track_m)
@@ -719,15 +721,45 @@ class NkaoudNavd:
       return ""
     return "left" if self.lane_current > target else "right"
 
-  def _advisory_lane_side(self) -> str:
+  def _cruise_lane_preference_advisory(self, cur_step, dist: float) -> tuple[str, str]:
+    """Broader highway-preference cue for the UI. Returns (side, reason).
+    `reason` is empty only when navd would also allow the keep* desire."""
+    if self._highway_pref == HIGHWAY_LANE_PREF_LEFT:
+      side = "left"
+      target = 1
+    elif self._highway_pref == HIGHWAY_LANE_PREF_RIGHT:
+      side = "right"
+      target = self.lane_total if self.lane_total > 0 else 0
+    else:
+      if self.lane_total <= 1 or self.lane_current <= 0:
+        return "", ""
+      target = math.ceil(self.lane_total / 2)
+      if self.lane_current == target:
+        return "", ""
+      side = "left" if self.lane_current > target else "right"
+
+    if target > 0 and self.lane_current == target:
+      return "", ""
+    if not cur_step.road_classes or not any(c in HIGHWAY_CLASSES for c in cur_step.road_classes):
+      return side, "Road class"
+    if 0.0 < dist < HIGHWAY_CRUISE_MIN_DIST_M:
+      return side, "Next maneuver"
+    if self.last_v_ego < HIGHWAY_CRUISE_MIN_SPEED_MS:
+      return side, "Speed"
+    if self.lane_conf != "high" or self.lane_total <= 1 or self.lane_current <= 0:
+      return side, "Lane confidence"
+    return side, ""
+
+  def _advisory_lane_change(self) -> tuple[str, str]:
     """Side of a lane move to cue with the UI's flashing arrow. Broader than
     the steering intent for maneuvers (covers every maneuver type, and falls
-    back to the route's side when there is no usable lane fix), identical to
-    it for highway cruising. Empty inside the turn-cue window -- the turn
-    arrow owns that zone."""
+    back to the route's side when there is no usable lane fix). For highway
+    cruising, returns a cue even when preference is currently blocked so the
+    UI can explain why. Empty inside the turn-cue window -- the turn arrow owns
+    that zone."""
     cur_step = self._current_step()
     if cur_step is None:
-      return ""
+      return "", ""
     upcoming = self._upcoming_step()
     dist = self._distance_to_maneuver()
 
@@ -737,12 +769,12 @@ class NkaoudNavd:
         side = self._route_side(cur_step, dist, upcoming.maneuver_modifier)
         if side:
           if self.lane_conf == "unknown" or self.lane_total <= 0 or self.lane_current <= 0:
-            return side if dist <= ADVISORY_NO_FIX_CUE_M else ""
+            return (side, "Lane confidence") if dist <= ADVISORY_NO_FIX_CUE_M else ("", "")
           if not self._positioned_for(side, dist, lane_keep_m, turn_cue_m):
-            return side
-        return ""
+            return side, ""
+        return "", ""
 
-    return self._cruise_lane_side(cur_step, dist)
+    return self._cruise_lane_preference_advisory(cur_step, dist)
 
   def _positioned_for(self, side: str, dist: float, lane_keep_m: float, turn_cue_m: float) -> bool:
     """True when the current lane already satisfies the route's `side`

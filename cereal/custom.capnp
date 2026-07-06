@@ -494,6 +494,7 @@ struct NkaoudNavigationSP @0xcb9fd56c7057593a {
   # AutoLaneChangeTimer, so the driver still gets the visual cue when nav
   # isn't allowed to make the move itself.
   advisoryLaneChange @16 :LaneSide;
+  advisoryLaneChangeBlockReason @17 :Text;  # why advisory lane-change is cue-only / blocked, if navd knows
 
   enum NavDesire {
     none @0;
