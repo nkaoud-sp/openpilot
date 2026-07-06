@@ -107,6 +107,7 @@ class DesireHelper:
     self.nav_cooldown_timer = 0.0    # counts down after any lane change ends
     self.prev_lane_change_state = LaneChangeState.off
     self.prev_nav_keep = ""
+    self.nav_lane_change_active = False
 
   @staticmethod
   def get_lane_change_direction(CS):
@@ -157,6 +158,8 @@ class DesireHelper:
     v_ego = carstate.vEgo
     one_blinker = carstate.leftBlinker != carstate.rightBlinker
     below_lane_change_speed = v_ego < LANE_CHANGE_SPEED_MIN
+    nav_name = str(nav_desire)
+    nav_keep = nav_name in ("keepLeft", "keepRight")
 
     # Lane turn controller update
     self.lane_turn_controller.update_lane_turn(blindspot_left=carstate.leftBlindspot, blindspot_right=carstate.rightBlindspot,
@@ -166,10 +169,10 @@ class DesireHelper:
     if not lateral_active or self.lane_change_timer > LANE_CHANGE_TIME_MAX or self.alc.lane_change_set_timer == AutoLaneChangeMode.OFF:
       self.lane_change_state = LaneChangeState.off
       self.lane_change_direction = LaneChangeDirection.none
+      self.nav_lane_change_active = False
     else:
-      # LaneChangeState.off -- enter on driver blinker only. Route keep*
-      # intent never touches this machine; it is applied as a desire bias
-      # below.
+      # LaneChangeState.off -- driver blinkers enter here. Route keep* intent
+      # may also arm this state later, after every nav-specific gate passes.
       if self.lane_change_state == LaneChangeState.off:
         if one_blinker and not self.prev_one_blinker and not below_lane_change_speed:
           self.lane_change_state = LaneChangeState.preLaneChange
@@ -178,24 +181,42 @@ class DesireHelper:
 
       # LaneChangeState.preLaneChange
       elif self.lane_change_state == LaneChangeState.preLaneChange:
-        self.lane_change_direction = self.get_lane_change_direction(carstate)
+        if self.nav_lane_change_active:
+          desired_nav = "keepLeft" if self.lane_change_direction == LaneChangeDirection.left else "keepRight"
+          blindspot_detected = ((carstate.leftBlindspot and self.lane_change_direction == LaneChangeDirection.left) or
+                                (carstate.rightBlindspot and self.lane_change_direction == LaneChangeDirection.right) or
+                                not self._visual_side_clear(self.lane_change_direction, visual_vehicle_state))
 
-        torque_applied = carstate.steeringPressed and \
-                         ((carstate.steeringTorque > 0 and self.lane_change_direction == LaneChangeDirection.left) or
-                          (carstate.steeringTorque < 0 and self.lane_change_direction == LaneChangeDirection.right))
+          self.alc.update_lane_change(blindspot_detected, carstate.brakePressed)
 
-        blindspot_detected = ((carstate.leftBlindspot and self.lane_change_direction == LaneChangeDirection.left) or
-                              (carstate.rightBlindspot and self.lane_change_direction == LaneChangeDirection.right))
+          if (not nav_keep or nav_name != desired_nav or below_lane_change_speed
+              or self.nav_keep_timer >= NAV_KEEP_EPISODE_MAX_S):
+            self.lane_change_state = LaneChangeState.off
+            self.lane_change_direction = LaneChangeDirection.none
+            self.nav_lane_change_active = False
+          elif self.alc.auto_lane_change_allowed and not blindspot_detected:
+            self.lane_change_state = LaneChangeState.laneChangeStarting
+          else:
+            self.nav_keep_timer += DT_MDL
+        else:
+          self.lane_change_direction = self.get_lane_change_direction(carstate)
 
-        self.alc.update_lane_change(blindspot_detected, carstate.brakePressed)
+          torque_applied = carstate.steeringPressed and \
+                           ((carstate.steeringTorque > 0 and self.lane_change_direction == LaneChangeDirection.left) or
+                            (carstate.steeringTorque < 0 and self.lane_change_direction == LaneChangeDirection.right))
 
-        if not one_blinker or below_lane_change_speed:
-          self.lane_change_state = LaneChangeState.off
-          self.lane_change_direction = LaneChangeDirection.none
-        elif torque_applied and not blindspot_detected:
-          self.lane_change_state = LaneChangeState.laneChangeStarting
-        elif self.alc.auto_lane_change_allowed and not blindspot_detected:
-          self.lane_change_state = LaneChangeState.laneChangeStarting
+          blindspot_detected = ((carstate.leftBlindspot and self.lane_change_direction == LaneChangeDirection.left) or
+                                (carstate.rightBlindspot and self.lane_change_direction == LaneChangeDirection.right))
+
+          self.alc.update_lane_change(blindspot_detected, carstate.brakePressed)
+
+          if not one_blinker or below_lane_change_speed:
+            self.lane_change_state = LaneChangeState.off
+            self.lane_change_direction = LaneChangeDirection.none
+          elif torque_applied and not blindspot_detected:
+            self.lane_change_state = LaneChangeState.laneChangeStarting
+          elif self.alc.auto_lane_change_allowed and not blindspot_detected:
+            self.lane_change_state = LaneChangeState.laneChangeStarting
 
       # LaneChangeState.laneChangeStarting
       elif self.lane_change_state == LaneChangeState.laneChangeStarting:
@@ -213,6 +234,7 @@ class DesireHelper:
 
         if self.lane_change_ll_prob > 0.99:
           self.lane_change_direction = LaneChangeDirection.none
+          self.nav_lane_change_active = False
           if one_blinker:
             self.lane_change_state = LaneChangeState.preLaneChange
           else:
@@ -234,14 +256,15 @@ class DesireHelper:
     # route WANTS; every gate lives here. Nothing is applied unless the user
     # enabled NkaoudNavControlSteer, lateral is active, and the lane-change
     # state machine is idle (an in-flight driver maneuver always wins).
+    # keep* arms the standard preLaneChange -> laneChangeStarting path so
+    # controlsd can request blinkers and AutoLaneChange timing is preserved.
     self._update_nav_cooldown()
-    nav_name = str(nav_desire)
-    nav_keep = nav_name in ("keepLeft", "keepRight")
     # Track continuous keep* emission; reset whenever the intent stops or
     # flips sides so each new episode gets a fresh budget.
-    if not nav_keep or nav_name != self.prev_nav_keep:
-      self.nav_keep_timer = 0.0
-    self.prev_nav_keep = nav_name if nav_keep else ""
+    if not self.nav_lane_change_active:
+      if not nav_keep or nav_name != self.prev_nav_keep:
+        self.nav_keep_timer = 0.0
+      self.prev_nav_keep = nav_name if nav_keep else ""
 
     if (self.nav_steer_enabled and lateral_active
         and self.lane_change_state == LaneChangeState.off and nav_name != "none"):
@@ -259,8 +282,11 @@ class DesireHelper:
             and self.nav_keep_timer < NAV_KEEP_EPISODE_MAX_S
             and not keep_bsm
             and self._visual_side_clear(keep_dir, visual_vehicle_state)):
-          self.desire = NAV_DESIRE_MAP[nav_name]
-          self.nav_keep_timer += DT_MDL
+          self.lane_change_state = LaneChangeState.preLaneChange
+          self.lane_change_direction = keep_dir
+          self.lane_change_ll_prob = 1.0
+          self.nav_lane_change_active = True
+          self.desire = DESIRES[self.lane_change_direction][self.lane_change_state]
       elif nav_name in ("turnLeft", "turnRight"):
         self.desire = NAV_DESIRE_MAP[nav_name]
 
