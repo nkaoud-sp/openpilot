@@ -155,6 +155,7 @@ class ModelRenderer(Widget, ModelRendererSP):
 
     # if render_lead_indicator and radar_state:
     #   self._draw_lead_indicator()
+    self.model_frame_drops_readout.draw(sm, self._rect)
 
   def _update_raw_points(self, model):
     """Update raw 3D points from model data"""

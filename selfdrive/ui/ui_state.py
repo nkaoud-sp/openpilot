@@ -40,6 +40,7 @@ class UIState(UIStateSP):
     self.sm = messaging.SubMaster(
       [
         "modelV2",
+        "drivingModelData",
         "controlsState",
         "onroadEvents",
         "liveCalibration",

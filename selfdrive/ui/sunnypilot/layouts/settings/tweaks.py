@@ -79,6 +79,12 @@ class TweaksLayout(Widget):
       callback=lambda: self._set_current_panel(PanelType.DYNAMIC_FOLLOW),
     )
 
+    self._model_frame_drops = toggle_item_sp(
+      title=lambda: tr("Model Frame Drop Stats"),
+      description=lambda: tr("Show modelV2 and drivingModelData dropped-frame percentages on the driving view."),
+      param="ModelFrameDropsReadout",
+    )
+
     # Asymmetric jerk (separate accel / decel ramp smoothness).
     # Detailed settings live in a sub-page reachable via the Manage button below.
     self._asymmetric_jerk = toggle_item_sp(
@@ -175,6 +181,7 @@ class TweaksLayout(Widget):
       self._auto_lock_button,
       self._dynamic_follow,
       self._dynamic_follow_button,
+      self._model_frame_drops,
       self._asymmetric_jerk,
       self._asymmetric_jerk_button,
       self._launch_assist,

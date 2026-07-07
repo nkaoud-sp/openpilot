@@ -165,6 +165,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"DynamicFollowMaxTime", {PERSISTENT | BACKUP, INT, "120"}},  // follow time at 130 km/h (1.20 s)
     {"DynamicFollowCurve", {PERSISTENT | BACKUP, INT, "100"}},    // curve shape exponent x100 (100 = linear)
     {"FollowReadout", {PERSISTENT | BACKUP, BOOL, "0"}},          // on-screen desired-vs-actual follow readout
+    {"ModelFrameDropsReadout", {PERSISTENT | BACKUP, BOOL, "0"}}, // on-screen modelV2/drivingModelData dropped-frame percentages
     {"AsymmetricJerk", {PERSISTENT | BACKUP, BOOL, "0"}},         // separate accel/decel ramp smoothness
     {"JerkFactorAccel", {PERSISTENT | BACKUP, INT, "100"}},       // jerk-cost multiplier x100 while accelerating
     {"JerkFactorDecel", {PERSISTENT | BACKUP, INT, "100"}},       // jerk-cost multiplier x100 while braking

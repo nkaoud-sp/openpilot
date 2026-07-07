@@ -135,6 +135,7 @@ class UIStateSP:
     self.custom_interactive_timeout = self.params.get("InteractivityTimeout", return_default=True)
     self.developer_ui = self.params.get("DevUIInfo")
     self.follow_readout = self.params.get_bool("FollowReadout")
+    self.model_frame_drops_readout = self.params.get_bool("ModelFrameDropsReadout")
     self.jerk_readout = self.params.get_bool("JerkReadout")
     self.asymmetric_jerk = self.params.get_bool("AsymmetricJerk")
     self.jerk_factor_accel = self.params.get("JerkFactorAccel", return_default=True) / 100.0
