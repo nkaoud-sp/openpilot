@@ -93,13 +93,11 @@ LANE_POSITION_MANEUVERS = ("off ramp", "on ramp", "fork", "merge")
 # stop one (that fails safe), but a low-confidence read must never start one.
 STEER_LANE_CONFS = ("high", "medium")
 
-# Highway-cruise lane preference (NkaoudNavHighwayLanePref): while cruising a
-# motorway-class road with no imminent maneuver, bias toward the preferred
-# lane. Pure intent, like everything else here -- desire_helper applies every
-# safety gate (BSM, visual, cooldown, episode budget). Being a comfort
-# feature driven entirely by the lane estimate, it trusts only a
-# HIGH-confidence fix (maneuver positioning accepts medium+).
-HIGHWAY_CLASSES = ("motorway", "motorway_link", "trunk")
+# Highway-cruise lane preference (NkaoudNavHighwayLanePref): while cruising
+# with no imminent maneuver, bias toward the preferred lane. Pure intent, like
+# everything else here -- desire_helper applies every safety gate (BSM,
+# visual, cooldown, episode budget). This branch now accepts any Mapbox road
+# class and trusts the same medium+ lane fix as maneuver positioning.
 HIGHWAY_CRUISE_MIN_SPEED_MS = 60.0 / 3.6   # ~60 km/h; below this we don't auto-position
 HIGHWAY_CRUISE_MIN_DIST_M = 1500.0         # only cruise-bias when the next maneuver is at least this far
 HIGHWAY_LANE_PREF_LEFT = 0
@@ -698,18 +696,15 @@ class NkaoudNavd:
 
   def _cruise_lane_side(self, cur_step, dist: float) -> str:
     """Side of a move toward the preferred highway cruising lane
-    (NkaoudNavHighwayLanePref), or '' when none is wanted. Only on
-    motorway-class roads, at speed, with no imminent maneuver, and with a
-    HIGH-confidence lane fix -- a comfort feature must never act (or cue)
-    on a guess. Center uses ceil(N/2): 3 lanes -> 2, 4 -> 2 (center-left),
-    5 -> 3."""
-    if not cur_step.road_classes or not any(c in HIGHWAY_CLASSES for c in cur_step.road_classes):
-      return ""
+    (NkaoudNavHighwayLanePref), or '' when none is wanted. Runs on any
+    Mapbox road class, at speed, with no imminent maneuver, and with a
+    medium+ lane fix. Center uses ceil(N/2): 3 lanes -> 2, 4 -> 2
+    (center-left), 5 -> 3."""
     if 0.0 < dist < HIGHWAY_CRUISE_MIN_DIST_M:
       return ""
     if self.last_v_ego < HIGHWAY_CRUISE_MIN_SPEED_MS:
       return ""
-    if self.lane_conf != "high" or self.lane_total <= 1 or self.lane_current <= 0:
+    if self.lane_conf not in STEER_LANE_CONFS or self.lane_total <= 1 or self.lane_current <= 0:
       return ""
     if self._highway_pref == HIGHWAY_LANE_PREF_LEFT:
       target = 1
@@ -740,13 +735,11 @@ class NkaoudNavd:
 
     if target > 0 and self.lane_current == target:
       return "", ""
-    if not cur_step.road_classes or not any(c in HIGHWAY_CLASSES for c in cur_step.road_classes):
-      return side, "Road class"
     if 0.0 < dist < HIGHWAY_CRUISE_MIN_DIST_M:
       return side, "Next maneuver"
     if self.last_v_ego < HIGHWAY_CRUISE_MIN_SPEED_MS:
       return side, "Speed"
-    if self.lane_conf != "high" or self.lane_total <= 1 or self.lane_current <= 0:
+    if self.lane_conf not in STEER_LANE_CONFS or self.lane_total <= 1 or self.lane_current <= 0:
       return side, "Lane confidence"
     return side, ""
 
