@@ -214,15 +214,25 @@ def secure_vehicle(sm: messaging.SubMaster, params: Params, dbc: str) -> None:
       
       if fold_mirrors:
         send_diag(panda, MIRR_FOLD_R)
+      if fold_mirrors:
+        send_diag(panda, MIRR_FOLD_L)
+      if fold_mirrors:
+        send_diag(panda, MIRR_FOLD_R)
+      if fold_mirrors:
+        send_diag(panda, MIRR_FOLD_L)
         
       if close_windows:
         send_diag(panda, WINDOW_CLOSE_RR)
       if close_windows:
         send_diag(panda, WINDOW_CLOSE_RL)
-        
-      if fold_mirrors:
-        send_diag(panda, MIRR_FOLD_L)
-        
+      if close_windows:
+        send_diag(panda, WINDOW_CLOSE_FL)
+      if close_windows:
+        send_diag(panda, WINDOW_CLOSE_FR)
+      if close_windows:
+        send_diag(panda, WINDOW_CLOSE_RR)
+      if close_windows:
+        send_diag(panda, WINDOW_CLOSE_RL)
       if close_windows:
         send_diag(panda, WINDOW_CLOSE_FL)
       if close_windows:
