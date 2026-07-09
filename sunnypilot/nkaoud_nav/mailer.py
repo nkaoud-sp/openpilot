@@ -22,7 +22,6 @@ Nothing secret is committed to the repo.
 """
 from __future__ import annotations
 
-import glob
 import json
 import os
 import smtplib
@@ -133,38 +132,55 @@ def _build_message(cfg: dict, log_path: str, subject: str, body: str) -> EmailMe
   return message
 
 
-def _purge_all_logs() -> int:
-  """Delete every CSV in the log directory. Returns how many were removed."""
-  removed = 0
-  for path in glob.glob(os.path.join(NAV_LOG_DIR, "*.csv")):
-    try:
-      os.remove(path)
-      removed += 1
-    except OSError:
-      cloudlog.exception(f"nkaoud_nav mailer: failed to delete {path}")
-  return removed
+def _get_pending(params: Params) -> list[str]:
+  """The queue of logs awaiting email, oldest first. Stored as a JSON list in
+  PENDING_LOG_PARAM (which is PERSISTENT so it survives reboots)."""
+  raw = (params.get(PENDING_LOG_PARAM) or "").strip()
+  if not raw:
+    return []
+  try:
+    val = json.loads(raw)
+  except ValueError:
+    # Back-compat: an earlier version stored a single bare path.
+    return [raw]
+  if isinstance(val, list):
+    return [str(p) for p in val if str(p).strip()]
+  if isinstance(val, str) and val.strip():
+    return [val.strip()]
+  return []
+
+
+def _set_pending(params: Params, paths: list[str]) -> None:
+  if paths:
+    params.put(PENDING_LOG_PARAM, json.dumps(paths))
+  else:
+    params.remove(PENDING_LOG_PARAM)
 
 
 def queue_log(log_path: str | None) -> bool:
+  """Append a completed drive's log to the pending queue. Multiple drives can
+  accumulate (e.g. no network across several drives / reboots); each is kept
+  until it is individually emailed."""
   params = Params()
   if not log_path or not os.path.isfile(log_path):
     set_status("No navigation log was captured for the last drive")
     return False
-  params.put(PENDING_LOG_PARAM, log_path)
-  set_status(f"Queued {os.path.basename(log_path)}")
+  pending = _get_pending(params)
+  if log_path not in pending:
+    pending.append(log_path)
+    _set_pending(params, pending)
+  set_status(f"Queued {os.path.basename(log_path)} ({len(pending)} pending)")
   return True
 
 
 def send_pending_log() -> bool:
-  """Send the queued log. On success remove ALL CSV logs and clear the queue."""
+  """Email every queued log, deleting each ONLY after its own send succeeds.
+  On the first failure, stop and leave the rest queued for the next retry, so
+  no log is ever deleted without having been sent. Returns True once the queue
+  is fully drained."""
   params = Params()
-  pending = (params.get(PENDING_LOG_PARAM) or "").strip()
+  pending = _get_pending(params)
   if not pending:
-    return False
-
-  if not os.path.isfile(pending):
-    params.remove(PENDING_LOG_PARAM)
-    set_status("Pending navigation log no longer exists")
     return False
 
   cfg = _read_email_config()
@@ -177,18 +193,35 @@ def send_pending_log() -> bool:
     set_status(f"Email config incomplete: {', '.join(problems)}")
     return False
 
-  try:
-    subject = f"{EMAIL_SUBJECT} - {_status_prefix()}"
-    message = _build_message(cfg, pending, subject, EMAIL_BODY)
-    _send_via_smtp(cfg, message)
-  except Exception:  # noqa: BLE001 -- surface any SMTP/network failure as a retry
-    cloudlog.exception("nkaoud_nav mailer: send failed")
-    set_status(f"Send failed for {os.path.basename(pending)} (will retry)")
-    return False
+  remaining = list(pending)
+  sent = 0
+  for path in pending:
+    if not os.path.isfile(path):
+      # Log vanished (manually deleted / cleaned); drop it from the queue.
+      remaining.remove(path)
+      _set_pending(params, remaining)
+      continue
 
-  params.remove(PENDING_LOG_PARAM)
-  removed = _purge_all_logs()
-  set_status(f"Sent {os.path.basename(pending)}; deleted {removed} log file(s)")
+    try:
+      subject = f"{EMAIL_SUBJECT} - {os.path.basename(path)}"
+      message = _build_message(cfg, path, subject, EMAIL_BODY)
+      _send_via_smtp(cfg, message)
+    except Exception:  # noqa: BLE001 -- surface any SMTP/network failure as a retry
+      cloudlog.exception("nkaoud_nav mailer: send failed")
+      set_status(f"Sent {sent}; {len(remaining)} still queued (will retry) "
+                 f"-- {os.path.basename(path)} failed")
+      return False
+
+    # Delete this log only now that its own email has been sent.
+    try:
+      os.remove(path)
+    except OSError:
+      cloudlog.exception(f"nkaoud_nav mailer: could not delete {path}")
+    remaining.remove(path)
+    _set_pending(params, remaining)
+    sent += 1
+
+  set_status(f"Sent and deleted {sent} log file(s)")
   return True
 
 
