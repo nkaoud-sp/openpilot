@@ -22,6 +22,7 @@ Nothing secret is committed to the repo.
 """
 from __future__ import annotations
 
+import glob
 import json
 import os
 import smtplib
@@ -132,6 +133,18 @@ def _build_message(cfg: dict, log_path: str, subject: str, body: str) -> EmailMe
   return message
 
 
+def _purge_all_logs() -> int:
+  """Delete every CSV in the log directory. Returns how many were removed."""
+  removed = 0
+  for path in glob.glob(os.path.join(NAV_LOG_DIR, "*.csv")):
+    try:
+      os.remove(path)
+      removed += 1
+    except OSError:
+      cloudlog.exception(f"nkaoud_nav mailer: failed to delete {path}")
+  return removed
+
+
 def _get_pending(params: Params) -> list[str]:
   """The queue of logs awaiting email, oldest first. Stored as a JSON list in
   PENDING_LOG_PARAM (which is PERSISTENT so it survives reboots)."""
@@ -221,7 +234,11 @@ def send_pending_log() -> bool:
     _set_pending(params, remaining)
     sent += 1
 
-  set_status(f"Sent and deleted {sent} log file(s)")
+  # Queue fully drained: every queued log was emailed. Now clear ALL CSV logs
+  # on disk regardless -- including any that were never queued (orphans, or
+  # logs kept from a drive when auto-email was off).
+  purged = _purge_all_logs()
+  set_status(f"Sent {sent} log file(s); deleted all {sent + purged} CSV log(s)")
   return True
 
 
