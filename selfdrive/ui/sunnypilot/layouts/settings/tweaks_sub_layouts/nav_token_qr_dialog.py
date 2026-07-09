@@ -15,7 +15,7 @@ import pyray as rl
 import qrcode
 
 from openpilot.sunnypilot.nkaoud_nav.token_server import (
-  ParamWebServer, mapbox_token_server, share_endpoint_server,
+  ParamWebServer, email_config_server, mapbox_token_server, share_endpoint_server,
 )
 from openpilot.sunnypilot.nkaoud_nav.preview_server import (
   visual_vehicle_capture_server, visual_vehicle_crop_server, visual_vehicle_preview_server,
@@ -193,6 +193,14 @@ def NavShareEndpointQrDialog() -> NavParamQrDialog:
     server=share_endpoint_server(),
     title_text=tr("Set Neon Connection String"),
     hint_text=tr("Scan with your phone, then paste your Neon connection string. The page shows the required table layout."),
+  )
+
+
+def NavEmailConfigQrDialog() -> NavParamQrDialog:
+  return NavParamQrDialog(
+    server=email_config_server(),
+    title_text=tr("Set Email (SMTP) Settings"),
+    hint_text=tr("Scan with your phone, then paste your SMTP settings as JSON. Use Test connection to send yourself a test email before saving."),
   )
 
 

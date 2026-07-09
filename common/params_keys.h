@@ -199,6 +199,13 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"NkaoudNavHighwayLanePref", {PERSISTENT | BACKUP, INT, "1"}},    // highway cruise lane target: 0=left most, 1=center, 2=right most
     {"NkaoudNavShareEndpoint", {PERSISTENT | BACKUP, STRING, ""}},    // HTTP(S) URL that returns {"latitude":x,"longitude":y,"place_name":"..."} for the Share preset
     {"NkaoudNavShareTrigger", {CLEAR_ON_MANAGER_START, STRING, ""}},  // ephemeral token bumped each time the user taps Share; navd refetches when it changes
+    {"NkaoudNavDriveLogging", {PERSISTENT | BACKUP, BOOL, "0"}},      // log navigation maneuvers to a per-drive CSV for later analysis
+    {"NkaoudNavAutoEmail", {PERSISTENT | BACKUP, BOOL, "0"}},         // email the maneuver log automatically when a drive ends
+    {"NkaoudNavEmailConfig", {PERSISTENT | BACKUP, STRING, ""}},      // JSON {host,port,login,password,from,to} SMTP settings entered via the web form
+    {"NkaoudNavCurrentLog", {CLEAR_ON_MANAGER_START, STRING, ""}},    // path to the CSV navd is writing this drive; read by the mailer at drive end
+    {"NkaoudNavLastDriveLog", {PERSISTENT | BACKUP, STRING, ""}},     // path to the most recent completed drive's CSV log
+    {"NkaoudNavEmailPendingLog", {PERSISTENT | BACKUP, STRING, ""}},  // CSV queued for emailing; retried until sent, then all logs are deleted
+    {"NkaoudNavEmailLastStatus", {PERSISTENT | BACKUP, STRING, ""}},  // human-readable status of the last logging/email action, shown in settings
     {"CustomAccLongPressIncrement", {PERSISTENT | BACKUP, INT, "5"}},
     {"CustomAccShortPressIncrement", {PERSISTENT | BACKUP, INT, "1"}},
     {"DeviceBootMode", {PERSISTENT | BACKUP, INT, "0"}},

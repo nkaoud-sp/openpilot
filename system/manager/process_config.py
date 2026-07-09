@@ -98,6 +98,12 @@ def nkaoud_nav_enabled(started: bool, params: Params, CP: car.CarParams) -> bool
   return started and params.get_bool("NkaoudNavEnabled")
 
 
+def nkaoud_nav_mailer_enabled(started: bool, params: Params, CP: car.CarParams) -> bool:
+  # Runs regardless of `started` (onroad AND offroad) so it can catch the
+  # drive-end transition and retry the SMTP send once the network is up.
+  return params.get_bool("NkaoudNavEnabled")
+
+
 def visual_vehicle_detector_enabled(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started and params.get_bool("VisualVehicleDetector")
 
@@ -198,6 +204,8 @@ procs += [
   # inside the settings UI dialog (sunnypilot.nkaoud_nav.token_server) and only
   # runs while that dialog is visible, so it's not registered as a process.
   PythonProcess("nkaoud_navd", "sunnypilot.nkaoud_nav.navd", nkaoud_nav_enabled),
+  # Always-on (offroad too) so it survives drive-end to email the maneuver log.
+  PythonProcess("nkaoud_nav_mailer", "sunnypilot.nkaoud_nav.mailer", nkaoud_nav_mailer_enabled),
   PythonProcess("visual_vehicle_detector", "sunnypilot.nkaoud_nav.adjacent_vehicle_detector", visual_vehicle_detector_enabled),
 ]
 

@@ -16,6 +16,7 @@ maneuverTargetSpeed is still 0.0 here -- phase 6 fills that in.
 """
 from __future__ import annotations
 
+import csv
 import math
 import os
 import threading
@@ -48,6 +49,44 @@ BEARING_MISALIGN_COUNTER_MIN = 3
 ARRIVAL_DISTANCE_M = 25.0          # consider the destination reached within this
 MIN_REROUTE_INTERVAL_S = 8.0       # back off so reroutes don't spam the API
 PARAM_REFRESH_S = 0.5              # throttle for per-tick param reads
+
+# Navigation maneuver logging. When NkaoudNavDriveLogging is on, navd appends a
+# CSV row every NAV_LOG_INTERVAL seconds to a per-drive file for later analysis.
+# The mailer daemon reads NkaoudNavCurrentLog at drive end and (optionally)
+# emails it. Keep NAV_LOG_DIR in sync with mailer.py.
+NAV_LOG_DIR = os.environ.get("NKAOUD_NAV_LOG_DIR", "/data/media/0/nkaoud_nav_logs")
+NAV_LOG_INTERVAL = 0.5
+NAV_LOG_FIELDS = [
+  "timestamp",
+  "monotonic",
+  "v_ego_ms",
+  "latitude",
+  "longitude",
+  "bearing_deg",
+  "enabled",
+  "active",
+  "on_route",
+  "rerouting",
+  "arrived",
+  "route_id",
+  "step_idx",
+  "maneuver_type",
+  "maneuver_modifier",
+  "distance_to_maneuver_m",
+  "maneuver_target_speed_ms",
+  "recommended_desire",
+  "recommended_lane_side",
+  "lane_keep_distance_m",
+  "advisory_lane_change",
+  "advisory_block_reason",
+  "current_road_classes",
+  "upcoming_road_classes",
+  "cross_track_m",
+  "lane_current",
+  "lane_total",
+  "lane_conf",
+  "bearing_misalign",
+]
 
 # Turn-slowdown target speed (ported from old fork's
 # navigation_test_maneuver_target_speed / TURN_SLOWDOWN_MIN_SPEED_MS).
@@ -287,6 +326,10 @@ class NkaoudNavd:
     self._last_logged_desire: str = "none"
     self._last_logged_modifier: str = ""
     self._last_logged_advisory: str = "none"
+    self._drive_logging: bool = False
+    self._nav_log_last_t: float = 0.0
+    self._nav_log_dir: str = NAV_LOG_DIR
+    self._nav_log_current_path: str | None = None
 
   # ---- core loop ----
   def step(self) -> None:
@@ -318,6 +361,7 @@ class NkaoudNavd:
         self._lane_edge_filter_mode = int(self.params.get("LaneEdgeFilterMode", return_default=True))
       except (TypeError, ValueError):
         self._lane_edge_filter_mode = FILTER_MODE_NONE
+      self._drive_logging = self.params.get_bool("NkaoudNavDriveLogging")
 
     self._maybe_drain_fetcher()
     self._handle_share_trigger()
@@ -571,7 +615,87 @@ class NkaoudNavd:
       cloudlog.info(f"nkaoud_navd: advisoryLaneChange={advisory_str} (dist={nav.distanceToManeuver:.1f}m, lane={self.lane_current}/{self.lane_total})")
       self._last_logged_advisory = advisory_str
 
+    self._maybe_log(nav)
+
     self.pm.send('nkaoudNavigationSP', msg)
+
+  def _maybe_log(self, nav) -> None:
+    """Append one CSV row for the current maneuver state, rate-limited to
+    NAV_LOG_INTERVAL. Gated on the NkaoudNavDriveLogging param."""
+    if not self._drive_logging:
+      return
+
+    now = time.monotonic()
+    if now - self._nav_log_last_t < NAV_LOG_INTERVAL:
+      return
+    self._nav_log_last_t = now
+
+    path = self._nav_log_path()
+    if path is None:
+      return
+
+    pos = self.last_pos
+    row = {
+      "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+      "monotonic": f"{now:.2f}",
+      "v_ego_ms": f"{self.last_v_ego:.2f}",
+      "latitude": f"{pos.latitude:.7f}" if pos is not None else "",
+      "longitude": f"{pos.longitude:.7f}" if pos is not None else "",
+      "bearing_deg": f"{self.last_bearing:.1f}" if self.last_bearing is not None else "",
+      "enabled": nav.enabled,
+      "active": nav.active,
+      "on_route": nav.onRoute,
+      "rerouting": nav.rerouting,
+      "arrived": self.arrived,
+      "route_id": nav.routeId,
+      "step_idx": self.step_idx,
+      "maneuver_type": nav.maneuverType,
+      "maneuver_modifier": nav.maneuverModifier,
+      "distance_to_maneuver_m": f"{nav.distanceToManeuver:.1f}",
+      "maneuver_target_speed_ms": f"{nav.maneuverTargetSpeed:.2f}",
+      "recommended_desire": str(nav.recommendedDesire),
+      "recommended_lane_side": nav.recommendedLaneSide,
+      "lane_keep_distance_m": f"{nav.laneKeepDistance:.1f}",
+      "advisory_lane_change": nav.advisoryLaneChange,
+      "advisory_block_reason": nav.advisoryLaneChangeBlockReason,
+      "current_road_classes": nav.currentRoadClasses,
+      "upcoming_road_classes": nav.upcomingRoadClasses,
+      "cross_track_m": f"{nav.crossTrackDistance:.2f}",
+      "lane_current": self.lane_current,
+      "lane_total": self.lane_total,
+      "lane_conf": self.lane_conf,
+      "bearing_misalign": self.bearing_misalign_counter,
+    }
+
+    try:
+      write_header = not os.path.exists(path) or os.path.getsize(path) == 0
+      with open(path, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=NAV_LOG_FIELDS)
+        if write_header:
+          writer.writeheader()
+        writer.writerow(row)
+    except OSError:
+      cloudlog.exception("nkaoud_navd: nav log write failed")
+
+  def _nav_log_path(self) -> str | None:
+    """Per-drive CSV path. navd is a fresh process each drive, so the first
+    call creates a new timestamped file and records it in the params the
+    mailer reads at drive end."""
+    if self._nav_log_current_path is not None:
+      return self._nav_log_current_path
+
+    try:
+      os.makedirs(self._nav_log_dir, exist_ok=True)
+    except OSError:
+      cloudlog.exception(f"nkaoud_navd: cannot create nav log dir {self._nav_log_dir}")
+      return None
+
+    filename = f"nkaoud_nav_{time.strftime('%Y%m%d_%H%M%S', time.localtime())}.csv"
+    path = os.path.join(self._nav_log_dir, filename)
+    self._nav_log_current_path = path
+    self.params.put("NkaoudNavCurrentLog", path)
+    self.params.put("NkaoudNavLastDriveLog", path)
+    return path
 
   def _publish_nav_route(self) -> None:
     msg = messaging.new_message('navRoute')

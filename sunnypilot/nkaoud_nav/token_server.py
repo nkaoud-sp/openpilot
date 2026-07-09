@@ -401,12 +401,54 @@ SHARE_ENDPOINT_SPEC = ParamWebFormSpec(
 )
 
 
+def _email_config_test(config_json: str) -> dict:
+  """Test handler for the email form. Imported lazily so the UI process
+  doesn't pull in cereal.messaging unless the user taps Test."""
+  from openpilot.sunnypilot.nkaoud_nav.mailer import smtp_test
+  return smtp_test(config_json)
+
+
+EMAIL_CONFIG_SPEC = ParamWebFormSpec(
+  param_key="NkaoudNavEmailConfig",
+  title="Email (SMTP) settings",
+  placeholder='{"host":"smtp-relay.brevo.com","port":587,"login":"...","password":"...","from":"you@example.com","to":"you@example.com"}',
+  hint_html=(
+    'Paste a single JSON object with your SMTP settings, then use '
+    '<code>Test connection</code> to send yourself a test email before '
+    'saving. Stored in cleartext on the device. Empty submit clears it.'
+  ),
+  example_label="What to paste (one JSON object)",
+  example_value=(
+    "{\n"
+    '  "host": "smtp-relay.brevo.com",    // optional, this is the default\n'
+    '  "port": 587,                       // 587/2525 = STARTTLS, 465 = SSL\n'
+    '  "login": "your-smtp-login",        // SMTP username (optional)\n'
+    '  "password": "your-smtp-key",       // SMTP password / key (optional)\n'
+    '  "from": "you@example.com",         // sender address (required)\n'
+    '  "to": "you@example.com"            // where logs are sent (required)\n'
+    "}\n\n"
+    "`login` and `password` must be given together (or both omitted for an\n"
+    "open relay). Tapping `Test connection` sends a real test email to `to`,\n"
+    "so check your inbox to confirm before saving.\n\n"
+    "Security: these credentials are stored in cleartext on the device.\n"
+    "Rotate the SMTP key if the device ever leaves your control."
+  ),
+  status_set_template="Email config set (length {length}).",
+  status_unset="No email config set yet.",
+  test_handler=_email_config_test,
+)
+
+
 def mapbox_token_server(port: int = DEFAULT_PORT) -> ParamWebServer:
   return ParamWebServer(MAPBOX_TOKEN_SPEC, port=port)
 
 
 def share_endpoint_server(port: int = DEFAULT_PORT) -> ParamWebServer:
   return ParamWebServer(SHARE_ENDPOINT_SPEC, port=port)
+
+
+def email_config_server(port: int = DEFAULT_PORT) -> ParamWebServer:
+  return ParamWebServer(EMAIL_CONFIG_SPEC, port=port)
 
 
 # Back-compat alias so existing imports of TokenWebServer keep working.

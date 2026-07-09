@@ -1,12 +1,13 @@
 """
 Settings submenu for the experimental Mapbox-based navigation (nkaoud_nav).
 """
+import json
 from collections.abc import Callable
 
 import pyray as rl
 from openpilot.common.params import Params
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.nav_token_qr_dialog import (
-  NavTokenQrDialog, NavShareEndpointQrDialog,
+  NavTokenQrDialog, NavShareEndpointQrDialog, NavEmailConfigQrDialog,
 )
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr
@@ -105,6 +106,24 @@ class NavSettingsLayout(Widget):
       param="NkaoudNavHighwayLanePref",
       button_width=280,
     )
+    self._drive_logging = toggle_item_sp(
+      title=lambda: tr("Log Navigation Maneuvers"),
+      description=lambda: tr("Record maneuver type, distance, lane recommendations and cross-track error to a " +
+                            "per-drive CSV (in /data/media/0/nkaoud_nav_logs) for later analysis and tuning."),
+      param="NkaoudNavDriveLogging",
+    )
+    self._auto_email = toggle_item_sp(
+      title=lambda: tr("Email Log After Each Drive"),
+      description=lambda: tr("When a drive ends, automatically email the maneuver log as a CSV attachment, then " +
+                            "delete the on-device logs once the email is sent. Requires \"Log Navigation " +
+                            "Maneuvers\" and configured Email (SMTP) settings below."),
+      param="NkaoudNavAutoEmail",
+    )
+    self._email_config_button = simple_button_item_sp(
+      button_text=lambda: self._email_config_label(),
+      button_width=800,
+      callback=lambda: self._open_email_config_input(),
+    )
 
     items = [
       self._token_button,
@@ -117,6 +136,9 @@ class NavSettingsLayout(Widget):
       self._control_steer,
       self._visual_block_threshold,
       self._highway_lane_pref,
+      self._drive_logging,
+      self._auto_email,
+      self._email_config_button,
     ]
     return items
 
@@ -148,6 +170,25 @@ class NavSettingsLayout(Widget):
     # shows an example JSON response so the user can sanity-check their
     # endpoint format.
     gui_app.push_widget(NavShareEndpointQrDialog())
+
+  def _email_config_label(self) -> str:
+    cfg = (self._params.get("NkaoudNavEmailConfig") or "").strip()
+    if not cfg:
+      return tr("Set Email (SMTP) Settings")
+    # Show just the recipient so credentials never appear in the label.
+    to = ""
+    try:
+      to = str(json.loads(cfg).get("to", "")).strip()
+    except (ValueError, AttributeError):
+      to = ""
+    if to:
+      return tr("Email Settings (set, to {})").format(to)
+    return tr("Email Settings (set)")
+
+  def _open_email_config_input(self) -> None:
+    # Same QR/web-form workflow as the Neon endpoint; the form's Test button
+    # sends a real test email to confirm the SMTP settings before saving.
+    gui_app.push_widget(NavEmailConfigQrDialog())
 
   def _clear_destination(self) -> None:
     # Wipe both the destination AND the share trigger so a pending share
