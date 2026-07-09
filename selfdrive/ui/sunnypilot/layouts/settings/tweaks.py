@@ -8,6 +8,7 @@ from enum import IntEnum
 
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.auto_lock_settings import AutoLockSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.dynamic_follow_settings import DynamicFollowSettingsLayout
+from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.email_logs_settings import EmailLogsSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.jerk_settings import JerkSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.lane_position_settings import LanePositionSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.launch_assist_settings import LaunchAssistSettingsLayout
@@ -30,6 +31,7 @@ class PanelType(IntEnum):
   NAVIGATION = 6
   VISUAL_VEHICLE = 7
   LANE_POSITION = 8
+  EMAIL_LOGS = 9
 
 
 class TweaksLayout(Widget):
@@ -45,6 +47,7 @@ class TweaksLayout(Widget):
     self._navigation_layout = NavSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._visual_vehicle_layout = VisualVehicleSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._lane_position_layout = LanePositionSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
+    self._email_logs_layout = EmailLogsSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
 
     items = self._initialize_items()
     self._scroller = Scroller(items, line_separator=True, spacing=0)
@@ -176,6 +179,14 @@ class TweaksLayout(Widget):
       callback=lambda: self._set_current_panel(PanelType.NAVIGATION),
     )
 
+    # Navigation-maneuver CSV logging + email delivery. No master gate: logging
+    # and emailing each have their own toggle inside the sub-page.
+    self._email_logs_button = simple_button_item_sp(
+      button_text=lambda: tr("Email & Logs"),
+      button_width=800,
+      callback=lambda: self._set_current_panel(PanelType.EMAIL_LOGS),
+    )
+
     items = [
       self._auto_lock,
       self._auto_lock_button,
@@ -194,6 +205,7 @@ class TweaksLayout(Widget):
       self._visual_vehicle_button,
       self._navigation,
       self._navigation_button,
+      self._email_logs_button,
     ]
     return items
 
@@ -214,6 +226,8 @@ class TweaksLayout(Widget):
       self._visual_vehicle_layout.render(rect)
     elif self._current_panel == PanelType.LANE_POSITION:
       self._lane_position_layout.render(rect)
+    elif self._current_panel == PanelType.EMAIL_LOGS:
+      self._email_logs_layout.render(rect)
     else:
       self._scroller.render(rect)
 
@@ -239,6 +253,8 @@ class TweaksLayout(Widget):
       self._visual_vehicle_layout.show_event()
     elif panel == PanelType.LANE_POSITION:
       self._lane_position_layout.show_event()
+    elif panel == PanelType.EMAIL_LOGS:
+      self._email_logs_layout.show_event()
 
   def _update_state(self):
     super()._update_state()
