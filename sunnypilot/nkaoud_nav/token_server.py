@@ -47,6 +47,11 @@ PAGE = """<!doctype html>
   textarea{width:100%;height:140px;background:#1a1a1a;color:#eee;border:1px solid #333;
            border-radius:6px;padding:10px;font-family:ui-monospace,monospace;font-size:14px;
            box-sizing:border-box;}
+  label.fld{display:block;margin:0 0 12px;}
+  label.fld span{display:block;color:#bbb;font-size:13px;margin-bottom:4px;}
+  label.fld input{width:100%;background:#1a1a1a;color:#eee;border:1px solid #333;
+           border-radius:6px;padding:12px;font-family:ui-monospace,monospace;font-size:15px;
+           box-sizing:border-box;}
   button{margin-top:12px;padding:14px 28px;border:0;border-radius:6px;background:#0086e9;
          color:#fff;font-size:16px;cursor:pointer;}
   button:active{background:#006bb8;}
@@ -115,6 +120,58 @@ FORM_BODY = """
 </script>
 """
 
+# Multi-field variant. Each labelled input carries a data-field attribute; the
+# browser assembles them into a single JSON object stored in the hidden `value`
+# input on Save (and sent to /test on Test), so the server side, param storage
+# and test handler are identical to the single-textarea form.
+FIELDS_BODY = """
+<div class="status %CLASS%">%STATUS%</div>
+<form id="f" method="POST" action="/">
+  %FIELDS%
+  <input type="hidden" id="value" name="value">
+  <div class="hint">%HINT%</div>
+  %EXAMPLE_BLOCK%
+  <div class="actions">
+    <button type="submit">Save</button>
+    %TEST_BUTTON%
+  </div>
+</form>
+<div id="result" class="result" hidden></div>
+<script>
+(function(){
+  const form = document.getElementById('f');
+  const hidden = document.getElementById('value');
+  function collect(){
+    const o = {};
+    form.querySelectorAll('[data-field]').forEach(el => {
+      const v = el.value.trim();
+      if(v) o[el.getAttribute('data-field')] = v;
+    });
+    return o;
+  }
+  // Assemble the fields into JSON on submit; empty => clears the param.
+  form.addEventListener('submit', () => {
+    const o = collect();
+    hidden.value = Object.keys(o).length ? JSON.stringify(o) : '';
+  });
+  const btn = document.getElementById('test-btn');
+  if(btn){
+    const out = document.getElementById('result');
+    btn.addEventListener('click', async () => {
+      const val = JSON.stringify(collect());
+      out.hidden = false; out.className = 'result busy'; out.textContent = 'testing...';
+      try{
+        const r = await fetch('/test', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: 'value=' + encodeURIComponent(val) });
+        const j = await r.json();
+        if(j.ok){ out.className = 'result ok'; out.textContent = j.message || 'OK'; }
+        else { out.className = 'result err'; out.textContent = 'FAILED: ' + (j.error || 'unknown error'); }
+      }catch(e){ out.className = 'result err'; out.textContent = 'request failed: ' + e; }
+    });
+  }
+})();
+</script>
+"""
+
 TEST_BUTTON_HTML = '<button id="test-btn" type="button" class="secondary">Test connection</button>'
 
 DONE_BODY = """
@@ -126,6 +183,16 @@ the comma will close automatically.</div>
 # Test handler signature: takes the raw textarea value, returns a dict
 # {"ok": bool, "message"?: str, "rows"?: list, "error"?: str}.
 TestHandler = Callable[[str], dict]
+
+
+@dataclass(frozen=True)
+class FormField:
+  """One labelled input in a multi-field form. The browser assembles all
+  fields into a JSON object keyed by `name`, so the stored param is JSON."""
+  name: str                     # JSON key, e.g. "host"
+  label: str                    # shown above the input
+  placeholder: str = ""
+  input_type: str = "text"      # HTML input type, e.g. "text", "password", "number"
 
 
 @dataclass(frozen=True)
@@ -141,9 +208,12 @@ class ParamWebFormSpec:
   status_unset: str = "Not set yet."
   # Optional in-form connection test. When set, the page renders a
   # "Test connection" button next to Save; clicking it POSTs to /test
-  # which calls this handler with the current textarea value and renders
-  # the result inline. Save is unaffected.
+  # which calls this handler with the current value and renders the result
+  # inline. Save is unaffected.
   test_handler: TestHandler | None = field(default=None, compare=False, repr=False)
+  # When non-empty, render a labelled input per field instead of the single
+  # textarea. The value stored in param_key is a JSON object of the fields.
+  fields: tuple[FormField, ...] = ()
 
 
 def get_local_ip() -> str:
@@ -178,16 +248,47 @@ def _render_form(spec: ParamWebFormSpec, message_html: str = "") -> bytes:
   else:
     example_block = ""
 
-  body = (FORM_BODY
-          .replace("%CLASS%", status_cls)
-          .replace("%STATUS%", status_txt)
-          .replace("%PLACEHOLDER%", html.escape(spec.placeholder))
-          .replace("%HINT%", spec.hint_html)
-          .replace("%EXAMPLE_BLOCK%", example_block)
-          .replace("%TEST_BUTTON%", test_button_html))
+  if spec.fields:
+    body = (FIELDS_BODY
+            .replace("%CLASS%", status_cls)
+            .replace("%STATUS%", status_txt)
+            .replace("%FIELDS%", _render_fields(spec, current))
+            .replace("%HINT%", spec.hint_html)
+            .replace("%EXAMPLE_BLOCK%", example_block)
+            .replace("%TEST_BUTTON%", test_button_html))
+  else:
+    body = (FORM_BODY
+            .replace("%CLASS%", status_cls)
+            .replace("%STATUS%", status_txt)
+            .replace("%PLACEHOLDER%", html.escape(spec.placeholder))
+            .replace("%HINT%", spec.hint_html)
+            .replace("%EXAMPLE_BLOCK%", example_block)
+            .replace("%TEST_BUTTON%", test_button_html))
   if message_html:
     body = message_html + body
   return PAGE.replace("%TITLE%", html.escape(spec.title)).replace("%BODY%", body).encode("utf-8")
+
+
+def _render_fields(spec: ParamWebFormSpec, current: str) -> str:
+  """Render one labelled input per field, pre-filled from the current JSON
+  param value so the user can edit individual fields without retyping."""
+  try:
+    values = json.loads(current) if current else {}
+    if not isinstance(values, dict):
+      values = {}
+  except ValueError:
+    values = {}
+
+  rows = []
+  for f in spec.fields:
+    val = html.escape(str(values.get(f.name, "")))
+    rows.append(
+      f'<label class="fld"><span>{html.escape(f.label)}</span>'
+      f'<input data-field="{html.escape(f.name)}" type="{html.escape(f.input_type)}" '
+      f'value="{val}" placeholder="{html.escape(f.placeholder)}" '
+      f'autocomplete="off" autocapitalize="off" spellcheck="false"></label>'
+    )
+  return "\n".join(rows)
 
 
 def _render_done(spec: ParamWebFormSpec) -> bytes:
@@ -411,31 +512,34 @@ def _email_config_test(config_json: str) -> dict:
 EMAIL_CONFIG_SPEC = ParamWebFormSpec(
   param_key="NkaoudNavEmailConfig",
   title="Email (SMTP) settings",
-  placeholder='{"host":"smtp-relay.brevo.com","port":587,"login":"...","password":"...","from":"you@example.com","to":"you@example.com"}',
+  placeholder="",
   hint_html=(
-    'Paste a single JSON object with your SMTP settings, then use '
-    '<code>Test connection</code> to send yourself a test email before '
-    'saving. Stored in cleartext on the device. Empty submit clears it.'
+    'Fill in your SMTP settings, then use <code>Test connection</code> to '
+    'send yourself a test email before saving. <code>Host</code> defaults to '
+    'Brevo if left blank; <code>Login</code>/<code>Password</code> must be '
+    'given together (or both blank for an open relay). Saving with every '
+    'field empty clears the settings.'
   ),
-  example_label="What to paste (one JSON object)",
+  example_label="Ports",
   example_value=(
-    "{\n"
-    '  "host": "smtp-relay.brevo.com",    // optional, this is the default\n'
-    '  "port": 587,                       // 587/2525 = STARTTLS, 465 = SSL\n'
-    '  "login": "your-smtp-login",        // SMTP username (optional)\n'
-    '  "password": "your-smtp-key",       // SMTP password / key (optional)\n'
-    '  "from": "you@example.com",         // sender address (required)\n'
-    '  "to": "you@example.com"            // where logs are sent (required)\n'
-    "}\n\n"
-    "`login` and `password` must be given together (or both omitted for an\n"
-    "open relay). Tapping `Test connection` sends a real test email to `to`,\n"
+    "port 587 or 2525 -> STARTTLS (Brevo default)\n"
+    "port 465          -> SSL\n\n"
+    "Tapping `Test connection` sends a real test email to the To address,\n"
     "so check your inbox to confirm before saving.\n\n"
     "Security: these credentials are stored in cleartext on the device.\n"
     "Rotate the SMTP key if the device ever leaves your control."
   ),
-  status_set_template="Email config set (length {length}).",
-  status_unset="No email config set yet.",
+  status_set_template="Email settings saved.",
+  status_unset="No email settings saved yet.",
   test_handler=_email_config_test,
+  fields=(
+    FormField("host", "SMTP Host", placeholder="smtp-relay.brevo.com"),
+    FormField("port", "Port", placeholder="587", input_type="number"),
+    FormField("login", "SMTP Login / Username", placeholder="your-brevo-login"),
+    FormField("password", "SMTP Password / Key", placeholder="your-brevo-smtp-key", input_type="password"),
+    FormField("from", "From Address", placeholder="you@example.com"),
+    FormField("to", "To Address (where logs are sent)", placeholder="you@example.com"),
+  ),
 )
 
 
