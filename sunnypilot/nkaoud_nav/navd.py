@@ -28,7 +28,7 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import Ratekeeper
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.nkaoud_nav.geometry import (
-  Coordinate, closest_segment_index, distance_along_geometry, route_bearing_at,
+  Coordinate, closest_segment_index, distance_along_geometry, route_bearing_at, total_geometry_length,
 )
 from openpilot.sunnypilot.nkaoud_nav.route_client import (
   Banner, RouteData, RouteFetchError, fetch_route,
@@ -786,6 +786,19 @@ class NkaoudNavd:
     start = self.route.cumulative_step_distance[idx] if idx < len(self.route.cumulative_step_distance) else 0.0
     return max(0.0, self.last_distance_along - start)
 
+  def _maneuver_ref_distance(self, idx: int) -> float:
+    """Distance from the step's start to its maneuver point, measured along the
+    step's OWN geometry. Mapbox's step.distance (routed length) can exceed the
+    decimated polyline length -- notably on ramps -- and _along_step clamps to
+    the polyline, so measuring against step.distance leaves a residual offset
+    that never counts down (distance freezes a few metres short and the step
+    never transitions). The geometry endpoint IS the maneuver, so reference
+    its length."""
+    step = self.route.steps[idx]
+    if len(step.geometry) >= 2:
+      return total_geometry_length(step.geometry)
+    return step.distance
+
   def _path_min_distance(self, idx: int) -> float | None:
     """Perpendicular distance from the vehicle to step `idx`'s geometry, or
     None when that step has no usable polyline."""
@@ -801,8 +814,7 @@ class NkaoudNavd:
     PAST the maneuver (signed along-step distance negative), and in the
     ambiguous zone right around the maneuver, once the next step's geometry is
     the closer one. Caller guarantees step_idx + 1 is in range."""
-    step = self.route.steps[self.step_idx]
-    signed = step.distance - self._along_step(self.step_idx)
+    signed = self._maneuver_ref_distance(self.step_idx) - self._along_step(self.step_idx)
     if signed < -MANEUVER_TRANSITION_THRESHOLD_M:
       return True
     if signed > MANEUVER_TRANSITION_THRESHOLD_M:
@@ -815,8 +827,7 @@ class NkaoudNavd:
     if self.route is None or not self.route.steps or self.last_pos is None:
       return 0.0
     idx = min(self.step_idx, len(self.route.steps) - 1)
-    step = self.route.steps[idx]
-    return max(0.0, step.distance - self._along_step(idx))
+    return max(0.0, self._maneuver_ref_distance(idx) - self._along_step(idx))
 
   def _recommended_desire(self):
     """Route lateral INTENT -- what the route wants, with no permission
