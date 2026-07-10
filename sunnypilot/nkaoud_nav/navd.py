@@ -621,8 +621,11 @@ class NkaoudNavd:
 
   def _maybe_log(self, nav) -> None:
     """Append one CSV row for the current maneuver state, rate-limited to
-    NAV_LOG_INTERVAL. Gated on the NkaoudNavDriveLogging param."""
+    NAV_LOG_INTERVAL. Gated on the NkaoudNavDriveLogging param, and only while
+    actively navigating a route (a destination + fetched route)."""
     if not self._drive_logging:
+      return
+    if not nav.active:
       return
 
     now = time.monotonic()

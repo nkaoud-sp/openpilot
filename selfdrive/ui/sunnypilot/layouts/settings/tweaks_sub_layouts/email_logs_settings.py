@@ -36,9 +36,10 @@ class EmailLogsSettingsLayout(Widget):
   def _initialize_items(self):
     self._drive_logging = toggle_item_sp(
       title=lambda: tr("Log Navigation Maneuvers"),
-      description=lambda: tr("Record maneuver type, distance, lane recommendations and cross-track error to a " +
-                            "per-drive CSV (in /data/media/0/nkaoud_nav_logs) for later analysis and tuning. " +
-                            "Requires Navigation to be enabled."),
+      description=lambda: tr("While actively navigating a route, record maneuver type, distance, lane " +
+                            "recommendations and cross-track error to a per-drive CSV (in " +
+                            "/data/media/0/nkaoud_nav_logs) for later analysis and tuning. Requires Navigation " +
+                            "to be enabled with a destination set."),
       param="NkaoudNavDriveLogging",
     )
     self._auto_email = toggle_item_sp(
