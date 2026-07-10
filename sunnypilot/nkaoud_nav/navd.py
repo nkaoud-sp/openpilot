@@ -123,6 +123,12 @@ DEFAULT_RANGES = (200.0, 50.0)   # surface streets / "turn" / unknown
 CROSS_TRACK_THRESHOLD_M = 30.0
 CROSS_TRACK_COUNTER_MIN = 25     # ~5 s at 5 Hz
 
+# Advance to the next step once we are this far PAST the current step's
+# maneuver (signed along-step distance goes negative). Ported from the old
+# fork's MANEUVER_TRANSITION_THRESHOLD -- the piece that recovers step
+# tracking when we drive past a turn instead of taking it.
+MANEUVER_TRANSITION_THRESHOLD_M = 10.0
+
 # Steering keep* intent is restricted to the maneuver types where advance
 # lane positioning actually pays off (long approach, hard-to-recover miss).
 # Surface-street turns are left to the model + the turn cue; the UI advisory
@@ -498,20 +504,20 @@ class NkaoudNavd:
         self.params.remove("NkaoudNavDestination")
         return
 
-    # Advance step_idx to whichever step contains the closest segment.
-    cumulative = self.route.cumulative_step_distance
+    # Whole-route progress -- kept only for the remaining-distance readout.
     self.last_distance_along = distance_along_geometry(self.route.geometry, self.last_pos)
-    # Also record perpendicular distance to the route for cross-track reroute.
+    # Perpendicular distance to the route for the cross-track reroute net.
     _idx, perp, _t = closest_segment_index(self.route.geometry, self.last_pos)
     self.cross_track_m = perp
-    # Find largest step whose cumulative start <= last_distance_along
-    new_idx = 0
-    for i, c in enumerate(cumulative):
-      if c <= self.last_distance_along:
-        new_idx = i
-      else:
-        break
-    self.step_idx = new_idx
+
+    # Advance step_idx forward-only, driven by actually passing the maneuver
+    # (per-step signed distance) rather than by where the global-nearest
+    # projection lands. When we drive PAST a turn the whole-route projection
+    # can pin to the pre-turn segment and freeze distance_to_maneuver; the
+    # transition below still fires because it measures against the step's own
+    # geometry and lets the along-step distance go negative.
+    while self.step_idx + 1 < len(self.route.steps) and self._should_transition_to_next_step():
+      self.step_idx += 1
 
   def _maybe_reroute(self) -> None:
     if self.route is None or self.last_pos is None:
@@ -769,14 +775,48 @@ class NkaoudNavd:
       return None
     return self.route.steps[nxt]
 
-  def _distance_to_maneuver(self) -> float:
-    if self.route is None or not self.route.cumulative_step_distance:
-      return 0.0
-    idx = min(self.step_idx, len(self.route.cumulative_step_distance) - 1)
-    step_start = self.route.cumulative_step_distance[idx]
+  def _along_step(self, idx: int) -> float:
+    """Distance covered along step `idx`'s own geometry. Projecting onto the
+    short per-step polyline (instead of the whole route) keeps the nearest
+    point local, so it can't snap to a far-away segment and freeze."""
     step = self.route.steps[idx]
-    step_end = step_start + step.distance
-    return max(0.0, step_end - self.last_distance_along)
+    if len(step.geometry) >= 2:
+      return distance_along_geometry(step.geometry, self.last_pos)
+    # No usable per-step polyline: fall back to whole-route cumulative progress.
+    start = self.route.cumulative_step_distance[idx] if idx < len(self.route.cumulative_step_distance) else 0.0
+    return max(0.0, self.last_distance_along - start)
+
+  def _path_min_distance(self, idx: int) -> float | None:
+    """Perpendicular distance from the vehicle to step `idx`'s geometry, or
+    None when that step has no usable polyline."""
+    step = self.route.steps[idx]
+    if len(step.geometry) < 2:
+      return None
+    _i, perp, _t = closest_segment_index(step.geometry, self.last_pos)
+    return perp
+
+  def _should_transition_to_next_step(self) -> bool:
+    """Whether to advance from the current step to the next. Ported from the
+    old fork: advance once we are more than MANEUVER_TRANSITION_THRESHOLD_M
+    PAST the maneuver (signed along-step distance negative), and in the
+    ambiguous zone right around the maneuver, once the next step's geometry is
+    the closer one. Caller guarantees step_idx + 1 is in range."""
+    step = self.route.steps[self.step_idx]
+    signed = step.distance - self._along_step(self.step_idx)
+    if signed < -MANEUVER_TRANSITION_THRESHOLD_M:
+      return True
+    if signed > MANEUVER_TRANSITION_THRESHOLD_M:
+      return False
+    cur_d = self._path_min_distance(self.step_idx)
+    nxt_d = self._path_min_distance(self.step_idx + 1)
+    return cur_d is not None and nxt_d is not None and nxt_d < cur_d
+
+  def _distance_to_maneuver(self) -> float:
+    if self.route is None or not self.route.steps or self.last_pos is None:
+      return 0.0
+    idx = min(self.step_idx, len(self.route.steps) - 1)
+    step = self.route.steps[idx]
+    return max(0.0, step.distance - self._along_step(idx))
 
   def _recommended_desire(self):
     """Route lateral INTENT -- what the route wants, with no permission
@@ -885,7 +925,15 @@ class NkaoudNavd:
 
     if upcoming is not None and dist > 0.0:
       lane_keep_m, turn_cue_m = _ranges_for(upcoming.maneuver_type)
-      if turn_cue_m < dist <= lane_keep_m:
+      # A maneuver owns lateral for its whole lane-keep window -- never fall
+      # through to the highway lane-preference advisory here, which can point
+      # opposite the maneuver (e.g. a left-lane cruise bias on the approach to
+      # a right turn). Inside the turn-cue zone the turn arrow owns the
+      # display, so emit nothing; in the outer lane-keep zone, cue the route's
+      # side.
+      if dist <= lane_keep_m:
+        if dist <= turn_cue_m:
+          return "", ""
         side = self._route_side(cur_step, dist, upcoming.maneuver_modifier)
         if side:
           if self.lane_conf == "unknown" or self.lane_total <= 0 or self.lane_current <= 0:
