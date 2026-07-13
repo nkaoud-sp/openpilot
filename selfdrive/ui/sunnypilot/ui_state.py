@@ -34,6 +34,7 @@ class UIStateSP:
       "modelManagerSP", "selfdriveStateSP", "longitudinalPlanSP", "backupManagerSP",
       "gpsLocation", "liveTorqueParameters", "carStateSP", "liveMapDataSP", "carParamsSP", "liveDelay",
       "liveLocationKalman", "navRoute", "navInstruction", "nkaoudNavigationSP", "visualVehicleDetectorStateSP",
+      "laneLineClassificationSP",
     ]
 
     self.sunnylink_state = SunnylinkState()
@@ -143,6 +144,7 @@ class UIStateSP:
     self.lane_position_indicator = self.params.get_bool("LanePositionIndicator")
     self.lane_edge_filter_mode = self.params.get("LaneEdgeFilterMode", return_default=True)
     self.visual_vehicle_detector_readout = self.params.get_bool("VisualVehicleDetectorReadout")
+    self.lane_line_visualizer_readout = self.params.get_bool("LaneLineVisualizerReadout")
     self.visual_vehicle_detector_car_widget = self.params.get_bool("VisualVehicleDetectorCarWidget")
     self.launch_readout = self.params.get_bool("LaunchReadout")
     self.launch_assist = self.params.get_bool("LaunchAssist")

@@ -104,6 +104,7 @@ _services: dict[str, tuple] = {
   "liveLocationKalman": (True, 20.),
   "nkaoudNavigationSP": (True, 5., 5),
   "visualVehicleDetectorStateSP": (True, 5., 5),
+  "laneLineClassificationSP": (True, 5., 5),
 
   # debug
   "uiDebug": (True, 0., 1),

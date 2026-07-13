@@ -108,6 +108,10 @@ def visual_vehicle_detector_enabled(started: bool, params: Params, CP: car.CarPa
   return started and params.get_bool("VisualVehicleDetector")
 
 
+def lane_line_classifier_enabled(started: bool, params: Params, CP: car.CarParams) -> bool:
+  return started and params.get_bool("LaneLineVisualizer")
+
+
 def uploader_ready(started: bool, params: Params, CP: car.CarParams) -> bool:
   if not params.get_bool("OnroadUploads"):
     return only_offroad(started, params, CP)
@@ -207,6 +211,7 @@ procs += [
   # Always-on (offroad too) so it survives drive-end to email the maneuver log.
   PythonProcess("nkaoud_nav_mailer", "sunnypilot.nkaoud_nav.mailer", nkaoud_nav_mailer_enabled),
   PythonProcess("visual_vehicle_detector", "sunnypilot.nkaoud_nav.adjacent_vehicle_detector", visual_vehicle_detector_enabled),
+  PythonProcess("lane_line_classifier", "sunnypilot.nkaoud_nav.lane_line_classifierd", lane_line_classifier_enabled),
 ]
 
 if os.path.exists("./github_runner.sh"):

@@ -2495,7 +2495,7 @@ struct Event {
     modelDataV2SP @116 :Custom.ModelDataV2SP;
     nkaoudNavigationSP @136 :Custom.NkaoudNavigationSP;
     visualVehicleDetectorStateSP @137 :Custom.VisualVehicleDetectorStateSP;
-    customReserved12 @138 :Custom.CustomReserved12;
+    laneLineClassificationSP @138 :Custom.LaneLineClassificationSP;
     customReserved13 @139 :Custom.CustomReserved13;
     customReserved14 @140 :Custom.CustomReserved14;
     customReserved15 @141 :Custom.CustomReserved15;

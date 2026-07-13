@@ -11,6 +11,7 @@ from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.dynam
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.email_logs_settings import EmailLogsSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.jerk_settings import JerkSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.lane_position_settings import LanePositionSettingsLayout
+from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.lane_line_visualizer_settings import LaneLineVisualizerSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.launch_assist_settings import LaunchAssistSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.nav_settings import NavSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.park_assist_settings import ParkAssistSettingsLayout
@@ -32,6 +33,7 @@ class PanelType(IntEnum):
   VISUAL_VEHICLE = 7
   LANE_POSITION = 8
   EMAIL_LOGS = 9
+  LANE_LINE_VISUALIZER = 10
 
 
 class TweaksLayout(Widget):
@@ -47,6 +49,7 @@ class TweaksLayout(Widget):
     self._navigation_layout = NavSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._visual_vehicle_layout = VisualVehicleSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._lane_position_layout = LanePositionSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
+    self._lane_line_visualizer_layout = LaneLineVisualizerSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._email_logs_layout = EmailLogsSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
 
     items = self._initialize_items()
@@ -164,6 +167,22 @@ class TweaksLayout(Widget):
       callback=lambda: self._set_current_panel(PanelType.VISUAL_VEHICLE),
     )
 
+    # Standalone solid-vs-broken lane-line classifier. UI/debug only; no controls
+    # integration. Master gate starts the lane_line_classifier process; submenu
+    # has the on-road readout toggle.
+    self._lane_line_visualizer = toggle_item_sp(
+      title=lambda: tr("Lane Line Visualizer (test)"),
+      description=lambda: tr("Run a standalone classifier that labels each ego lane line as solid or broken "
+                            "(dashed) from the camera, and show a debug readout on the driving view. This is "
+                            "UI/debug only and does not control or block lane changes."),
+      param="LaneLineVisualizer",
+    )
+    self._lane_line_visualizer_button = simple_button_item_sp(
+      button_text=lambda: tr("Manage Lane Line Visualizer Settings"),
+      button_width=800,
+      callback=lambda: self._set_current_panel(PanelType.LANE_LINE_VISUALIZER),
+    )
+
     # Experimental Mapbox-based navigation. Polyline overlay + maneuver banner + optional
     # turn-slowdown. Master gate starts the nkaoud_navd process; submenu has the rest.
     self._navigation = toggle_item_sp(
@@ -201,6 +220,8 @@ class TweaksLayout(Widget):
       self._park_assist_button,
       self._lane_position_indicator,
       self._lane_position_button,
+      self._lane_line_visualizer,
+      self._lane_line_visualizer_button,
       self._visual_vehicle_detector,
       self._visual_vehicle_button,
       self._navigation,
@@ -226,6 +247,8 @@ class TweaksLayout(Widget):
       self._visual_vehicle_layout.render(rect)
     elif self._current_panel == PanelType.LANE_POSITION:
       self._lane_position_layout.render(rect)
+    elif self._current_panel == PanelType.LANE_LINE_VISUALIZER:
+      self._lane_line_visualizer_layout.render(rect)
     elif self._current_panel == PanelType.EMAIL_LOGS:
       self._email_logs_layout.render(rect)
     else:
@@ -253,6 +276,8 @@ class TweaksLayout(Widget):
       self._visual_vehicle_layout.show_event()
     elif panel == PanelType.LANE_POSITION:
       self._lane_position_layout.show_event()
+    elif panel == PanelType.LANE_LINE_VISUALIZER:
+      self._lane_line_visualizer_layout.show_event()
     elif panel == PanelType.EMAIL_LOGS:
       self._email_logs_layout.show_event()
 
@@ -267,3 +292,4 @@ class TweaksLayout(Widget):
     self._park_assist_button.action_item.set_enabled(self._park_assist.action_item.get_state())
     self._navigation_button.action_item.set_enabled(self._navigation.action_item.get_state())
     self._visual_vehicle_button.action_item.set_enabled(self._visual_vehicle_detector.action_item.get_state())
+    self._lane_line_visualizer_button.action_item.set_enabled(self._lane_line_visualizer.action_item.get_state())

@@ -600,7 +600,29 @@ struct VisualVehicleDetectorStateSP @0xc2243c65e0340384 {
   }
 }
 
-struct CustomReserved12 @0x9ccdc8676701b412 {
+struct LaneLineClassificationSP @0x9ccdc8676701b412 {
+  # Solid-vs-broken classification of the two ego lane lines, published by
+  # lane_line_classifierd for the on-road Lane Line Visualizer readout.
+  monotonicTime @0 :Float64;
+  frameId @1 :UInt32;
+  valid @2 :Bool;
+  reason @3 :Text;
+  hz @4 :Float32;
+  cameraOffset @5 :Float32;
+
+  left @6 :Line;   # modelV2.laneLines[1] (left ego line)
+  right @7 :Line;  # modelV2.laneLines[2] (right ego line)
+  leftCrossable @8 :Bool;   # debounced: safe to cross to the left
+  rightCrossable @9 :Bool;  # debounced: safe to cross to the right
+
+  struct Line {
+    lineType @0 :UInt8;      # 0=unknown, 1=broken, 2=solid, 3=double
+    confidence @1 :Float32;  # 0..1
+    duty @2 :Float32;        # fraction of samples with marking present
+    periodM @3 :Float32;     # estimated dash period (m), 0 if none/solid
+    validFrac @4 :Float32;   # fraction of samples that projected in-frame
+    nSamples @5 :UInt16;
+  }
 }
 
 struct CustomReserved13 @0xcd96dafb67a082d0 {
