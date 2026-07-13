@@ -62,6 +62,26 @@ def _render(line_y=1.85, solid=True, paint_m=3.0, period_m=12.0, noise=6):
   return frame, xs, ys, zs
 
 
+def _shift_uv(xs, ys, zs, shift_px):
+  shifted_y = []
+  for x, y, z in zip(xs, ys, zs):
+    uv = _project([x, y, z])
+    uv_shift = _project([x, y + 0.1, z])
+    if uv is None or uv_shift is None:
+      shifted_y.append(y)
+      continue
+    dy_px = uv_shift[0] - uv[0]
+    if abs(dy_px) < 1e-6:
+      shifted_y.append(y)
+      continue
+    shifted_y.append(y + (shift_px / dy_px) * 0.1)
+  return np.asarray(shifted_y, dtype=np.float64)
+
+
+def _occlude(frame, x0, y0, x1, y1, value=ROAD_LUMA):
+  frame[max(0, y0):min(FRAME_H, y1), max(0, x0):min(FRAME_W, x1)] = value
+
+
 def test_solid_line_detected():
   frame, x, y, z = _render(solid=True)
   res = classify_line(frame, x, y, z, TRANSFORM)
@@ -77,6 +97,26 @@ def test_broken_line_detected():
   # recovered period should be near the true 12 m dash cycle
   assert 8.0 <= res.period_m <= 16.0, res.period_m
   assert 0.1 <= res.duty <= 0.75, res.duty
+
+
+def test_projection_offset_still_detects_solid():
+  frame, x, y, z = _render(solid=True)
+  shifted_y = _shift_uv(x, y, z, shift_px=3.0)
+  res = classify_line(frame, x, shifted_y, z, TRANSFORM)
+  assert res.line_type == LaneLineType.SOLID, res
+  assert res.confidence > 0.4
+
+
+def test_short_occlusion_does_not_break_solid_line():
+  frame, x, y, z = _render(solid=True)
+  uv0 = _project([20.0, 1.85, CAM_Z])
+  uv1 = _project([20.8, 1.85, CAM_Z])
+  assert uv0 is not None and uv1 is not None
+  x0, y0 = int(min(uv0[0], uv1[0])) - 12, int(min(uv0[1], uv1[1])) - 12
+  x1, y1 = int(max(uv0[0], uv1[0])) + 12, int(max(uv0[1], uv1[1])) + 12
+  _occlude(frame, x0, y0, x1, y1)
+  res = classify_line(frame, x, y, z, TRANSFORM)
+  assert res.line_type == LaneLineType.SOLID, res
 
 
 def test_blank_frame_is_unknown():
@@ -135,6 +175,22 @@ def test_classifier_debounce_latches_crossable():
   assert gate.left.line_type == LaneLineType.BROKEN
   assert gate.left_crossable is True
   assert gate.right_crossable is False
+
+
+def test_temporal_filter_holds_confident_label_for_one_bad_frame():
+  frame_solid, x, y, z = _render(solid=True)
+  rng = np.random.default_rng(22)
+  blank = (ROAD_LUMA + rng.normal(0, 6, size=(FRAME_H, FRAME_W))).clip(0, 255).astype(np.uint8)
+  far = _FakeLine([0, 100], [6, 6], [CAM_Z, CAM_Z])
+  solid_line = _FakeLine(x, y, z)
+
+  clf = LaneLineClassifier()
+  model = _FakeModel([far, solid_line, far, far])
+  gate = clf.update(frame_solid, model, TRANSFORM)
+  assert gate.left.line_type == LaneLineType.SOLID
+
+  gate = clf.update(blank, model, TRANSFORM)
+  assert gate.left.line_type == LaneLineType.SOLID, gate.left
 
 
 if __name__ == "__main__":

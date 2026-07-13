@@ -37,6 +37,7 @@ per-side debounce for use against a live ``modelV2``.
 """
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from enum import IntEnum
 
@@ -59,6 +60,10 @@ SAMPLE_X_MAX = 60.0      # end of the trusted window ahead (m); far field too fe
 SAMPLE_STEP_M = 0.5      # uniform along-line spacing (m); << typical dash period
 PERP_SCAN_PX = 7         # half-length of the perpendicular scan in image pixels
 PERP_SCAN_STEPS = 15     # samples across the perpendicular scan
+CENTER_SEARCH_PX = 4     # local recenter search around projected line (pixels)
+CENTER_SEARCH_STEPS = 5  # odd count so the unshifted centre is always tested
+CONTRAST_SMOOTH_WINDOW = 5
+MAX_REPAIR_GAP_M = 1.0   # fill tiny missing gaps; well below a real dashed gap
 
 # --- classification tunables (TUNE ON REAL DATA) -----------------------------
 # Contrast = marking_peak - local_background, in 8-bit luminance counts.
@@ -94,6 +99,9 @@ class LaneLineClassifierConfig:
   min_period_m: float = MIN_PERIOD_M
   max_period_m: float = MAX_PERIOD_M
   min_autocorr: float = MIN_AUTOCORR
+  center_search_px: float = CENTER_SEARCH_PX
+  contrast_smooth_window: int = CONTRAST_SMOOTH_WINDOW
+  max_repair_gap_m: float = MAX_REPAIR_GAP_M
 
 
 DEFAULT_CONFIG = LaneLineClassifierConfig()
@@ -184,6 +192,100 @@ def _perp_contrast(frame_y: np.ndarray, uv: np.ndarray) -> tuple[np.ndarray, np.
   return contrast, valid
 
 
+def _perp_contrast_search(frame_y: np.ndarray, uv: np.ndarray,
+                          center_search_px: float = CENTER_SEARCH_PX) -> tuple[np.ndarray, np.ndarray]:
+  """Sample perpendicular scans with a small recenter search.
+
+  The line projection from modelV2 can be a few pixels off because of calibration
+  or model jitter. For each along-line sample, try a few nearby scan centres
+  along the local normal and keep the strongest paint-like response.
+  """
+  h, w = frame_y.shape[:2]
+  n = uv.shape[0]
+  contrast = np.zeros(n, dtype=np.float32)
+  valid = np.zeros(n, dtype=np.bool_)
+
+  tang = np.gradient(uv, axis=0)
+  norm = np.hypot(tang[:, 0], tang[:, 1])
+  with np.errstate(divide='ignore', invalid='ignore'):
+    tang_u = tang / norm[:, None]
+  perp = np.stack([-tang_u[:, 1], tang_u[:, 0]], axis=1)
+
+  offsets = np.linspace(-PERP_SCAN_PX, PERP_SCAN_PX, PERP_SCAN_STEPS)
+  centre_offsets = np.linspace(-center_search_px, center_search_px, CENTER_SEARCH_STEPS, dtype=np.float32)
+  for i in range(n):
+    if not np.all(np.isfinite(uv[i])) or not np.all(np.isfinite(perp[i])):
+      continue
+
+    best_score = -np.inf
+    best_valid = False
+    for centre_shift in centre_offsets:
+      centre = uv[i] + perp[i] * centre_shift
+      sx = centre[0] + perp[i, 0] * offsets
+      sy = centre[1] + perp[i, 1] * offsets
+      ix = np.round(sx).astype(np.int64)
+      iy = np.round(sy).astype(np.int64)
+      inb = (ix >= 0) & (ix < w) & (iy >= 0) & (iy < h)
+      if inb.sum() < PERP_SCAN_STEPS // 2:
+        continue
+      vals = frame_y[iy[inb], ix[inb]].astype(np.float32)
+      score = float(np.percentile(vals, 90) - np.median(vals))
+      if score > best_score:
+        best_score = score
+        best_valid = True
+
+    if best_valid:
+      contrast[i] = max(0.0, best_score)
+      valid[i] = True
+  return contrast, valid
+
+
+def _smooth_valid_signal(values: np.ndarray, valid: np.ndarray, window: int) -> np.ndarray:
+  """Blur the along-line signal without letting invalid samples drag it down."""
+  window = max(1, int(window))
+  if window <= 1 or values.size == 0:
+    return values.astype(np.float32, copy=True)
+  kernel = np.ones(window, dtype=np.float32)
+  weight = np.convolve(valid.astype(np.float32), kernel, mode='same')
+  numer = np.convolve(np.where(valid, values, 0.0).astype(np.float32), kernel, mode='same')
+  out = np.zeros_like(values, dtype=np.float32)
+  np.divide(numer, np.maximum(weight, 1e-6), out=out, where=weight > 0)
+  return out
+
+
+def _repair_short_gaps(present: np.ndarray, valid: np.ndarray, max_gap_m: float) -> np.ndarray:
+  """Fill tiny absent runs inside an otherwise-present marking signal.
+
+  This helps solid lines survive brief dropouts from shadows or cracks while
+  leaving true dashed gaps untouched because the repair budget is much shorter
+  than a normal dash cycle.
+  """
+  out = present.astype(np.bool_, copy=True)
+  if out.size == 0 or max_gap_m <= 0:
+    return out
+
+  max_gap = max(0, int(round(max_gap_m / SAMPLE_STEP_M)))
+  if max_gap <= 0:
+    return out
+
+  i = 0
+  n = out.size
+  while i < n:
+    if out[i] or not valid[i]:
+      i += 1
+      continue
+    j = i
+    while j < n and valid[j] and not out[j]:
+      j += 1
+    gap_len = j - i
+    left_on = i > 0 and out[i - 1]
+    right_on = j < n and out[j]
+    if left_on and right_on and gap_len <= max_gap:
+      out[i:j] = True
+    i = j + 1 if j == i else j
+  return out
+
+
 def _autocorr_period(present: np.ndarray, min_period_m: float = MIN_PERIOD_M,
                      max_period_m: float = MAX_PERIOD_M) -> tuple[float, float]:
   """Estimate dash period (m) and normalised autocorrelation strength.
@@ -226,7 +328,8 @@ def classify_line(frame_y: np.ndarray, line_x, line_y, line_z,
     return LaneLineResult()
 
   uv = _project(grid, transform)
-  contrast, valid = _perp_contrast(np.asarray(frame_y), uv)
+  contrast, valid = _perp_contrast_search(np.asarray(frame_y), uv, cfg.center_search_px)
+  contrast = _smooth_valid_signal(contrast, valid, cfg.contrast_smooth_window)
 
   n = contrast.size
   valid_frac = float(valid.mean()) if n else 0.0
@@ -235,6 +338,7 @@ def classify_line(frame_y: np.ndarray, line_x, line_y, line_z,
     return res  # UNKNOWN
 
   present = valid & (contrast >= cfg.min_contrast)
+  present = _repair_short_gaps(present, valid, cfg.max_repair_gap_m)
   res.present = present
   vpresent = present[valid]
   duty = float(vpresent.mean()) if vpresent.size else 0.0
@@ -283,6 +387,53 @@ class _Debounce:
     return self.state
 
 
+class _TemporalLineFilter:
+  """Short history stabilizer for the displayed per-line classification.
+
+  It never turns UNKNOWN into crossable by itself; it only helps a confident
+  known class survive a single noisy frame so the UI/readout does not flicker.
+  """
+  def __init__(self, hold_frames: int = 1):
+    self._history: deque[LaneLineResult] = deque(maxlen=4)
+    self._hold_frames = max(0, hold_frames)
+    self._unknown_run = 0
+
+  def update(self, result: LaneLineResult) -> LaneLineResult:
+    last_known = next((r for r in reversed(self._history) if r.line_type != LaneLineType.UNKNOWN), None)
+    out = result
+
+    if result.line_type == LaneLineType.UNKNOWN:
+      self._unknown_run += 1
+      if (self._unknown_run <= self._hold_frames and last_known is not None and
+          last_known.confidence >= 0.8 and result.valid_frac >= 0.5 * max(last_known.valid_frac, 1e-6)):
+        out = LaneLineResult(
+          line_type=last_known.line_type,
+          confidence=last_known.confidence * 0.85,
+          duty=last_known.duty,
+          period_m=last_known.period_m,
+          valid_frac=result.valid_frac,
+          n_samples=result.n_samples,
+          contrast=result.contrast,
+          present=result.present,
+        )
+    else:
+      self._unknown_run = 0
+      if last_known is not None and last_known.line_type == result.line_type:
+        out = LaneLineResult(
+          line_type=result.line_type,
+          confidence=float(np.clip(0.4 * last_known.confidence + 0.6 * result.confidence, 0, 1)),
+          duty=float(0.4 * last_known.duty + 0.6 * result.duty),
+          period_m=float(0.4 * last_known.period_m + 0.6 * result.period_m),
+          valid_frac=result.valid_frac,
+          n_samples=result.n_samples,
+          contrast=result.contrast,
+          present=result.present,
+        )
+
+    self._history.append(out)
+    return out
+
+
 @dataclass
 class LaneChangeGate:
   left_crossable: bool = False
@@ -301,6 +452,8 @@ class LaneLineClassifier:
   def __init__(self):
     self._left = _Debounce()
     self._right = _Debounce()
+    self._left_filter = _TemporalLineFilter()
+    self._right_filter = _TemporalLineFilter()
 
   def update(self, frame_y: np.ndarray, modelV2, transform: np.ndarray,
              camera_offset: float = 0.0, cfg: LaneLineClassifierConfig | None = None) -> LaneChangeGate:
@@ -308,10 +461,10 @@ class LaneLineClassifier:
     gate = LaneChangeGate()
     if len(lines) > LEFT_EGO_LINE:
       ll = lines[LEFT_EGO_LINE]
-      gate.left = classify_line(frame_y, ll.x, ll.y, ll.z, transform, camera_offset, cfg)
+      gate.left = self._left_filter.update(classify_line(frame_y, ll.x, ll.y, ll.z, transform, camera_offset, cfg))
     if len(lines) > RIGHT_EGO_LINE:
       rl = lines[RIGHT_EGO_LINE]
-      gate.right = classify_line(frame_y, rl.x, rl.y, rl.z, transform, camera_offset, cfg)
+      gate.right = self._right_filter.update(classify_line(frame_y, rl.x, rl.y, rl.z, transform, camera_offset, cfg))
 
     gate.left_crossable = self._left.update(gate.left.crossable)
     gate.right_crossable = self._right.update(gate.right.crossable)
