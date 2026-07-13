@@ -145,6 +145,7 @@ class UIStateSP:
     self.lane_edge_filter_mode = self.params.get("LaneEdgeFilterMode", return_default=True)
     self.visual_vehicle_detector_readout = self.params.get_bool("VisualVehicleDetectorReadout")
     self.lane_line_visualizer_readout = self.params.get_bool("LaneLineVisualizerReadout")
+    self.lane_line_visualizer_overlay = self.params.get_bool("LaneLineVisualizerOverlay")
     self.visual_vehicle_detector_car_widget = self.params.get_bool("VisualVehicleDetectorCarWidget")
     self.launch_readout = self.params.get_bool("LaunchReadout")
     self.launch_assist = self.params.get_bool("LaunchAssist")

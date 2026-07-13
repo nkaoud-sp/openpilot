@@ -31,7 +31,9 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.common.transformations.camera import DEVICE_CAMERAS, view_frame_from_device_frame
 from openpilot.common.transformations.orientation import rot_from_euler
 
-from sunnypilot.selfdrive.controls.lib.lane_line_classifier import LaneLineClassifier
+from sunnypilot.selfdrive.controls.lib.lane_line_classifier import (
+  LaneLineClassifier, LaneLineClassifierConfig, DEFAULT_CONFIG,
+)
 
 SERVICE = "laneLineClassificationSP"
 CALIBRATED = 1  # cereal LiveCalibrationData.Status.calibrated
@@ -67,6 +69,31 @@ class LaneLineClassifierD:
     self._pub_count = 0
     self._pub_window_t = time.monotonic()
     self._hz = 0.0
+    self._cfg = DEFAULT_CONFIG
+    self._cfg_t = 0.0
+
+  def _get_int(self, key: str, default: int) -> int:
+    try:
+      v = self.params.get(key, return_default=True)
+      return int(v) if v is not None else default
+    except Exception:
+      return default
+
+  def _refresh_config(self):
+    # Cheap to read, but only refresh ~1 Hz so tuning applies live without
+    # hammering the params store every frame.
+    now = time.monotonic()
+    if now - self._cfg_t < 1.0:
+      return
+    self._cfg_t = now
+    self._cfg = LaneLineClassifierConfig(
+      sample_x_max=float(self._get_int("LaneLineSampleMaxM", 60)),
+      min_contrast=float(self._get_int("LaneLineMinContrast", 18)),
+      solid_duty=self._get_int("LaneLineSolidDuty", 80) / 100.0,
+      min_period_m=float(self._get_int("LaneLineMinPeriodM", 3)),
+      max_period_m=float(self._get_int("LaneLineMaxPeriodM", 30)),
+      min_autocorr=self._get_int("LaneLineMinAutocorr", 30) / 100.0,
+    )
 
   def _resolve_camera(self):
     # Pick the real device camera once both messages have been seen, else keep
@@ -122,6 +149,7 @@ class LaneLineClassifierD:
     while True:
       self.sm.update(0)
       self._resolve_camera()
+      self._refresh_config()
 
       if self.sm.updated["liveCalibration"]:
         lc = self.sm["liveCalibration"]
@@ -157,7 +185,7 @@ class LaneLineClassifierD:
         frame_y = nv12_y_plane(buf)
         transform = build_transform(self.rpy_calib, self.intrinsics)
         camera_offset = self._camera_offset()
-        gate = self.clf.update(frame_y, self.sm["modelV2"], transform, camera_offset)
+        gate = self.clf.update(frame_y, self.sm["modelV2"], transform, camera_offset, self._cfg)
         self._publish(gate, int(vc.frame_id), "ok", True, camera_offset)
       except Exception as e:
         cloudlog.exception("lane_line_classifierd update failed")

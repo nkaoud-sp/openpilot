@@ -133,6 +133,7 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
 
     # Draw elements
     self._draw_lane_lines()
+    self._draw_lane_line_classification_overlay()
     self._draw_path(sm)
 
     if render_lead_indicator and radar_state:
@@ -291,6 +292,33 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
       alpha = np.clip(1.0 - self._road_edge_stds[i], 0.0, 1.0)
       color = rl.Color(255, 0, 0, int(alpha * 255))
       draw_polygon(self._rect, road_edge.projected_points, color)
+
+  # LaneLineType (sunnypilot lane_line_classifier): 0=unknown 1=broken 2=solid 3=double
+  _LL_CLASS_RGB = {0: (150, 150, 150), 1: (0, 220, 110), 2: (255, 70, 70), 3: (255, 70, 70)}
+
+  def _draw_lane_line_classification_overlay(self):
+    """Recolor the two ego lane lines by the solid/broken classification
+    published on laneLineClassificationSP: red=solid, green=broken, gray=unknown.
+    Alpha scales with confidence. Gated by the Lane Line Visualizer overlay toggle."""
+    if not getattr(ui_state, "lane_line_visualizer_overlay", False):
+      return
+    sm = ui_state.sm
+    if sm.recv_frame.get("laneLineClassificationSP", 0) <= 0 or not sm.valid.get("laneLineClassificationSP", False):
+      return
+    msg = sm["laneLineClassificationSP"]
+    if not msg.valid:
+      return
+
+    # left ego line -> laneLines[1], right ego line -> laneLines[2]
+    for idx, line in ((1, msg.left), (2, msg.right)):
+      if idx >= len(self._lane_lines):
+        continue
+      pts = self._lane_lines[idx].projected_points
+      if pts.size == 0:
+        continue
+      r, g, b = self._LL_CLASS_RGB.get(int(line.lineType), (150, 150, 150))
+      alpha = int(np.clip(0.45 + 0.45 * float(line.confidence), 0.3, 0.9) * 255)
+      draw_polygon(self._rect, pts, rl.Color(r, g, b, alpha))
 
   def _draw_path(self, sm):
     """Draw path with dynamic coloring based on mode and throttle state."""

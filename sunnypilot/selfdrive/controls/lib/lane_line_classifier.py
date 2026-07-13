@@ -82,6 +82,24 @@ RIGHT_EGO_LINE = 2
 
 
 @dataclass
+class LaneLineClassifierConfig:
+  """Live-tunable knobs. Defaults mirror the module constants; the daemon
+  overrides these from params so they can be tuned from the menu."""
+  sample_x_max: float = SAMPLE_X_MAX
+  min_contrast: float = MIN_CONTRAST
+  min_valid_frac: float = MIN_VALID_FRAC
+  solid_duty: float = SOLID_DUTY
+  broken_duty_lo: float = BROKEN_DUTY_LO
+  broken_duty_hi: float = BROKEN_DUTY_HI
+  min_period_m: float = MIN_PERIOD_M
+  max_period_m: float = MAX_PERIOD_M
+  min_autocorr: float = MIN_AUTOCORR
+
+
+DEFAULT_CONFIG = LaneLineClassifierConfig()
+
+
+@dataclass
 class LaneLineResult:
   line_type: LaneLineType = LaneLineType.UNKNOWN
   confidence: float = 0.0       # 0..1
@@ -114,14 +132,14 @@ def _project(points_dev: np.ndarray, transform: np.ndarray) -> np.ndarray:
   return out
 
 
-def _resample_line_uniform_x(line_x, line_y, line_z, camera_offset: float):
+def _resample_line_uniform_x(line_x, line_y, line_z, camera_offset: float, sample_x_max: float = SAMPLE_X_MAX):
   """Interpolate the 3D line onto a uniform grid of forward distance x (m)."""
   x = np.asarray(line_x, dtype=np.float64)
   y = np.asarray(line_y, dtype=np.float64) + camera_offset
   z = np.asarray(line_z, dtype=np.float64)
   if x.size < 2:
     return None
-  x_hi = min(SAMPLE_X_MAX, float(x[-1]))
+  x_hi = min(sample_x_max, float(x[-1]))
   if x_hi <= SAMPLE_X_MIN + SAMPLE_STEP_M:
     return None
   xs = np.arange(SAMPLE_X_MIN, x_hi, SAMPLE_STEP_M, dtype=np.float64)
@@ -166,7 +184,8 @@ def _perp_contrast(frame_y: np.ndarray, uv: np.ndarray) -> tuple[np.ndarray, np.
   return contrast, valid
 
 
-def _autocorr_period(present: np.ndarray) -> tuple[float, float]:
+def _autocorr_period(present: np.ndarray, min_period_m: float = MIN_PERIOD_M,
+                     max_period_m: float = MAX_PERIOD_M) -> tuple[float, float]:
   """Estimate dash period (m) and normalised autocorrelation strength.
 
   ``present`` is the uniform-in-metres binary marking signal (step SAMPLE_STEP_M).
@@ -180,8 +199,8 @@ def _autocorr_period(present: np.ndarray) -> tuple[float, float]:
   if ac[0] <= 0:
     return 0.0, 0.0
   ac = ac / ac[0]
-  lo = max(1, int(round(MIN_PERIOD_M / SAMPLE_STEP_M)))
-  hi = min(ac.size - 1, int(round(MAX_PERIOD_M / SAMPLE_STEP_M)))
+  lo = max(1, int(round(min_period_m / SAMPLE_STEP_M)))
+  hi = min(ac.size - 1, int(round(max_period_m / SAMPLE_STEP_M)))
   if hi <= lo:
     return 0.0, 0.0
   band = ac[lo:hi + 1]
@@ -190,15 +209,19 @@ def _autocorr_period(present: np.ndarray) -> tuple[float, float]:
 
 
 def classify_line(frame_y: np.ndarray, line_x, line_y, line_z,
-                  transform: np.ndarray, camera_offset: float = 0.0) -> LaneLineResult:
+                  transform: np.ndarray, camera_offset: float = 0.0,
+                  cfg: LaneLineClassifierConfig | None = None) -> LaneLineResult:
   """Classify a single lane line as SOLID / BROKEN / UNKNOWN.
 
   frame_y     : HxW uint8/float luminance (Y) channel of the road camera.
   line_x/y/z  : the modelV2 lane-line polyline (device/calib frame, metres).
   transform   : 3x3 device->image matrix (UI ``calib_transform``).
   camera_offset: lateral offset added to y, matching model_renderer.
+  cfg         : live-tunable thresholds; defaults to DEFAULT_CONFIG.
   """
-  grid = _resample_line_uniform_x(line_x, line_y, line_z, camera_offset)
+  if cfg is None:
+    cfg = DEFAULT_CONFIG
+  grid = _resample_line_uniform_x(line_x, line_y, line_z, camera_offset, cfg.sample_x_max)
   if grid is None:
     return LaneLineResult()
 
@@ -208,31 +231,31 @@ def classify_line(frame_y: np.ndarray, line_x, line_y, line_z,
   n = contrast.size
   valid_frac = float(valid.mean()) if n else 0.0
   res = LaneLineResult(valid_frac=valid_frac, n_samples=n, contrast=contrast)
-  if valid_frac < MIN_VALID_FRAC:
+  if valid_frac < cfg.min_valid_frac:
     return res  # UNKNOWN
 
-  present = valid & (contrast >= MIN_CONTRAST)
+  present = valid & (contrast >= cfg.min_contrast)
   res.present = present
   vpresent = present[valid]
   duty = float(vpresent.mean()) if vpresent.size else 0.0
   res.duty = duty
 
-  period_m, ac_strength = _autocorr_period(present)
+  period_m, ac_strength = _autocorr_period(present, cfg.min_period_m, cfg.max_period_m)
 
-  if duty < BROKEN_DUTY_LO:
+  if duty < cfg.broken_duty_lo:
     # almost nothing there: worn line, wrong projection, or no marking
     res.line_type = LaneLineType.UNKNOWN
     res.confidence = 0.0
     return res
 
-  if duty >= SOLID_DUTY:
+  if duty >= cfg.solid_duty:
     res.line_type = LaneLineType.SOLID
-    res.confidence = float(np.clip((duty - SOLID_DUTY) / (1 - SOLID_DUTY) * 0.5 + 0.5, 0, 1))
+    res.confidence = float(np.clip((duty - cfg.solid_duty) / (1 - cfg.solid_duty) * 0.5 + 0.5, 0, 1))
     res.period_m = 0.0
     return res
 
   # mid-band duty: dashed if there's a plausible, strong period
-  if BROKEN_DUTY_LO <= duty <= BROKEN_DUTY_HI and ac_strength >= MIN_AUTOCORR and period_m > 0:
+  if cfg.broken_duty_lo <= duty <= cfg.broken_duty_hi and ac_strength >= cfg.min_autocorr and period_m > 0:
     res.line_type = LaneLineType.BROKEN
     res.period_m = period_m
     res.confidence = float(np.clip(ac_strength, 0, 1))
@@ -280,15 +303,15 @@ class LaneLineClassifier:
     self._right = _Debounce()
 
   def update(self, frame_y: np.ndarray, modelV2, transform: np.ndarray,
-             camera_offset: float = 0.0) -> LaneChangeGate:
+             camera_offset: float = 0.0, cfg: LaneLineClassifierConfig | None = None) -> LaneChangeGate:
     lines = list(modelV2.laneLines)
     gate = LaneChangeGate()
     if len(lines) > LEFT_EGO_LINE:
       ll = lines[LEFT_EGO_LINE]
-      gate.left = classify_line(frame_y, ll.x, ll.y, ll.z, transform, camera_offset)
+      gate.left = classify_line(frame_y, ll.x, ll.y, ll.z, transform, camera_offset, cfg)
     if len(lines) > RIGHT_EGO_LINE:
       rl = lines[RIGHT_EGO_LINE]
-      gate.right = classify_line(frame_y, rl.x, rl.y, rl.z, transform, camera_offset)
+      gate.right = classify_line(frame_y, rl.x, rl.y, rl.z, transform, camera_offset, cfg)
 
     gate.left_crossable = self._left.update(gate.left.crossable)
     gate.right_crossable = self._right.update(gate.right.crossable)

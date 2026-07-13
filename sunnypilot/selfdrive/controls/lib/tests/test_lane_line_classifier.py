@@ -12,7 +12,7 @@ camera or route required.
 import numpy as np
 
 from sunnypilot.selfdrive.controls.lib.lane_line_classifier import (
-  LaneLineType, classify_line, LaneLineClassifier,
+  LaneLineType, classify_line, LaneLineClassifier, LaneLineClassifierConfig,
   SAMPLE_X_MIN, SAMPLE_X_MAX,
 )
 
@@ -92,6 +92,20 @@ def test_short_line_is_unknown():
   frame, _, _, _ = _render(solid=True)
   res = classify_line(frame, [1.0, 2.0], [1.85, 1.85], [CAM_Z, CAM_Z], TRANSFORM)
   assert res.line_type == LaneLineType.UNKNOWN
+
+
+def test_config_overrides_are_honored():
+  frame, x, y, z = _render(solid=False, paint_m=3.0, period_m=12.0)
+  # default config -> BROKEN
+  assert classify_line(frame, x, y, z, TRANSFORM).line_type == LaneLineType.BROKEN
+  # demanding near-perfect periodicity -> no longer trusted as BROKEN
+  strict = LaneLineClassifierConfig(min_autocorr=0.99)
+  assert classify_line(frame, x, y, z, TRANSFORM, cfg=strict).line_type != LaneLineType.BROKEN
+  # a solid line with an unreachable solid-duty threshold is no longer SOLID
+  fs, sx, sy, sz = _render(solid=True)
+  assert classify_line(fs, sx, sy, sz, TRANSFORM).line_type == LaneLineType.SOLID
+  never_solid = LaneLineClassifierConfig(solid_duty=1.01)
+  assert classify_line(fs, sx, sy, sz, TRANSFORM, cfg=never_solid).line_type != LaneLineType.SOLID
 
 
 class _FakeLine:

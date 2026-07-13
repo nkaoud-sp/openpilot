@@ -177,6 +177,13 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LaneEdgeFilterMode", {PERSISTENT | BACKUP, INT, "0"}},      // edge-lane blocking filter: 0=None 1=Width 2=Separation 3=Both(AND) 4=Both(OR)
     {"LaneLineVisualizer", {PERSISTENT | BACKUP, BOOL, "0"}},         // standalone solid-vs-broken lane-line classifier process (UI/debug)
     {"LaneLineVisualizerReadout", {PERSISTENT | BACKUP, BOOL, "0"}},  // on-road readout for lane-line solid/broken classification
+    {"LaneLineVisualizerOverlay", {PERSISTENT | BACKUP, BOOL, "0"}},  // colored polyline overlay on the ego lane lines (red=solid, green=broken)
+    {"LaneLineMinContrast", {PERSISTENT | BACKUP, INT, "18"}},        // marking-present luminance contrast threshold (5..60 counts)
+    {"LaneLineSolidDuty", {PERSISTENT | BACKUP, INT, "80"}},          // duty %% at/above which a line is SOLID (50..99)
+    {"LaneLineMinAutocorr", {PERSISTENT | BACKUP, INT, "30"}},        // min periodicity strength %% to call BROKEN (10..90)
+    {"LaneLineMinPeriodM", {PERSISTENT | BACKUP, INT, "3"}},          // min plausible dash period, metres (1..10)
+    {"LaneLineMaxPeriodM", {PERSISTENT | BACKUP, INT, "30"}},         // max plausible dash period, metres (12..60)
+    {"LaneLineSampleMaxM", {PERSISTENT | BACKUP, INT, "60"}},         // far end of the classified window, metres (20..100)
     {"VisualVehicleDetector", {PERSISTENT | BACKUP, BOOL, "0"}},       // standalone visual detector process for UI/debug validation
     {"VisualVehicleDetectorReadout", {PERSISTENT | BACKUP, BOOL, "0"}}, // large on-road readout for detector status/debug
     {"VisualVehicleDetectorCarWidget", {PERSISTENT | BACKUP, BOOL, "0"}}, // replace the readout panels with a top-down car widget
