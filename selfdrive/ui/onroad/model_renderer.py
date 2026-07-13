@@ -294,7 +294,8 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
       draw_polygon(self._rect, road_edge.projected_points, color)
 
   # LaneLineType (sunnypilot lane_line_classifier): 0=unknown 1=broken 2=solid 3=double
-  _LL_CLASS_RGB = {0: (150, 150, 150), 1: (0, 220, 110), 2: (255, 70, 70), 3: (255, 70, 70)}
+  # Solid is purple (not red) so it doesn't read as a road edge, which is drawn red.
+  _LL_CLASS_RGB = {0: (150, 150, 150), 1: (0, 220, 110), 2: (190, 90, 240), 3: (190, 90, 240)}
 
   def _draw_lane_line_classification_overlay(self):
     """Recolor the two ego lane lines by the solid/broken classification

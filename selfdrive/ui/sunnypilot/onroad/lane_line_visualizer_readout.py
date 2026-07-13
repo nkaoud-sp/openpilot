@@ -18,17 +18,21 @@ from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 
 STALE_AFTER_S = 1.0
+# Nudge the panel left off the right edge. ~1 cm on the comma3/3X display.
+PANEL_LEFT_SHIFT_PX = 90
 
 _GREEN = rl.Color(0, 220, 110, 255)
 _AMBER = rl.Color(255, 180, 0, 255)
 _RED = rl.Color(255, 70, 70, 255)
 _WHITE = rl.Color(255, 255, 255, 255)
 _DIM = rl.Color(190, 190, 190, 255)
+_PURPLE = rl.Color(190, 90, 240, 255)
 _BG = rl.Color(0, 0, 0, 175)
 
 # LaneLineType (see lane_line_classifier.py): 0=unknown 1=broken 2=solid 3=double
+# Solid is purple to match the overlay (red is used for road edges).
 _TYPE_NAME = {0: "UNKNOWN", 1: "BROKEN", 2: "SOLID", 3: "DOUBLE"}
-_TYPE_COLOR = {0: _DIM, 1: _GREEN, 2: _RED, 3: _RED}
+_TYPE_COLOR = {0: _DIM, 1: _GREEN, 2: _PURPLE, 3: _PURPLE}
 
 
 class LaneLineVisualizerReadout:
@@ -105,7 +109,7 @@ class LaneLineVisualizerReadout:
     panel_w = pad + content_w + pad
     panel_h = pad + title_size + 16 + len(rows) * row_h + (len(rows) - 1) * row_gap + pad
 
-    x = rect.x + rect.width - panel_w - 36
+    x = rect.x + rect.width - panel_w - 36 - PANEL_LEFT_SHIFT_PX
     y = rect.y + 120
 
     rl.draw_rectangle_rounded(rl.Rectangle(x, y, panel_w, panel_h), 0.16, 10, fade(_BG))

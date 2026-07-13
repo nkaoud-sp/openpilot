@@ -39,7 +39,7 @@ class LaneLineVisualizerSettingsLayout(Widget):
     self._overlay = toggle_item_sp(
       title=lambda: tr("Show Lane Line Overlay"),
       description=lambda: tr("Recolor the two ego lane lines on the driving view by classification: "
-                            "red = solid (not crossable), green = broken/dashed (crossable), gray = unknown. "
+                            "purple = solid (not crossable), green = broken/dashed (crossable), gray = unknown. "
                             "Opacity scales with confidence."),
       param="LaneLineVisualizerOverlay",
     )
