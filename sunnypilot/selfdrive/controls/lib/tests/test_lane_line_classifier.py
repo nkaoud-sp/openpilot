@@ -119,6 +119,28 @@ def test_short_occlusion_does_not_break_solid_line():
   assert res.line_type == LaneLineType.SOLID, res
 
 
+def test_fragmented_solid_line_prefers_solid():
+  frame, x, y, z = _render(solid=True)
+  for x_start, x_end in ((16.0, 16.4), (26.0, 26.4), (38.0, 38.3)):
+    uv0 = _project([x_start, 1.85, CAM_Z])
+    uv1 = _project([x_end, 1.85, CAM_Z])
+    assert uv0 is not None and uv1 is not None
+    x0, y0 = int(min(uv0[0], uv1[0])) - 6, int(min(uv0[1], uv1[1])) - 6
+    x1, y1 = int(max(uv0[0], uv1[0])) + 6, int(max(uv0[1], uv1[1])) + 6
+    _occlude(frame, x0, y0, x1, y1)
+  cfg = LaneLineClassifierConfig(solid_duty=0.95)
+  res = classify_line(frame, x, y, z, TRANSFORM, cfg=cfg)
+  assert res.line_type == LaneLineType.SOLID, res
+  assert res.duty < cfg.solid_duty, res.duty
+
+
+def test_broken_line_not_misclassified_as_continuous_solid():
+  frame, x, y, z = _render(solid=False, paint_m=5.0, period_m=12.0)
+  cfg = LaneLineClassifierConfig(solid_duty=0.90)
+  res = classify_line(frame, x, y, z, TRANSFORM, cfg=cfg)
+  assert res.line_type == LaneLineType.BROKEN, res
+
+
 def test_blank_frame_is_unknown():
   rng = np.random.default_rng(1)
   frame = (ROAD_LUMA + rng.normal(0, 6, size=(FRAME_H, FRAME_W))).clip(0, 255).astype(np.uint8)
@@ -144,7 +166,7 @@ def test_config_overrides_are_honored():
   # a solid line with an unreachable solid-duty threshold is no longer SOLID
   fs, sx, sy, sz = _render(solid=True)
   assert classify_line(fs, sx, sy, sz, TRANSFORM).line_type == LaneLineType.SOLID
-  never_solid = LaneLineClassifierConfig(solid_duty=1.01)
+  never_solid = LaneLineClassifierConfig(solid_duty=1.01, solid_contig_frac=2.0, solid_top2_frac=2.0)
   assert classify_line(fs, sx, sy, sz, TRANSFORM, cfg=never_solid).line_type != LaneLineType.SOLID
 
 

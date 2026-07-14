@@ -75,6 +75,9 @@ BROKEN_DUTY_HI = 0.75
 MIN_PERIOD_M = 3.0       # plausible dash period range (line+gap), metres
 MAX_PERIOD_M = 30.0
 MIN_AUTOCORR = 0.30      # normalised autocorrelation peak to trust periodicity
+SOLID_CONTIG_FRAC = 0.30  # longest continuous present-run as a fraction of valid samples
+SOLID_MAX_GAP_FRAC = 0.18 # largest absent run allowed for continuity-biased SOLID
+SOLID_TOP2_FRAC = 0.60    # combined coverage of the two largest present-runs
 
 # --- debounce (mirrors lane_position.py hysteresis) --------------------------
 COUNTER_ON = 3
@@ -99,6 +102,9 @@ class LaneLineClassifierConfig:
   min_period_m: float = MIN_PERIOD_M
   max_period_m: float = MAX_PERIOD_M
   min_autocorr: float = MIN_AUTOCORR
+  solid_contig_frac: float = SOLID_CONTIG_FRAC
+  solid_max_gap_frac: float = SOLID_MAX_GAP_FRAC
+  solid_top2_frac: float = SOLID_TOP2_FRAC
   center_search_px: float = CENTER_SEARCH_PX
   contrast_smooth_window: int = CONTRAST_SMOOTH_WINDOW
   max_repair_gap_m: float = MAX_REPAIR_GAP_M
@@ -286,6 +292,20 @@ def _repair_short_gaps(present: np.ndarray, valid: np.ndarray, max_gap_m: float)
   return out
 
 
+def _run_lengths(mask: np.ndarray) -> list[int]:
+  runs: list[int] = []
+  run = 0
+  for value in mask:
+    if value:
+      run += 1
+    elif run:
+      runs.append(run)
+      run = 0
+  if run:
+    runs.append(run)
+  return runs
+
+
 def _autocorr_period(present: np.ndarray, min_period_m: float = MIN_PERIOD_M,
                      max_period_m: float = MAX_PERIOD_M) -> tuple[float, float]:
   """Estimate dash period (m) and normalised autocorrelation strength.
@@ -343,8 +363,14 @@ def classify_line(frame_y: np.ndarray, line_x, line_y, line_z,
   vpresent = present[valid]
   duty = float(vpresent.mean()) if vpresent.size else 0.0
   res.duty = duty
+  valid_n = int(vpresent.size)
 
   period_m, ac_strength = _autocorr_period(present, cfg.min_period_m, cfg.max_period_m)
+  present_runs = _run_lengths(vpresent)
+  absent_runs = _run_lengths(~vpresent) if valid_n else []
+  longest_present_frac = (max(present_runs) / valid_n) if present_runs and valid_n else 0.0
+  longest_absent_frac = (max(absent_runs) / valid_n) if absent_runs and valid_n else 0.0
+  top2_present_frac = (sum(sorted(present_runs, reverse=True)[:2]) / valid_n) if present_runs and valid_n else 0.0
 
   if duty < cfg.broken_duty_lo:
     # almost nothing there: worn line, wrong projection, or no marking
@@ -355,6 +381,21 @@ def classify_line(frame_y: np.ndarray, line_x, line_y, line_z,
   if duty >= cfg.solid_duty:
     res.line_type = LaneLineType.SOLID
     res.confidence = float(np.clip((duty - cfg.solid_duty) / (1 - cfg.solid_duty) * 0.5 + 0.5, 0, 1))
+    res.period_m = 0.0
+    return res
+
+  continuity_bias_solid = (
+    valid_n >= 8 and
+    duty >= max(cfg.broken_duty_hi - 0.10, 0.55) and
+    longest_present_frac >= cfg.solid_contig_frac and
+    top2_present_frac >= cfg.solid_top2_frac and
+    longest_absent_frac <= cfg.solid_max_gap_frac and
+    (period_m <= 0 or ac_strength < cfg.min_autocorr * 1.20)
+  )
+  if continuity_bias_solid:
+    res.line_type = LaneLineType.SOLID
+    contig_score = 0.55 + 0.35 * longest_present_frac + 0.20 * duty - 0.15 * longest_absent_frac
+    res.confidence = float(np.clip(contig_score, 0.0, 0.95))
     res.period_m = 0.0
     return res
 
