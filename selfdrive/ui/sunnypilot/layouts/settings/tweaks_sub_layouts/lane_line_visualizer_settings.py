@@ -43,6 +43,13 @@ class LaneLineVisualizerSettingsLayout(Widget):
                             "Opacity scales with confidence."),
       param="LaneLineVisualizerOverlay",
     )
+    self._scan_area = toggle_item_sp(
+      title=lambda: tr("Show Scan Area Border"),
+      description=lambda: tr("Outline the corridor the classifier actually samples around each ego lane "
+                            "line (amber). Troubleshooting aid: if the painted marking sits outside the "
+                            "border, the projection/camera offset is off and the classifier can't see it."),
+      param="LaneLineVisualizerScanArea",
+    )
 
     # --- Tuning. These apply live (~1 s) to the classifier process. Watch the
     # readout's duty / period / confidence numbers to know which to move. ---
@@ -87,6 +94,7 @@ class LaneLineVisualizerSettingsLayout(Widget):
     return [
       self._readout,
       self._overlay,
+      self._scan_area,
       self._min_contrast,
       self._solid_duty,
       self._min_autocorr,

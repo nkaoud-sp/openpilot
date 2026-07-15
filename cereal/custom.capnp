@@ -615,6 +615,11 @@ struct LaneLineClassificationSP @0x9ccdc8676701b412 {
   leftCrossable @8 :Bool;   # debounced: safe to cross to the left
   rightCrossable @9 :Bool;  # debounced: safe to cross to the right
 
+  # scan geometry actually used, so the UI can outline the assessed area
+  scanHalfM @10 :Float32;    # lateral half-width of the sampled strip (m)
+  sampleXMinM @11 :Float32;  # near end of the classified window (m)
+  sampleXMaxM @12 :Float32;  # far end of the classified window (m)
+
   struct Line {
     lineType @0 :UInt8;      # 0=unknown, 1=broken, 2=solid, 3=double
     confidence @1 :Float32;  # 0..1

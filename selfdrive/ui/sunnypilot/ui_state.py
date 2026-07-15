@@ -146,6 +146,7 @@ class UIStateSP:
     self.visual_vehicle_detector_readout = self.params.get_bool("VisualVehicleDetectorReadout")
     self.lane_line_visualizer_readout = self.params.get_bool("LaneLineVisualizerReadout")
     self.lane_line_visualizer_overlay = self.params.get_bool("LaneLineVisualizerOverlay")
+    self.lane_line_visualizer_scan_area = self.params.get_bool("LaneLineVisualizerScanArea")
     self.visual_vehicle_detector_car_widget = self.params.get_bool("VisualVehicleDetectorCarWidget")
     self.launch_readout = self.params.get_bool("LaunchReadout")
     self.launch_assist = self.params.get_bool("LaunchAssist")

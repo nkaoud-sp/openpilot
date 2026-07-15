@@ -33,7 +33,7 @@ from openpilot.common.transformations.camera import DEVICE_CAMERAS, view_frame_f
 from openpilot.common.transformations.orientation import rot_from_euler
 
 from sunnypilot.selfdrive.controls.lib.lane_line_classifier import (
-  LaneLineClassifier, LaneLineClassifierConfig, DEFAULT_CONFIG,
+  LaneLineClassifier, LaneLineClassifierConfig, DEFAULT_CONFIG, SAMPLE_X_MIN,
 )
 
 SERVICE = "laneLineClassificationSP"
@@ -131,6 +131,10 @@ class LaneLineClassifierD:
     st.reason = reason
     st.hz = float(self._hz)
     st.cameraOffset = float(camera_offset)
+    # actual scan geometry, so the UI can outline the assessed corridor
+    st.scanHalfM = float(self._cfg.scan_half_m)
+    st.sampleXMinM = float(SAMPLE_X_MIN)
+    st.sampleXMaxM = float(self._cfg.sample_x_max)
     if gate is not None:
       for dst, src in ((st.left, gate.left), (st.right, gate.right)):
         dst.lineType = int(src.line_type)

@@ -77,10 +77,14 @@ labels match.
 
 ## The one thing to validate first
 Everything rests on the projection landing the sampling strip on the paint —
-the scan tolerates ~0.3 m of error, not more. If labels look random, the
-transform/camera-offset is off, not the classifier — check `build_transform`
-(in the replay harness) matches your camera and that `--camera-offset` matches
-your `CameraOffset` param.
+the scan tolerates ~0.3 m of error, not more. On-device, enable **Show Scan
+Area Border** in the Lane Line Visualizer settings: it outlines the corridor
+the classifier actually samples (published as `scanHalfM` / `sampleXMinM` /
+`sampleXMaxM` on the message) in amber on the driving view. If the painted
+marking sits outside the amber border, the projection/camera-offset is off,
+not the thresholds. Offline, check `build_transform` (in the replay harness)
+matches your camera and that `--camera-offset` matches your `CameraOffset`
+param.
 
 ## Tunables (in `lane_line_classifier.py`)
 Menu-exposed (via params): `MIN_CONTRAST`, `SOLID_DUTY`, `MIN_PERIOD_M`,

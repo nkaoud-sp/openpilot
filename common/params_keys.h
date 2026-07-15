@@ -178,6 +178,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LaneLineVisualizer", {PERSISTENT | BACKUP, BOOL, "0"}},         // standalone solid-vs-broken lane-line classifier process (UI/debug)
     {"LaneLineVisualizerReadout", {PERSISTENT | BACKUP, BOOL, "0"}},  // on-road readout for lane-line solid/broken classification
     {"LaneLineVisualizerOverlay", {PERSISTENT | BACKUP, BOOL, "0"}},  // colored polyline overlay on the ego lane lines (red=solid, green=broken)
+    {"LaneLineVisualizerScanArea", {PERSISTENT | BACKUP, BOOL, "0"}}, // amber border outlining the corridor the classifier samples
     {"LaneLineMinContrast", {PERSISTENT | BACKUP, INT, "18"}},        // marking-present luminance contrast threshold (5..60 counts)
     {"LaneLineSolidDuty", {PERSISTENT | BACKUP, INT, "80"}},          // duty %% at/above which a line is SOLID (50..99)
     {"LaneLineMinAutocorr", {PERSISTENT | BACKUP, INT, "30"}},        // min periodicity strength %% to call BROKEN (10..90)

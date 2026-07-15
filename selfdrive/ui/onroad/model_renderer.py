@@ -134,6 +134,7 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
     # Draw elements
     self._draw_lane_lines()
     self._draw_lane_line_classification_overlay()
+    self._draw_lane_line_scan_border()
     self._draw_path(sm)
 
     if render_lead_indicator and radar_state:
@@ -320,6 +321,63 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
       r, g, b = self._LL_CLASS_RGB.get(int(line.lineType), (150, 150, 150))
       alpha = int(np.clip(0.45 + 0.45 * float(line.confidence), 0.3, 0.9) * 255)
       draw_polygon(self._rect, pts, rl.Color(r, g, b, alpha))
+
+  _SCAN_BORDER_COLOR = rl.Color(255, 180, 0, 210)   # amber, distinct from paint/edges/classes
+  _SCAN_BORDER_THICKNESS = 2.0
+  _SCAN_BORDER_SEGMENTS = 32                        # rail resolution over the sampled window
+
+  def _draw_lane_line_scan_border(self):
+    """Outline the corridor the lane-line classifier samples around each ego line.
+
+    Troubleshooting aid (Lane Line Visualizer settings): the classifier's
+    laneLineClassificationSP message carries the scan geometry it actually used
+    (lateral half-width and near/far window), and this draws that corridor's
+    border on the driving view. If the painted marking sits outside the amber
+    border, the projection/camera-offset is off and the classifier cannot see
+    the paint - which distinguishes projection problems from threshold tuning.
+    """
+    if not getattr(ui_state, "lane_line_visualizer_scan_area", False):
+      return
+    sm = ui_state.sm
+    if sm.recv_frame.get("laneLineClassificationSP", 0) <= 0 or not sm.valid.get("laneLineClassificationSP", False):
+      return
+    msg = sm["laneLineClassificationSP"]
+    if not msg.valid:
+      return
+    scan_half = float(msg.scanHalfM)
+    x_min, x_max = float(msg.sampleXMinM), float(msg.sampleXMaxM)
+    if scan_half <= 0.0 or x_max <= x_min:
+      return
+
+    # left ego line -> laneLines[1], right ego line -> laneLines[2].
+    # raw_points already include the UI's CameraOffset, matching what the
+    # classifier adds to the same modelV2 polyline before sampling.
+    for idx in (1, 2):
+      if idx >= len(self._lane_lines):
+        continue
+      raw = self._lane_lines[idx].raw_points
+      if raw.shape[0] < 2:
+        continue
+      xs = raw[:, 0]
+      x_hi = min(x_max, float(xs[-1]))
+      if x_hi <= x_min:
+        continue
+      gx = np.linspace(x_min, x_hi, self._SCAN_BORDER_SEGMENTS, dtype=np.float32)
+      gy = np.interp(gx, xs, raw[:, 1])
+      gz = np.interp(gx, xs, raw[:, 2])
+
+      rails = []
+      for side in (-1.0, 1.0):
+        screen = [self._map_to_screen(x, y + side * scan_half, z) for x, y, z in zip(gx, gy, gz, strict=True)]
+        rails.append(screen)
+        for p0, p1 in zip(screen[:-1], screen[1:], strict=True):
+          if p0 is not None and p1 is not None:
+            rl.draw_line_ex(p0, p1, self._SCAN_BORDER_THICKNESS, self._SCAN_BORDER_COLOR)
+      # end caps close the border where both rails made it on screen
+      for cap_idx in (0, -1):
+        p0, p1 = rails[0][cap_idx], rails[1][cap_idx]
+        if p0 is not None and p1 is not None:
+          rl.draw_line_ex(p0, p1, self._SCAN_BORDER_THICKNESS, self._SCAN_BORDER_COLOR)
 
   def _draw_path(self, sm):
     """Draw path with dynamic coloring based on mode and throttle state."""
