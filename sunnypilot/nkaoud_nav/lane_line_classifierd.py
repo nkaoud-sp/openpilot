@@ -20,6 +20,7 @@ and periodicity. UI/debug only for now; it does not gate lane changes.
 from __future__ import annotations
 
 import time
+from collections import OrderedDict
 
 import numpy as np
 
@@ -37,7 +38,10 @@ from sunnypilot.selfdrive.controls.lib.lane_line_classifier import (
 
 SERVICE = "laneLineClassificationSP"
 CALIBRATED = 1  # cereal LiveCalibrationData.Status.calibrated
-PUBLISH_HZ = 5.0
+LOOP_HZ = 20.0        # camera drain rate; must keep up with camerad
+PUBLISH_HZ = 5.0      # classification/publish rate
+FRAME_CACHE = 8       # recent Y-planes kept for frameId matching (~0.4 s)
+FRAME_ID_SLOP = 2     # accept a cached frame within this many ids of the model's
 DEFAULT_CAMERA = ("tici", "ar0231")
 
 
@@ -49,11 +53,15 @@ def build_transform(rpy_calib, intrinsics) -> np.ndarray:
 
 
 def nv12_y_plane(buf) -> np.ndarray:
-  """Extract the full-res luminance (Y) plane from an NV12 VisionBuf."""
+  """Extract the full-res luminance (Y) plane from an NV12 VisionBuf.
+
+  Returns a copy: the underlying VisionIPC buffer is recycled by camerad, so a
+  view would be silently overwritten while we're still sampling it.
+  """
   width, height, stride = int(buf.width), int(buf.height), int(buf.stride)
   flat = np.frombuffer(buf.data, dtype=np.uint8)
   y = flat[:stride * height].reshape(height, stride)
-  return y[:, :width]
+  return y[:, :width].copy()
 
 
 class LaneLineClassifierD:
@@ -142,10 +150,26 @@ class LaneLineClassifierD:
       self._pub_count = 0
       self._pub_window_t = now
 
+  def _publish_throttled(self, gate, frame_id: int, reason: str, valid: bool, camera_offset: float):
+    """Publish, but never faster than PUBLISH_HZ (the loop runs at LOOP_HZ)."""
+    now = time.monotonic()
+    if now - self._last_pub_t < 1.0 / PUBLISH_HZ - 0.005:
+      return
+    self._last_pub_t = now
+    self._publish(gate, frame_id, reason, valid, camera_offset)
+
   def run(self):
-    rk = Ratekeeper(PUBLISH_HZ)
+    # the loop runs at camera rate so the non-conflating VisionIPC queue never
+    # overflows; classification/publishing is throttled down to PUBLISH_HZ
+    rk = Ratekeeper(LOOP_HZ)
     stream = VisionStreamType.VISION_STREAM_ROAD
     vc: VisionIpcClient | None = None
+    # recent Y-planes keyed by frame_id, so each modelV2 is classified against
+    # the exact frame it was computed from. Pairing the newest camera frame
+    # with the newest model output (the old behaviour) misaligns the polyline
+    # by a few frames: metres of forward travel, and on curves enough lateral
+    # error to pull the far-field scan off the paint entirely.
+    frames: OrderedDict[int, np.ndarray] = OrderedDict()
     while True:
       self.sm.update(0)
       self._resolve_camera()
@@ -157,39 +181,66 @@ class LaneLineClassifierD:
           self.rpy_calib = list(lc.rpyCalib)
 
       if vc is None or not vc.is_connected():
+        frames.clear()
         if stream not in VisionIpcClient.available_streams("camerad", block=False):
-          self._publish(None, 0, "camera_unavailable", False, 0.0)
+          self._publish_throttled(None, 0, "camera_unavailable", False, 0.0)
           rk.keep_time()
           continue
-        vc = VisionIpcClient("camerad", stream, True)
+        vc = VisionIpcClient("camerad", stream, False)
         if not vc.connect(False):
-          self._publish(None, 0, "waiting_for_vipc", False, 0.0)
+          self._publish_throttled(None, 0, "waiting_for_vipc", False, 0.0)
           rk.keep_time()
           continue
 
-      buf = vc.recv(timeout_ms=100)
-      if buf is None:
+      # drain everything queued since the last tick
+      timeout_ms = 20
+      while (buf := vc.recv(timeout_ms=timeout_ms)) is not None:
+        timeout_ms = 0
+        frames[int(vc.frame_id)] = nv12_y_plane(buf)
+        while len(frames) > FRAME_CACHE:
+          frames.popitem(last=False)
+
+      if not frames:
         rk.keep_time()
         continue
+      newest_fid = next(reversed(frames))
 
       if self.rpy_calib is None:
-        self._publish(None, int(vc.frame_id), "waiting_for_calib", False, 0.0)
+        self._publish_throttled(None, newest_fid, "waiting_for_calib", False, 0.0)
         rk.keep_time()
         continue
       if not self.sm.seen["modelV2"]:
-        self._publish(None, int(vc.frame_id), "waiting_for_model", False, 0.0)
+        self._publish_throttled(None, newest_fid, "waiting_for_model", False, 0.0)
+        rk.keep_time()
+        continue
+
+      # classify at PUBLISH_HZ, on the frame the current model output describes
+      if time.monotonic() - self._last_pub_t < 1.0 / PUBLISH_HZ - 0.005:
+        rk.keep_time()
+        continue
+
+      model = self.sm["modelV2"]
+      model_fid = int(model.frameId)
+      frame_y = frames.get(model_fid)
+      if frame_y is None:
+        near = [fid for fid in frames if abs(fid - model_fid) <= FRAME_ID_SLOP]
+        if near:
+          frame_y = frames[max(near)]
+      if frame_y is None:
+        self._publish_throttled(None, newest_fid, "waiting_for_frame", False, 0.0)
         rk.keep_time()
         continue
 
       try:
-        frame_y = nv12_y_plane(buf)
         transform = build_transform(self.rpy_calib, self.intrinsics)
         camera_offset = self._camera_offset()
-        gate = self.clf.update(frame_y, self.sm["modelV2"], transform, camera_offset, self._cfg)
-        self._publish(gate, int(vc.frame_id), "ok", True, camera_offset)
+        gate = self.clf.update(frame_y, model, transform, camera_offset, self._cfg)
+        self._last_pub_t = time.monotonic()
+        self._publish(gate, model_fid, "ok", True, camera_offset)
       except Exception as e:
         cloudlog.exception("lane_line_classifierd update failed")
-        self._publish(None, int(vc.frame_id), f"exception: {e}", False, 0.0)
+        self._last_pub_t = time.monotonic()
+        self._publish(None, model_fid, f"exception: {e}", False, 0.0)
       rk.keep_time()
 
 

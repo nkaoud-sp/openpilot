@@ -25,9 +25,16 @@ Key ideas
 * Sample uniformly in **real-world metres** along the line (not image pixels),
   so the dash period is perspective-invariant and shows up as a clean
   autocorrelation peak regardless of distance.
-* Scan **perpendicular** to the projected line at each sample and take
-  (peak - background) contrast. The perpendicular scan crosses the marking, so
-  small lateral projection/calibration error still lands on the paint.
+* Scan laterally across the line **in real-world metres** too. On the real
+  road camera (tici fcam, ~2650 px focal length) a 13 cm marking is ~30 px wide
+  at 10 m and ~5 px at 60 m, so any fixed-pixel scan is either swallowed by the
+  paint near-field or misses it far-field. A constant-width world-space scan
+  keeps the paint at a constant *fraction* of the scan at every distance:
+  high percentile - median then measures paint-vs-road contrast everywhere,
+  and the scan width doubles as tolerance for projection/calibration error.
+* Marking presence is decided by contrast **and** signal-to-noise against the
+  local road texture (robust MAD estimate), so thresholds hold up across
+  day/night exposure and shadowed or washed-out frames.
 * Everything below the classification thresholds or with too little contrast is
   reported as ``UNKNOWN`` so the caller can fail safe (treat as not-crossable).
 
@@ -58,16 +65,19 @@ CROSSABLE_TYPES = (LaneLineType.BROKEN,)
 SAMPLE_X_MIN = 4.0       # start of the trusted window ahead (m)
 SAMPLE_X_MAX = 60.0      # end of the trusted window ahead (m); far field too few px
 SAMPLE_STEP_M = 0.5      # uniform along-line spacing (m); << typical dash period
-PERP_SCAN_PX = 7         # half-length of the perpendicular scan in image pixels
-PERP_SCAN_STEPS = 15     # samples across the perpendicular scan
-CENTER_SEARCH_PX = 4     # local recenter search around projected line (pixels)
-CENTER_SEARCH_STEPS = 5  # odd count so the unshifted centre is always tested
-CONTRAST_SMOOTH_WINDOW = 5
+SCAN_HALF_M = 0.45       # lateral scan half-width in world metres; also the
+                         # tolerance budget for projection/model/calib error
+SCAN_STEPS = 31          # samples across the lateral scan (~3 cm world spacing)
+MIN_INFRAME_FRAC = 0.7   # scan points that must land in-frame for a valid sample
 MAX_REPAIR_GAP_M = 1.0   # fill tiny missing gaps; well below a real dashed gap
 
 # --- classification tunables (TUNE ON REAL DATA) -----------------------------
-# Contrast = marking_peak - local_background, in 8-bit luminance counts.
-MIN_CONTRAST = 18.0      # a sample counts as "marking present" above this
+# Contrast = P90(scan) - median(scan), in 8-bit luminance counts. A sample
+# counts as "marking present" when contrast clears BOTH an absolute floor and
+# an SNR gate vs. the scan's own road texture (see classify_line), or - for
+# dim/washed-out paint - a lower floor at twice the SNR.
+MIN_CONTRAST = 18.0      # absolute contrast floor (8-bit counts)
+MIN_SNR = 3.0            # contrast / robust-noise gate
 MIN_VALID_FRAC = 0.35    # need this fraction of in-frame samples to decide at all
 SOLID_DUTY = 0.80        # duty (present fraction) at/above this with few gaps -> SOLID
 BROKEN_DUTY_LO = 0.10    # broken lines sit roughly in this duty band
@@ -77,7 +87,15 @@ MAX_PERIOD_M = 30.0
 MIN_AUTOCORR = 0.30      # normalised autocorrelation peak to trust periodicity
 SOLID_CONTIG_FRAC = 0.30  # longest continuous present-run as a fraction of valid samples
 SOLID_MAX_GAP_FRAC = 0.18 # largest absent run allowed for continuity-biased SOLID
-SOLID_TOP2_FRAC = 0.60    # combined coverage of the two largest present-runs
+SOLID_TOP2_FRAC = 0.50    # combined coverage of the two largest present-runs
+                          # (even a 9m/3m long-dash line only scores ~0.33 here,
+                          # so this cleanly separates fragmented-solid from broken)
+# run-length fallback for dashes whose spacing is too irregular for autocorr
+DASH_RUN_MIN_M = 0.5      # plausible painted dash length range (m)
+DASH_RUN_MAX_M = 12.0
+DASH_GAP_MIN_M = 1.5      # plausible gap length range (m); > repaired occlusions
+DASH_GAP_MAX_M = 25.0
+CONTRAST_SMOOTH_WINDOW = 3
 
 # --- debounce (mirrors lane_position.py hysteresis) --------------------------
 COUNTER_ON = 3
@@ -87,6 +105,7 @@ COUNTER_MAX = 6
 # Lane-line indexing in modelV2.laneLines (left -> right)
 LEFT_EGO_LINE = 1
 RIGHT_EGO_LINE = 2
+MIN_LINE_PROB = 0.3      # below this modelV2 doesn't really see a line
 
 
 @dataclass
@@ -95,6 +114,7 @@ class LaneLineClassifierConfig:
   overrides these from params so they can be tuned from the menu."""
   sample_x_max: float = SAMPLE_X_MAX
   min_contrast: float = MIN_CONTRAST
+  min_snr: float = MIN_SNR
   min_valid_frac: float = MIN_VALID_FRAC
   solid_duty: float = SOLID_DUTY
   broken_duty_lo: float = BROKEN_DUTY_LO
@@ -105,7 +125,7 @@ class LaneLineClassifierConfig:
   solid_contig_frac: float = SOLID_CONTIG_FRAC
   solid_max_gap_frac: float = SOLID_MAX_GAP_FRAC
   solid_top2_frac: float = SOLID_TOP2_FRAC
-  center_search_px: float = CENTER_SEARCH_PX
+  scan_half_m: float = SCAN_HALF_M
   contrast_smooth_window: int = CONTRAST_SMOOTH_WINDOW
   max_repair_gap_m: float = MAX_REPAIR_GAP_M
 
@@ -162,88 +182,55 @@ def _resample_line_uniform_x(line_x, line_y, line_z, camera_offset: float, sampl
   return np.stack([xs, ys, zs], axis=1)      # Nx3
 
 
-def _perp_contrast(frame_y: np.ndarray, uv: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-  """Sample perpendicular scans across the projected line.
+def _scan_contrast(frame_y: np.ndarray, grid: np.ndarray, transform: np.ndarray,
+                   scan_half_m: float = SCAN_HALF_M) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+  """Scan laterally across the line in world metres at each along-line sample.
 
-  Returns (contrast, valid) per along-line sample. ``contrast`` is
-  peak_luminance - median_luminance across a short perpendicular scan; ``valid``
-  marks samples whose scan stayed inside the frame.
+  At each grid point a constant-world-width strip perpendicular to the line is
+  projected into the image and sampled. Because the strip is fixed in metres,
+  the marking occupies the same fraction of the scan at every distance, so
+  P90 - median measures paint-vs-road contrast identically near and far, and a
+  projection error up to ~scan_half_m still keeps the paint inside the scan.
+
+  Returns (contrast, noise, valid) per along-line sample; ``noise`` is a robust
+  (MAD-based) estimate of the road texture inside the scan.
   """
   h, w = frame_y.shape[:2]
-  n = uv.shape[0]
+  n = grid.shape[0]
   contrast = np.zeros(n, dtype=np.float32)
+  noise = np.full(n, np.inf, dtype=np.float32)
   valid = np.zeros(n, dtype=np.bool_)
+  if n < 2:
+    return contrast, noise, valid
 
-  # image-space tangent from neighbouring projected points
-  tang = np.gradient(uv, axis=0)
-  norm = np.hypot(tang[:, 0], tang[:, 1])
-  with np.errstate(divide='ignore', invalid='ignore'):
-    tang_u = tang / norm[:, None]
-  perp = np.stack([-tang_u[:, 1], tang_u[:, 0]], axis=1)   # rotate 90 deg
+  # world-space unit normal of the line in the ground plane
+  tang = np.gradient(grid[:, :2], axis=0)
+  tang /= np.maximum(np.hypot(tang[:, 0], tang[:, 1]), 1e-9)[:, None]
+  perp = np.stack([-tang[:, 1], tang[:, 0]], axis=1)
 
-  offsets = np.linspace(-PERP_SCAN_PX, PERP_SCAN_PX, PERP_SCAN_STEPS)
-  for i in range(n):
-    if not np.all(np.isfinite(uv[i])) or not np.all(np.isfinite(perp[i])):
-      continue
-    sx = uv[i, 0] + perp[i, 0] * offsets
-    sy = uv[i, 1] + perp[i, 1] * offsets
-    ix = np.round(sx).astype(np.int64)
-    iy = np.round(sy).astype(np.int64)
-    inb = (ix >= 0) & (ix < w) & (iy >= 0) & (iy < h)
-    if inb.sum() < PERP_SCAN_STEPS // 2:
-      continue
-    vals = frame_y[iy[inb], ix[inb]].astype(np.float32)
-    contrast[i] = float(vals.max() - np.median(vals))
-    valid[i] = True
-  return contrast, valid
+  offsets = np.linspace(-scan_half_m, scan_half_m, SCAN_STEPS)
+  pts = np.empty((n, SCAN_STEPS, 3), dtype=np.float64)
+  pts[..., 0] = grid[:, None, 0] + perp[:, None, 0] * offsets
+  pts[..., 1] = grid[:, None, 1] + perp[:, None, 1] * offsets
+  pts[..., 2] = grid[:, None, 2]
 
+  uv = _project(pts.reshape(-1, 3), transform).reshape(n, SCAN_STEPS, 2)
+  ix = np.round(uv[..., 0])
+  iy = np.round(uv[..., 1])
+  inb = np.isfinite(ix) & np.isfinite(iy) & (ix >= 0) & (ix < w) & (iy >= 0) & (iy < h)
+  valid = inb.mean(axis=1) >= MIN_INFRAME_FRAC
+  if not valid.any():
+    return contrast, noise, valid
 
-def _perp_contrast_search(frame_y: np.ndarray, uv: np.ndarray,
-                          center_search_px: float = CENTER_SEARCH_PX) -> tuple[np.ndarray, np.ndarray]:
-  """Sample perpendicular scans with a small recenter search.
-
-  The line projection from modelV2 can be a few pixels off because of calibration
-  or model jitter. For each along-line sample, try a few nearby scan centres
-  along the local normal and keep the strongest paint-like response.
-  """
-  h, w = frame_y.shape[:2]
-  n = uv.shape[0]
-  contrast = np.zeros(n, dtype=np.float32)
-  valid = np.zeros(n, dtype=np.bool_)
-
-  tang = np.gradient(uv, axis=0)
-  norm = np.hypot(tang[:, 0], tang[:, 1])
-  with np.errstate(divide='ignore', invalid='ignore'):
-    tang_u = tang / norm[:, None]
-  perp = np.stack([-tang_u[:, 1], tang_u[:, 0]], axis=1)
-
-  offsets = np.linspace(-PERP_SCAN_PX, PERP_SCAN_PX, PERP_SCAN_STEPS)
-  centre_offsets = np.linspace(-center_search_px, center_search_px, CENTER_SEARCH_STEPS, dtype=np.float32)
-  for i in range(n):
-    if not np.all(np.isfinite(uv[i])) or not np.all(np.isfinite(perp[i])):
-      continue
-
-    best_score = -np.inf
-    best_valid = False
-    for centre_shift in centre_offsets:
-      centre = uv[i] + perp[i] * centre_shift
-      sx = centre[0] + perp[i, 0] * offsets
-      sy = centre[1] + perp[i, 1] * offsets
-      ix = np.round(sx).astype(np.int64)
-      iy = np.round(sy).astype(np.int64)
-      inb = (ix >= 0) & (ix < w) & (iy >= 0) & (iy < h)
-      if inb.sum() < PERP_SCAN_STEPS // 2:
-        continue
-      vals = frame_y[iy[inb], ix[inb]].astype(np.float32)
-      score = float(np.percentile(vals, 90) - np.median(vals))
-      if score > best_score:
-        best_score = score
-        best_valid = True
-
-    if best_valid:
-      contrast[i] = max(0.0, best_score)
-      valid[i] = True
-  return contrast, valid
+  vals = np.full((n, SCAN_STEPS), np.nan, dtype=np.float32)
+  vals[inb] = frame_y[iy[inb].astype(np.int64), ix[inb].astype(np.int64)]
+  v = vals[valid]
+  med = np.nanmedian(v, axis=1)
+  p90 = np.nanpercentile(v, 90, axis=1)
+  mad = np.nanmedian(np.abs(v - med[:, None]), axis=1)
+  contrast[valid] = np.maximum(p90 - med, 0.0).astype(np.float32)
+  noise[valid] = (1.4826 * mad + 0.5).astype(np.float32)   # +0.5: quantisation floor
+  return contrast, noise, valid
 
 
 def _smooth_valid_signal(values: np.ndarray, valid: np.ndarray, window: int) -> np.ndarray:
@@ -256,6 +243,20 @@ def _smooth_valid_signal(values: np.ndarray, valid: np.ndarray, window: int) -> 
   numer = np.convolve(np.where(valid, values, 0.0).astype(np.float32), kernel, mode='same')
   out = np.zeros_like(values, dtype=np.float32)
   np.divide(numer, np.maximum(weight, 1e-6), out=out, where=weight > 0)
+  return out
+
+
+def _despeckle(present: np.ndarray, valid: np.ndarray) -> np.ndarray:
+  """Drop isolated single-sample 'present' spikes (0.5 m << any real dash)."""
+  out = present.astype(np.bool_, copy=True)
+  n = out.size
+  for i in range(n):
+    if not out[i] or not valid[i]:
+      continue
+    left_off = i == 0 or not out[i - 1]
+    right_off = i == n - 1 or not out[i + 1]
+    if left_off and right_off:
+      out[i] = False
   return out
 
 
@@ -306,23 +307,32 @@ def _run_lengths(mask: np.ndarray) -> list[int]:
   return runs
 
 
-def _autocorr_period(present: np.ndarray, min_period_m: float = MIN_PERIOD_M,
+def _autocorr_period(present: np.ndarray, valid: np.ndarray,
+                     min_period_m: float = MIN_PERIOD_M,
                      max_period_m: float = MAX_PERIOD_M) -> tuple[float, float]:
   """Estimate dash period (m) and normalised autocorrelation strength.
 
   ``present`` is the uniform-in-metres binary marking signal (step SAMPLE_STEP_M).
-  Returns (period_m, strength). period_m == 0 when no clear period is found.
+  Invalid samples are filled with the valid mean so out-of-frame stretches do
+  not masquerade as gaps; the estimate is overlap-corrected (unbiased) so long
+  dash periods are not penalised, and lags are capped at half the window so at
+  least two full periods support any peak. Returns (period_m, strength);
+  period_m == 0 when no clear period is found.
   """
   x = present.astype(np.float64)
+  if valid is not None and valid.any():
+    x = np.where(valid, x, x[valid].mean())
   x = x - x.mean()
-  if np.count_nonzero(x) == 0 or x.size < 8:
+  if not np.any(x) or x.size < 8:
     return 0.0, 0.0
-  ac = np.correlate(x, x, mode='full')[x.size - 1:]
+  n = x.size
+  ac = np.correlate(x, x, mode='full')[n - 1:]
   if ac[0] <= 0:
     return 0.0, 0.0
-  ac = ac / ac[0]
+  overlap = np.arange(n, 0, -1, dtype=np.float64)
+  ac = (ac / ac[0]) * (n / overlap)          # unbiased normalisation
   lo = max(1, int(round(min_period_m / SAMPLE_STEP_M)))
-  hi = min(ac.size - 1, int(round(max_period_m / SAMPLE_STEP_M)))
+  hi = min(n // 2, int(round(max_period_m / SAMPLE_STEP_M)))
   if hi <= lo:
     return 0.0, 0.0
   band = ac[lo:hi + 1]
@@ -347,17 +357,26 @@ def classify_line(frame_y: np.ndarray, line_x, line_y, line_z,
   if grid is None:
     return LaneLineResult()
 
-  uv = _project(grid, transform)
-  contrast, valid = _perp_contrast_search(np.asarray(frame_y), uv, cfg.center_search_px)
-  contrast = _smooth_valid_signal(contrast, valid, cfg.contrast_smooth_window)
+  contrast, noise, valid = _scan_contrast(np.asarray(frame_y), grid, transform, cfg.scan_half_m)
 
   n = contrast.size
   valid_frac = float(valid.mean()) if n else 0.0
-  res = LaneLineResult(valid_frac=valid_frac, n_samples=n, contrast=contrast)
+  # presence is decided on the raw per-sample signal: smoothing would dilate
+  # dash edges (~0.5 m per side) and push long-dash patterns over the solid
+  # duty threshold. The smoothed copy is only for plotting/debug output.
+  res = LaneLineResult(valid_frac=valid_frac, n_samples=n,
+                       contrast=_smooth_valid_signal(contrast, valid, cfg.contrast_smooth_window))
   if valid_frac < cfg.min_valid_frac:
     return res  # UNKNOWN
 
-  present = valid & (contrast >= cfg.min_contrast)
+  # marking present when contrast clears the absolute floor AND stands out from
+  # the local road texture; dim-but-clean paint (night, washout) passes on a
+  # lower floor at double the SNR.
+  snr = contrast / np.maximum(noise, 1e-6)
+  strong = (contrast >= cfg.min_contrast) & (snr >= cfg.min_snr)
+  weak = (contrast >= max(8.0, 0.4 * cfg.min_contrast)) & (snr >= 2.0 * cfg.min_snr)
+  present = valid & (strong | weak)
+  present = _despeckle(present, valid)
   present = _repair_short_gaps(present, valid, cfg.max_repair_gap_m)
   res.present = present
   vpresent = present[valid]
@@ -365,7 +384,7 @@ def classify_line(frame_y: np.ndarray, line_x, line_y, line_z,
   res.duty = duty
   valid_n = int(vpresent.size)
 
-  period_m, ac_strength = _autocorr_period(present, cfg.min_period_m, cfg.max_period_m)
+  period_m, ac_strength = _autocorr_period(present, valid, cfg.min_period_m, cfg.max_period_m)
   present_runs = _run_lengths(vpresent)
   absent_runs = _run_lengths(~vpresent) if valid_n else []
   longest_present_frac = (max(present_runs) / valid_n) if present_runs and valid_n else 0.0
@@ -384,13 +403,19 @@ def classify_line(frame_y: np.ndarray, line_x, line_y, line_z,
     res.period_m = 0.0
     return res
 
+  # a solid line with dirt/shadow dropouts can look quasi-periodic, so don't
+  # veto continuity on autocorrelation alone; only genuinely dash-shaped gaps
+  # (long enough that gap-repair can't have healed them, at broken-band duty)
+  # disqualify a continuity-based SOLID call.
+  median_gap_m = (float(np.median(absent_runs)) * SAMPLE_STEP_M) if absent_runs else 0.0
+  gaps_dashlike = median_gap_m >= DASH_GAP_MIN_M and duty <= cfg.broken_duty_hi
   continuity_bias_solid = (
     valid_n >= 8 and
     duty >= max(cfg.broken_duty_hi - 0.10, 0.55) and
     longest_present_frac >= cfg.solid_contig_frac and
     top2_present_frac >= cfg.solid_top2_frac and
     longest_absent_frac <= cfg.solid_max_gap_frac and
-    (period_m <= 0 or ac_strength < cfg.min_autocorr * 1.20)
+    not gaps_dashlike
   )
   if continuity_bias_solid:
     res.line_type = LaneLineType.SOLID
@@ -406,7 +431,22 @@ def classify_line(frame_y: np.ndarray, line_x, line_y, line_z,
     res.confidence = float(np.clip(ac_strength, 0, 1))
     return res
 
-  # duty says gappy but no clean period -> undecided, fail safe
+  # autocorr needs ~3 regular cycles in the window; real dashes are often too
+  # irregular (worn paint, merges, variable gaps). Fall back to run-length
+  # shape: several paint runs of dash-like length separated by gaps that are
+  # clearly longer than anything gap-repair would have healed on a solid line.
+  # cap at 0.65 duty: above that a fragmented solid is too easily mistaken
+  # for dashes, and the continuity path above owns that band
+  if cfg.broken_duty_lo <= duty <= min(0.65, cfg.broken_duty_hi) and len(present_runs) >= 2 and len(absent_runs) >= 2:
+    dash_m = float(np.median(present_runs)) * SAMPLE_STEP_M
+    gap_m = float(np.median(absent_runs)) * SAMPLE_STEP_M
+    if DASH_RUN_MIN_M <= dash_m <= DASH_RUN_MAX_M and DASH_GAP_MIN_M <= gap_m <= DASH_GAP_MAX_M:
+      res.line_type = LaneLineType.BROKEN
+      res.period_m = dash_m + gap_m
+      res.confidence = float(np.clip(0.35 + 0.05 * min(len(present_runs), 6), 0, 0.65))
+      return res
+
+  # gappy but neither periodic nor dash-shaped -> undecided, fail safe
   res.line_type = LaneLineType.UNKNOWN
   res.confidence = 0.0
   res.period_m = period_m
@@ -496,16 +536,28 @@ class LaneLineClassifier:
     self._left_filter = _TemporalLineFilter()
     self._right_filter = _TemporalLineFilter()
 
+  @staticmethod
+  def _line_prob(modelV2, idx: int) -> float:
+    probs = getattr(modelV2, 'laneLineProbs', None)
+    if probs is None or len(probs) <= idx:
+      return 1.0
+    return float(probs[idx])
+
   def update(self, frame_y: np.ndarray, modelV2, transform: np.ndarray,
              camera_offset: float = 0.0, cfg: LaneLineClassifierConfig | None = None) -> LaneChangeGate:
     lines = list(modelV2.laneLines)
     gate = LaneChangeGate()
     if len(lines) > LEFT_EGO_LINE:
       ll = lines[LEFT_EGO_LINE]
-      gate.left = self._left_filter.update(classify_line(frame_y, ll.x, ll.y, ll.z, transform, camera_offset, cfg))
+      # when the model itself doesn't see a line, don't classify road texture
+      res = (classify_line(frame_y, ll.x, ll.y, ll.z, transform, camera_offset, cfg)
+             if self._line_prob(modelV2, LEFT_EGO_LINE) >= MIN_LINE_PROB else LaneLineResult())
+      gate.left = self._left_filter.update(res)
     if len(lines) > RIGHT_EGO_LINE:
       rl = lines[RIGHT_EGO_LINE]
-      gate.right = self._right_filter.update(classify_line(frame_y, rl.x, rl.y, rl.z, transform, camera_offset, cfg))
+      res = (classify_line(frame_y, rl.x, rl.y, rl.z, transform, camera_offset, cfg)
+             if self._line_prob(modelV2, RIGHT_EGO_LINE) >= MIN_LINE_PROB else LaneLineResult())
+      gate.right = self._right_filter.update(res)
 
     gate.left_crossable = self._left.update(gate.left.crossable)
     gate.right_crossable = self._right.update(gate.right.crossable)
