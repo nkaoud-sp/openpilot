@@ -48,6 +48,16 @@ EMAIL_BODY = (
   "Attached is the latest nkaoud_nav navigation maneuver log.\n\n"
   "This message was generated automatically when the drive ended."
 )
+# Lane-line classifier troubleshooting bundles (see lane_line_logger.py) share
+# the same pending queue; they are zips and get their own subject/body.
+LANE_ZIP_PREFIX = "lane_line_log_"
+LANE_LOGGING_PARAM = "LaneLineVisualizerLogging"
+LANE_EMAIL_SUBJECT = "lane line visualizer log"
+LANE_EMAIL_BODY = (
+  "Attached is a lane line classifier troubleshooting bundle: per-frame "
+  "assessments CSV, classifier config, and annotated road-camera snapshots.\n\n"
+  "This message was generated automatically after openpilot was disengaged."
+)
 DEFAULT_SMTP_HOST = "smtp-relay.brevo.com"
 DEFAULT_SMTP_PORT = 587
 SMTP_TIMEOUT = 20
@@ -125,9 +135,11 @@ def _build_message(cfg: dict, log_path: str, subject: str, body: str) -> EmailMe
   message["To"] = str(cfg["to"]).strip()
   message.set_content(body)
   if log_path:
+    is_zip = log_path.lower().endswith(".zip")
+    maintype, subtype = ("application", "zip") if is_zip else ("text", "csv")
     with open(log_path, "rb") as log_file:
       message.add_attachment(
-        log_file.read(), maintype="text", subtype="csv",
+        log_file.read(), maintype=maintype, subtype=subtype,
         filename=os.path.basename(log_path),
       )
   return message
@@ -216,8 +228,10 @@ def send_pending_log() -> bool:
       continue
 
     try:
-      subject = f"{EMAIL_SUBJECT} - {os.path.basename(path)}"
-      message = _build_message(cfg, path, subject, EMAIL_BODY)
+      base = os.path.basename(path)
+      is_lane = base.startswith(LANE_ZIP_PREFIX)
+      subject = f"{LANE_EMAIL_SUBJECT if is_lane else EMAIL_SUBJECT} - {base}"
+      message = _build_message(cfg, path, subject, LANE_EMAIL_BODY if is_lane else EMAIL_BODY)
       _send_via_smtp(cfg, message)
     except Exception:  # noqa: BLE001 -- surface any SMTP/network failure as a retry
       cloudlog.exception("nkaoud_nav mailer: send failed")
@@ -284,6 +298,15 @@ def _handle_drive_end(params: Params) -> None:
 
   params.remove(CURRENT_LOG_PARAM)
 
+  # A mid-drive shutdown can leave a lane-line logging session unzipped
+  # (lane_line_classifierd is killed with the drive); rescue it now.
+  if params.get_bool(LANE_LOGGING_PARAM):
+    try:
+      from sunnypilot.nkaoud_nav.lane_line_logger import finalize_orphan_sessions
+      finalize_orphan_sessions()
+    except Exception:  # noqa: BLE001 -- never let cleanup kill the mailer
+      cloudlog.exception("nkaoud_nav mailer: lane session cleanup failed")
+
 
 def main() -> None:
   # Imported here (not at module top) so the settings UI can reuse smtp_test
@@ -306,8 +329,12 @@ def main() -> None:
       _handle_drive_end(params)
     started_prev = started
 
-    # Retry a queued send while offroad until the network comes up.
-    if not started and params.get_bool(AUTO_EMAIL_PARAM):
+    # Retry a queued send until the network is up. Nav logs only send offroad
+    # (original behaviour); lane-line troubleshooting bundles are queued on
+    # disengage and may send mid-drive over LTE so they arrive promptly.
+    nav_send_ok = not started and params.get_bool(AUTO_EMAIL_PARAM)
+    lane_send_ok = params.get_bool(LANE_LOGGING_PARAM)
+    if nav_send_ok or lane_send_ok:
       if (params.get(PENDING_LOG_PARAM) or "").strip():
         if time.monotonic() - last_send_attempt >= SEND_RETRY_SECONDS:
           send_pending_log()

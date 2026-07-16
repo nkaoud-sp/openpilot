@@ -182,6 +182,37 @@ def _resample_line_uniform_x(line_x, line_y, line_z, camera_offset: float, sampl
   return np.stack([xs, ys, zs], axis=1)      # Nx3
 
 
+def _ground_perp(grid: np.ndarray) -> np.ndarray:
+  """World-space unit normal of the line in the ground plane, per grid point."""
+  tang = np.gradient(grid[:, :2], axis=0)
+  tang /= np.maximum(np.hypot(tang[:, 0], tang[:, 1]), 1e-9)[:, None]
+  return np.stack([-tang[:, 1], tang[:, 0]], axis=1)
+
+
+def scan_geometry_uv(line_x, line_y, line_z, transform: np.ndarray, camera_offset: float = 0.0,
+                     cfg: LaneLineClassifierConfig | None = None):
+  """Project the scan geometry into image pixels for overlays/debug snapshots.
+
+  Returns (centre_uv, [left_rail_uv, right_rail_uv]) - each an Nx2 array with
+  NaN where a point falls behind the camera - or None if the line is too
+  short to classify. centre_uv rows correspond 1:1 with the classifier's
+  along-line samples (and thus with ``LaneLineResult.present``).
+  """
+  if cfg is None:
+    cfg = DEFAULT_CONFIG
+  grid = _resample_line_uniform_x(line_x, line_y, line_z, camera_offset, cfg.sample_x_max)
+  if grid is None:
+    return None
+  perp = _ground_perp(grid)
+  centre = _project(grid, transform)
+  rails = []
+  for side in (-1.0, 1.0):
+    pts = grid.copy()
+    pts[:, :2] += perp * (side * cfg.scan_half_m)
+    rails.append(_project(pts, transform))
+  return centre, rails
+
+
 def _scan_contrast(frame_y: np.ndarray, grid: np.ndarray, transform: np.ndarray,
                    scan_half_m: float = SCAN_HALF_M) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
   """Scan laterally across the line in world metres at each along-line sample.
@@ -203,10 +234,7 @@ def _scan_contrast(frame_y: np.ndarray, grid: np.ndarray, transform: np.ndarray,
   if n < 2:
     return contrast, noise, valid
 
-  # world-space unit normal of the line in the ground plane
-  tang = np.gradient(grid[:, :2], axis=0)
-  tang /= np.maximum(np.hypot(tang[:, 0], tang[:, 1]), 1e-9)[:, None]
-  perp = np.stack([-tang[:, 1], tang[:, 0]], axis=1)
+  perp = _ground_perp(grid)
 
   offsets = np.linspace(-scan_half_m, scan_half_m, SCAN_STEPS)
   pts = np.empty((n, SCAN_STEPS, 3), dtype=np.float64)

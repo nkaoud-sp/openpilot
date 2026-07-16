@@ -50,6 +50,14 @@ class LaneLineVisualizerSettingsLayout(Widget):
                             "border, the projection/camera offset is off and the classifier can't see it."),
       param="LaneLineVisualizerScanArea",
     )
+    self._logging = toggle_item_sp(
+      title=lambda: tr("Log & Email Assessments"),
+      description=lambda: tr("While openpilot is engaged, record every lane line assessment to CSV and save "
+                            "annotated road-camera snapshots per label (unknown/solid/broken). When you "
+                            "disengage, the session is zipped, emailed via the SMTP settings under "
+                            "Tweaks > Email & Logs, and deleted from the device after the send succeeds."),
+      param="LaneLineVisualizerLogging",
+    )
 
     # --- Tuning. These apply live (~1 s) to the classifier process. Watch the
     # readout's duty / period / confidence numbers to know which to move. ---
@@ -95,6 +103,7 @@ class LaneLineVisualizerSettingsLayout(Widget):
       self._readout,
       self._overlay,
       self._scan_area,
+      self._logging,
       self._min_contrast,
       self._solid_duty,
       self._min_autocorr,

@@ -32,8 +32,10 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.common.transformations.camera import DEVICE_CAMERAS, view_frame_from_device_frame
 from openpilot.common.transformations.orientation import rot_from_euler
 
+from sunnypilot.nkaoud_nav.lane_line_logger import LaneLineSessionLogger, finalize_orphan_sessions, LABELS
 from sunnypilot.selfdrive.controls.lib.lane_line_classifier import (
   LaneLineClassifier, LaneLineClassifierConfig, DEFAULT_CONFIG, SAMPLE_X_MIN,
+  LEFT_EGO_LINE, RIGHT_EGO_LINE, scan_geometry_uv,
 )
 
 SERVICE = "laneLineClassificationSP"
@@ -67,9 +69,12 @@ def nv12_y_plane(buf) -> np.ndarray:
 class LaneLineClassifierD:
   def __init__(self):
     self.params = Params()
-    self.sm = messaging.SubMaster(["modelV2", "liveCalibration", "roadCameraState", "deviceState"])
+    self.sm = messaging.SubMaster(["modelV2", "liveCalibration", "roadCameraState", "deviceState",
+                                   "selfdriveState", "carState"])
     self.pm = messaging.PubMaster([SERVICE])
     self.clf = LaneLineClassifier()
+    self.logger = LaneLineSessionLogger()
+    self._log_enabled = False
     self.rpy_calib: list[float] | None = None
     self.intrinsics = DEVICE_CAMERAS[DEFAULT_CAMERA].fcam.intrinsics
     self._cam_resolved = False
@@ -102,6 +107,10 @@ class LaneLineClassifierD:
       max_period_m=float(self._get_int("LaneLineMaxPeriodM", 30)),
       min_autocorr=self._get_int("LaneLineMinAutocorr", 30) / 100.0,
     )
+    try:
+      self._log_enabled = self.params.get_bool("LaneLineVisualizerLogging")
+    except Exception:
+      self._log_enabled = False
 
   def _resolve_camera(self):
     # Pick the real device camera once both messages have been seen, else keep
@@ -162,6 +171,35 @@ class LaneLineClassifierD:
     self._last_pub_t = now
     self._publish(gate, frame_id, reason, valid, camera_offset)
 
+  def _logging_wanted(self) -> bool:
+    """Capture only while openpilot is actively engaged (and the toggle is on)."""
+    return self._log_enabled and self.sm.seen["selfdriveState"] and bool(self.sm["selfdriveState"].enabled)
+
+  def _update_logging(self, gate, model, frame_y, transform, camera_offset: float):
+    """Record this assessment to the per-engagement troubleshooting session."""
+    if not self.logger.is_active:
+      from dataclasses import asdict
+      self.logger.start({
+        "started": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+        "camera_offset": camera_offset,
+        "sample_x_min": SAMPLE_X_MIN,
+        "config": asdict(self._cfg),
+      })
+
+    snapshots = []
+    lines = list(model.laneLines)
+    for side, res, idx in (("L", gate.left, LEFT_EGO_LINE), ("R", gate.right, RIGHT_EGO_LINE)):
+      label = LABELS.get(int(res.line_type), "unknown")
+      if idx < len(lines) and self.logger.snapshot_due(side, label):
+        ll = lines[idx]
+        geometry = scan_geometry_uv(ll.x, ll.y, ll.z, transform, camera_offset, self._cfg)
+        name = self.logger.save_snapshot(frame_y, side, label, res.duty, geometry, res.present)
+        if name:
+          snapshots.append(name)
+
+    v_ego = float(self.sm["carState"].vEgo) if self.sm.seen["carState"] else 0.0
+    self.logger.log_row(time.monotonic(), int(model.frameId), v_ego, gate, snapshots)
+
   def run(self):
     # the loop runs at camera rate so the non-conflating VisionIPC queue never
     # overflows; classification/publishing is throttled down to PUBLISH_HZ
@@ -174,10 +212,16 @@ class LaneLineClassifierD:
     # by a few frames: metres of forward travel, and on curves enough lateral
     # error to pull the far-field scan off the paint entirely.
     frames: OrderedDict[int, np.ndarray] = OrderedDict()
+    finalize_orphan_sessions()
     while True:
       self.sm.update(0)
       self._resolve_camera()
       self._refresh_config()
+
+      # disengaged (or logging switched off): flush the session so the zip is
+      # queued for email right away
+      if self.logger.is_active and not self._logging_wanted():
+        self.logger.end()
 
       if self.sm.updated["liveCalibration"]:
         lc = self.sm["liveCalibration"]
@@ -241,6 +285,8 @@ class LaneLineClassifierD:
         gate = self.clf.update(frame_y, model, transform, camera_offset, self._cfg)
         self._last_pub_t = time.monotonic()
         self._publish(gate, model_fid, "ok", True, camera_offset)
+        if self._logging_wanted():
+          self._update_logging(gate, model, frame_y, transform, camera_offset)
       except Exception as e:
         cloudlog.exception("lane_line_classifierd update failed")
         self._last_pub_t = time.monotonic()

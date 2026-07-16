@@ -66,6 +66,16 @@ the far-field scan off the paint.
 python -m pytest sunnypilot/selfdrive/controls/lib/tests/test_lane_line_classifier.py -v
 ```
 
+## Capture a troubleshooting bundle from a real drive
+Enable **Log & Email Assessments** in the Lane Line Visualizer settings (needs
+the SMTP settings under Tweaks > Email & Logs). While openpilot is engaged,
+every assessment is logged to CSV and rate-limited annotated snapshots are
+saved per label - the road camera frame with the scan corridor rails drawn in
+white and one square per sample (white = marking seen, black = nothing). On
+disengage the session is zipped (`assessments.csv`, `config.json`,
+`summary.json`, snapshots), emailed, and deleted from the device once the send
+succeeds (`sunnypilot/nkaoud_nav/lane_line_logger.py` + `mailer.py`).
+
 ## Test on a real route
 ```bash
 python -m sunnypilot.selfdrive.controls.lib.lane_line_classifier_replay \

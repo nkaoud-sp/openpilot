@@ -101,7 +101,9 @@ def nkaoud_nav_enabled(started: bool, params: Params, CP: car.CarParams) -> bool
 def nkaoud_nav_mailer_enabled(started: bool, params: Params, CP: car.CarParams) -> bool:
   # Runs regardless of `started` (onroad AND offroad) so it can catch the
   # drive-end transition and retry the SMTP send once the network is up.
-  return params.get_bool("NkaoudNavEnabled")
+  # Also serves the lane-line classifier's troubleshooting bundles, so it runs
+  # whenever either logging feature is on.
+  return params.get_bool("NkaoudNavEnabled") or params.get_bool("LaneLineVisualizerLogging")
 
 
 def visual_vehicle_detector_enabled(started: bool, params: Params, CP: car.CarParams) -> bool:
