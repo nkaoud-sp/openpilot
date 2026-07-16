@@ -24,6 +24,11 @@ Both sampling axes are in **world metres**, never fixed pixels:
   and far — and the strip width doubles as tolerance for model/calibration
   error (up to ~0.3 m of lateral offset still lands on the paint).
 
+The Lane Visualizer tweaks menu can switch the lateral metric live to P95, a
+top-3 bright-sample mean, or the raw maximum for controlled on-road comparisons.
+The latter two are more peak-sensitive, and the raw maximum is intentionally
+noise-prone. P90 remains the default baseline.
+
 A sample counts as "marking present" when contrast clears an absolute floor
 (`MIN_CONTRAST`) **and** stands out from the scan's own road texture
 (`MIN_SNR`, robust MAD estimate) — or, for dim-but-clean paint at night, a
@@ -101,7 +106,7 @@ matches your camera and that `--camera-offset` matches your `CameraOffset`
 param.
 
 ## Tunables (in `lane_line_classifier.py`)
-Menu-exposed (via params): `MIN_CONTRAST`, `SOLID_DUTY`, `MIN_PERIOD_M`,
+Menu-exposed (via params): `LaneLineContrastMethod`, `MIN_CONTRAST`, `SOLID_DUTY`, `MIN_PERIOD_M`,
 `MAX_PERIOD_M`, `MIN_AUTOCORR`, `LaneLineSampleMaxM`.
 Config-only: `MIN_SNR`, `SCAN_HALF_M`, duty bands, continuity-bias and
 run-length-fallback shape limits. `UNKNOWN` always fails safe to

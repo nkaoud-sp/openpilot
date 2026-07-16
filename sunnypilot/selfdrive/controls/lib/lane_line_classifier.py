@@ -72,10 +72,11 @@ MIN_INFRAME_FRAC = 0.7   # scan points that must land in-frame for a valid sampl
 MAX_REPAIR_GAP_M = 1.0   # fill tiny missing gaps; well below a real dashed gap
 
 # --- classification tunables (TUNE ON REAL DATA) -----------------------------
-# Contrast = P90(scan) - median(scan), in 8-bit luminance counts. A sample
-# counts as "marking present" when contrast clears BOTH an absolute floor and
-# an SNR gate vs. the scan's own road texture (see classify_line), or - for
-# dim/washed-out paint - a lower floor at twice the SNR.
+# Contrast = selected bright-evidence(scan) - median(scan), in 8-bit luminance
+# counts. P90 is the default; the live selector also supports P95, top-3 mean,
+# and max. A sample counts as "marking present" when contrast clears BOTH an
+# absolute floor and an SNR gate vs. the scan's own road texture (see
+# classify_line), or - for dim/washed-out paint - a lower floor at twice the SNR.
 MIN_CONTRAST = 18.0      # absolute contrast floor (8-bit counts)
 MIN_SNR = 3.0            # contrast / robust-noise gate
 MIN_VALID_FRAC = 0.35    # need this fraction of in-frame samples to decide at all
@@ -96,6 +97,14 @@ DASH_RUN_MAX_M = 12.0
 DASH_GAP_MIN_M = 1.5      # plausible gap length range (m); > repaired occlusions
 DASH_GAP_MAX_M = 25.0
 CONTRAST_SMOOTH_WINDOW = 3
+
+# Lateral scan evidence methods. Keep these integer values stable because the
+# Lane Visualizer tweaks menu stores the selected method in Params.
+CONTRAST_METHOD_P90 = 0       # robust baseline: P90 - median
+CONTRAST_METHOD_P95 = 1       # thinner/sparser markings: P95 - median
+CONTRAST_METHOD_TOP3 = 2      # mean of three brightest samples - median
+CONTRAST_METHOD_MAX = 3       # most sensitive, but most noise-prone
+CONTRAST_METHOD_COUNT = 4
 
 # --- debounce (mirrors lane_position.py hysteresis) --------------------------
 COUNTER_ON = 3
@@ -128,6 +137,7 @@ class LaneLineClassifierConfig:
   scan_half_m: float = SCAN_HALF_M
   contrast_smooth_window: int = CONTRAST_SMOOTH_WINDOW
   max_repair_gap_m: float = MAX_REPAIR_GAP_M
+  contrast_method: int = CONTRAST_METHOD_P90
 
 
 DEFAULT_CONFIG = LaneLineClassifierConfig()
@@ -214,14 +224,16 @@ def scan_geometry_uv(line_x, line_y, line_z, transform: np.ndarray, camera_offse
 
 
 def _scan_contrast(frame_y: np.ndarray, grid: np.ndarray, transform: np.ndarray,
-                   scan_half_m: float = SCAN_HALF_M) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+                   scan_half_m: float = SCAN_HALF_M,
+                   contrast_method: int = CONTRAST_METHOD_P90) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
   """Scan laterally across the line in world metres at each along-line sample.
 
   At each grid point a constant-world-width strip perpendicular to the line is
   projected into the image and sampled. Because the strip is fixed in metres,
   the marking occupies the same fraction of the scan at every distance, so
-  P90 - median measures paint-vs-road contrast identically near and far, and a
-  projection error up to ~scan_half_m still keeps the paint inside the scan.
+  The selected lateral evidence method compares the bright marking response
+  against the scan median. P90 is the default; alternatives are exposed by
+  the Lane Visualizer tweaks menu for on-road comparison.
 
   Returns (contrast, noise, valid) per along-line sample; ``noise`` is a robust
   (MAD-based) estimate of the road texture inside the scan.
@@ -254,9 +266,21 @@ def _scan_contrast(frame_y: np.ndarray, grid: np.ndarray, transform: np.ndarray,
   vals[inb] = frame_y[iy[inb].astype(np.int64), ix[inb].astype(np.int64)]
   v = vals[valid]
   med = np.nanmedian(v, axis=1)
-  p90 = np.nanpercentile(v, 90, axis=1)
+  method = int(np.clip(contrast_method, 0, CONTRAST_METHOD_COUNT - 1))
+  if method == CONTRAST_METHOD_P95:
+    bright = np.nanpercentile(v, 95, axis=1)
+  elif method == CONTRAST_METHOD_TOP3:
+    # Three samples are about 10% of the 31-point scan. This keeps a compact
+    # bright peak while averaging away one-pixel road-texture spikes.
+    k = min(3, v.shape[1])
+    sortable = np.where(np.isfinite(v), v, -np.inf)
+    bright = np.mean(np.sort(sortable, axis=1)[:, -k:], axis=1)
+  elif method == CONTRAST_METHOD_MAX:
+    bright = np.nanmax(v, axis=1)
+  else:
+    bright = np.nanpercentile(v, 90, axis=1)
   mad = np.nanmedian(np.abs(v - med[:, None]), axis=1)
-  contrast[valid] = np.maximum(p90 - med, 0.0).astype(np.float32)
+  contrast[valid] = np.maximum(bright - med, 0.0).astype(np.float32)
   noise[valid] = (1.4826 * mad + 0.5).astype(np.float32)   # +0.5: quantisation floor
   return contrast, noise, valid
 
@@ -385,7 +409,8 @@ def classify_line(frame_y: np.ndarray, line_x, line_y, line_z,
   if grid is None:
     return LaneLineResult()
 
-  contrast, noise, valid = _scan_contrast(np.asarray(frame_y), grid, transform, cfg.scan_half_m)
+  contrast, noise, valid = _scan_contrast(np.asarray(frame_y), grid, transform,
+                                          cfg.scan_half_m, cfg.contrast_method)
 
   n = contrast.size
   valid_frac = float(valid.mean()) if n else 0.0

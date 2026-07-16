@@ -11,7 +11,7 @@ from collections.abc import Callable
 
 import pyray as rl
 from openpilot.system.ui.lib.multilang import tr
-from openpilot.system.ui.sunnypilot.widgets.list_view import toggle_item_sp, option_item_sp
+from openpilot.system.ui.sunnypilot.widgets.list_view import toggle_item_sp, option_item_sp, multiple_button_item_sp
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.network import NavButton
 from openpilot.system.ui.widgets.scroller_tici import Scroller
@@ -57,6 +57,22 @@ class LaneLineVisualizerSettingsLayout(Widget):
                             "disengage, the session is zipped, emailed via the SMTP settings under "
                             "Tweaks > Email & Logs, and deleted from the device after the send succeeds."),
       param="LaneLineVisualizerLogging",
+    )
+    self._contrast_method = multiple_button_item_sp(
+      title=lambda: tr("Lateral Scan Method"),
+      description=lambda: tr("Choose how the classifier converts the lateral scan into paint contrast. "
+                            "P90 is the current baseline; P95 is more sensitive to thin paint; "
+                            "Top-3 Mean targets a compact bright peak while reducing single-pixel noise; "
+                            "Max is the most sensitive but also the most noise-prone."),
+      buttons=[
+        lambda: tr("P90"),
+        lambda: tr("P95"),
+        lambda: tr("Top-3 Mean"),
+        lambda: tr("Max"),
+      ],
+      param="LaneLineContrastMethod",
+      button_width=230,
+      inline=False,
     )
 
     # --- Tuning. These apply live (~1 s) to the classifier process. Watch the
@@ -104,6 +120,7 @@ class LaneLineVisualizerSettingsLayout(Widget):
       self._overlay,
       self._scan_area,
       self._logging,
+      self._contrast_method,
       self._min_contrast,
       self._solid_duty,
       self._min_autocorr,

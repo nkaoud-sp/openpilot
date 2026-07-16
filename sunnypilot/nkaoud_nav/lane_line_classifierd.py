@@ -35,7 +35,7 @@ from openpilot.common.transformations.orientation import rot_from_euler
 from sunnypilot.nkaoud_nav.lane_line_logger import LaneLineSessionLogger, finalize_orphan_sessions, LABELS
 from sunnypilot.selfdrive.controls.lib.lane_line_classifier import (
   LaneLineClassifier, LaneLineClassifierConfig, DEFAULT_CONFIG, SAMPLE_X_MIN,
-  LEFT_EGO_LINE, RIGHT_EGO_LINE, scan_geometry_uv,
+  LEFT_EGO_LINE, RIGHT_EGO_LINE, CONTRAST_METHOD_COUNT, scan_geometry_uv,
 )
 
 SERVICE = "laneLineClassificationSP"
@@ -109,6 +109,8 @@ class LaneLineClassifierD:
       min_period_m=float(self._get_int("LaneLineMinPeriodM", 3)),
       max_period_m=float(self._get_int("LaneLineMaxPeriodM", 30)),
       min_autocorr=self._get_int("LaneLineMinAutocorr", 30) / 100.0,
+      contrast_method=int(np.clip(self._get_int("LaneLineContrastMethod", 0),
+                                 0, CONTRAST_METHOD_COUNT - 1)),
     )
     try:
       self._log_enabled = self.params.get_bool("LaneLineVisualizerLogging")

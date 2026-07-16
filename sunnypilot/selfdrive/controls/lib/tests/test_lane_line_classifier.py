@@ -233,6 +233,15 @@ def test_config_overrides_are_honored():
   assert classify_line(fs, sx, sy, sz, TRANSFORM, cfg=never_solid).line_type != LaneLineType.SOLID
 
 
+def test_lateral_contrast_methods_are_supported():
+  frame, x, y, z = _render(solid=True)
+  results = [classify_line(frame, x, y, z, TRANSFORM,
+                           cfg=LaneLineClassifierConfig(contrast_method=method))
+             for method in range(4)]
+  assert all(res.line_type == LaneLineType.SOLID for res in results), results
+  assert all(res.duty > 0.75 for res in results), [res.duty for res in results]
+
+
 class _FakeLine:
   def __init__(self, x, y, z):
     self.x, self.y, self.z = x, y, z
