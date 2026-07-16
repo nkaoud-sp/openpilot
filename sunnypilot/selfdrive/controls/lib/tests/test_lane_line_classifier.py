@@ -144,6 +144,48 @@ def test_projection_offset_still_detects():
     assert res.line_type == LaneLineType.BROKEN, (offset_m, res)
 
 
+def test_large_projection_offset_recovered_by_recentering():
+  # this is the failure the on-road logs showed: the model line lands ~0.9 m
+  # off the paint (well past the scan half-width) so the raw scan sees bare
+  # road -> collapsed duty, spurious UNKNOWN. The locate pass must snap back
+  # onto the marking and restore the correct label.
+  for offset_m in (0.7, 0.9, -0.9):
+    frame, x, y, z = _render(solid=True)
+    res = classify_line(frame, x, y + offset_m, z, TRANSFORM)
+    assert res.line_type == LaneLineType.SOLID, (offset_m, res)
+    # the applied correction should cancel most of the injected offset
+    assert abs(res.lateral_offset_m + offset_m) < 0.2, (offset_m, res.lateral_offset_m)
+
+    frame, x, y, z = _render(solid=False)
+    res = classify_line(frame, x, y + offset_m, z, TRANSFORM)
+    assert res.line_type == LaneLineType.BROKEN, (offset_m, res)
+
+
+def test_recentering_can_be_disabled():
+  # with recentring off a large offset falls back to the old behaviour: the
+  # scan misses the paint and cannot call it SOLID
+  frame, x, y, z = _render(solid=True)
+  cfg = LaneLineClassifierConfig(locate_enabled=False)
+  res = classify_line(frame, x, y + 0.9, z, TRANSFORM, cfg=cfg)
+  assert res.lateral_offset_m == 0.0
+  assert res.line_type != LaneLineType.SOLID
+
+
+def test_recentering_ignores_bright_roadside_barrier():
+  # a correctly-registered solid line with a continuous bright barrier just
+  # outboard (jersey wall / guard-rail). The shoulder-normalised locate must
+  # not let the barrier capture the lock and drag the scan off the paint.
+  frame, x, y, z = _render(solid=True, line_y=1.85)
+  # paint the barrier as a tall bright band ~0.7 m outboard of the line
+  for xx in np.arange(2.0, SAMPLE_X_MAX + 10.0, 0.05):
+    _paint_strip(frame, xx, 0.05, 2.55, 255)
+    _paint_strip(frame, xx, 0.05, 2.70, 255)
+    _paint_strip(frame, xx, 0.05, 2.85, 255)
+  res = classify_line(frame, x, y, z, TRANSFORM)
+  assert res.line_type == LaneLineType.SOLID, res
+  assert abs(res.lateral_offset_m) < 0.25, res.lateral_offset_m
+
+
 def test_low_contrast_night_paint():
   # dim but clean paint (night / washed out): fails the absolute contrast
   # floor but passes the double-SNR path

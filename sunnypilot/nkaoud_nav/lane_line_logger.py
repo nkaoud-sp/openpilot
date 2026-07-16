@@ -51,8 +51,8 @@ LABELS = {0: "unknown", 1: "broken", 2: "solid", 3: "double"}
 
 CSV_FIELDS = [
   "wall_time", "mono_time", "frame_id", "v_ego",
-  "left_type", "left_conf", "left_duty", "left_period_m", "left_valid_frac", "left_n",
-  "right_type", "right_conf", "right_duty", "right_period_m", "right_valid_frac", "right_n",
+  "left_type", "left_conf", "left_duty", "left_period_m", "left_valid_frac", "left_offset_m", "left_n",
+  "right_type", "right_conf", "right_duty", "right_period_m", "right_valid_frac", "right_offset_m", "right_n",
   "left_crossable", "right_crossable", "snapshots",
 ]
 
@@ -117,6 +117,7 @@ class LaneLineSessionLogger:
         row[f"{side}_duty"] = f"{res.duty:.2f}"
         row[f"{side}_period_m"] = f"{res.period_m:.1f}"
         row[f"{side}_valid_frac"] = f"{res.valid_frac:.2f}"
+        row[f"{side}_offset_m"] = f"{res.lateral_offset_m:+.2f}"
         row[f"{side}_n"] = res.n_samples
         self._label_counts[side[0].upper()][label] += 1
       self._csv.writerow(row)
