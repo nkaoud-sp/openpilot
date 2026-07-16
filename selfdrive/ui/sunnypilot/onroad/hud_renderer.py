@@ -12,6 +12,7 @@ from openpilot.selfdrive.ui.onroad.driver_state import BTN_SIZE as DM_BTN_SIZE
 from openpilot.selfdrive.ui.mici.onroad.torque_bar import TorqueBar
 from openpilot.selfdrive.ui.sunnypilot.onroad.developer_ui import DeveloperUiRenderer, DeveloperUiState, get_bottom_dev_ui_offset
 from openpilot.selfdrive.ui.sunnypilot.onroad.nav_button import NavButton
+from openpilot.selfdrive.ui.sunnypilot.onroad.lane_log_button import LaneLogButton
 from openpilot.selfdrive.ui.sunnypilot.onroad.visual_vehicle_capture_button import VisualVehicleCaptureButton
 from openpilot.selfdrive.ui.sunnypilot.onroad.nav_lane_guidance import NavLaneGuidance
 from openpilot.selfdrive.ui.sunnypilot.onroad.nav_maneuver_banner import NavManeuverBanner
@@ -46,6 +47,7 @@ class HudRendererSP(HudRenderer):
     self._torque_bar = TorqueBar(scale=3.0, always=True)
     self._nav_button = NavButton(UI_CONFIG.button_size)
     self._capture_button = VisualVehicleCaptureButton(UI_CONFIG.button_size)
+    self._lane_log_button = LaneLogButton(UI_CONFIG.button_size)
     self._nav_maneuver_banner = NavManeuverBanner()
     self._nav_lane_guidance = NavLaneGuidance()
     self._nav_turn_arrow = NavTurnArrow()
@@ -170,6 +172,8 @@ class HudRendererSP(HudRenderer):
     dm_top = rect.y + rect.height - dm_offset - get_bottom_dev_ui_offset() - DM_BTN_SIZE // 2
     cap_size = UI_CONFIG.button_size
     self._capture_button.render(rl.Rectangle(dm_cx - cap_size / 2, dm_top - 24 - cap_size, cap_size, cap_size))
+    # LANE capture toggle stacked directly above the CAP button.
+    self._lane_log_button.render(rl.Rectangle(dm_cx - cap_size / 2, dm_top - 2 * (24 + cap_size), cap_size, cap_size))
 
     # Maneuver banner: top-center, drawn last so it sits above everything else.
     self._nav_maneuver_banner.render(rect)
@@ -177,4 +181,4 @@ class HudRendererSP(HudRenderer):
     self._nav_turn_arrow.render(rect)
 
   def user_interacting(self) -> bool:
-    return super().user_interacting() or self._nav_button.is_pressed or self._capture_button.is_pressed
+    return super().user_interacting() or self._nav_button.is_pressed or self._capture_button.is_pressed or self._lane_log_button.is_pressed

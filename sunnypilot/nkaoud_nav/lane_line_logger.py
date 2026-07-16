@@ -97,7 +97,7 @@ class LaneLineSessionLogger:
       self._close_files()
       self._dir = None
 
-  def log_row(self, mono_time: float, frame_id: int, v_ego: float, gate, snapshots: list[str]) -> None:
+  def log_row(self, mono_time: float, frame_id: int, v_ego: float | None, gate, snapshots: list[str]) -> None:
     if not self.is_active or self._csv is None:
       return
     try:
@@ -105,7 +105,7 @@ class LaneLineSessionLogger:
         "wall_time": time.strftime("%H:%M:%S", time.localtime()),
         "mono_time": f"{mono_time:.2f}",
         "frame_id": frame_id,
-        "v_ego": f"{v_ego:.1f}",
+        "v_ego": "" if v_ego is None else f"{v_ego:.1f}",
         "left_crossable": int(gate.left_crossable),
         "right_crossable": int(gate.right_crossable),
         "snapshots": ";".join(snapshots),

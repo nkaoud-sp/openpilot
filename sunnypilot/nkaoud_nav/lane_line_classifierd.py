@@ -69,12 +69,15 @@ def nv12_y_plane(buf) -> np.ndarray:
 class LaneLineClassifierD:
   def __init__(self):
     self.params = Params()
-    self.sm = messaging.SubMaster(["modelV2", "liveCalibration", "roadCameraState", "deviceState",
-                                   "selfdriveState", "carState"])
+    # Keep only the cereal streams required for classification and the
+    # onroad gate. Logging intentionally does not subscribe to the extra
+    # selfdriveState/carState streams in this resource-isolation experiment.
+    self.sm = messaging.SubMaster(["modelV2", "liveCalibration", "roadCameraState", "deviceState"])
     self.pm = messaging.PubMaster([SERVICE])
     self.clf = LaneLineClassifier()
     self.logger = LaneLineSessionLogger()
     self._log_enabled = False
+    self._log_active = False
     self.rpy_calib: list[float] | None = None
     self.intrinsics = DEVICE_CAMERAS[DEFAULT_CAMERA].fcam.intrinsics
     self._cam_resolved = False
@@ -109,8 +112,10 @@ class LaneLineClassifierD:
     )
     try:
       self._log_enabled = self.params.get_bool("LaneLineVisualizerLogging")
+      self._log_active = self.params.get_bool("LaneLineVisualizerLogActive")
     except Exception:
       self._log_enabled = False
+      self._log_active = False
 
   def _resolve_camera(self):
     # Pick the real device camera once both messages have been seen, else keep
@@ -172,8 +177,14 @@ class LaneLineClassifierD:
     self._publish(gate, frame_id, reason, valid, camera_offset)
 
   def _logging_wanted(self) -> bool:
-    """Capture only while openpilot is actively engaged (and the toggle is on)."""
-    return self._log_enabled and self.sm.seen["selfdriveState"] and bool(self.sm["selfdriveState"].enabled)
+    """Capture while onroad when logging is enabled and LANE is active.
+
+    This branch intentionally uses deviceState.started instead of subscribing
+    to selfdriveState, so logging load can be tested independently from the
+    extra cereal subscription. The LANE button controls the capture session.
+    """
+    return (self._log_enabled and self._log_active and self.sm.seen["deviceState"]
+            and bool(self.sm["deviceState"].started))
 
   def _update_logging(self, gate, model, frame_y, transform, camera_offset: float):
     """Record this assessment to the per-engagement troubleshooting session."""
@@ -197,7 +208,9 @@ class LaneLineClassifierD:
         if name:
           snapshots.append(name)
 
-    v_ego = float(self.sm["carState"].vEgo) if self.sm.seen["carState"] else 0.0
+    # carState is deliberately not subscribed to in this isolation test.
+    # Keep the CSV shape stable while marking speed as unavailable.
+    v_ego = None
     self.logger.log_row(time.monotonic(), int(model.frameId), v_ego, gate, snapshots)
 
   def run(self):
