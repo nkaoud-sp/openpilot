@@ -177,6 +177,22 @@ def test_curved_offset_tracked_per_sample():
   assert float(np.ptp(res.lateral_track)) > 0.3, float(np.ptp(res.lateral_track))
 
 
+def test_track_does_not_extrapolate_into_paintless_region():
+  # paint exists only in the near half, offset +0.7 m from the model line; the
+  # far half has no marking. The lock must recentre the near half but must NOT
+  # drag the (paint-free) far half - that is the median-curb failure mode.
+  frame, x, y, z = _render(line_y=2.55, dash_spans=[(4.0, 16.0)])  # +0.7 m, near only
+  x = np.asarray(x, float)
+  model_y = np.full_like(x, 1.85)
+  res = classify_line(frame, x, model_y, z, TRANSFORM)
+  track = res.lateral_track
+  assert track.size == res.n_samples
+  # near samples (x in 4..16 m -> index < ~24) should lock onto the +0.7 m paint
+  assert float(np.max(track[:20])) > 0.4, track[:20]
+  # far samples (x > ~28 m -> index > ~48) had no paint: no extrapolated shift
+  assert float(np.max(np.abs(track[55:]))) < 0.2, track[55:]
+
+
 def test_recentering_can_be_disabled():
   # with recentring off a large offset falls back to the old behaviour: the
   # scan misses the paint and cannot call it SOLID

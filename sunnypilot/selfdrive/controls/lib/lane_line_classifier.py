@@ -329,17 +329,34 @@ def _locate_lateral_track(frame_y: np.ndarray, grid: np.ndarray, transform: np.n
   if float(np.median(np.abs(off_at[locked] - base))) > LOCATE_MAX_SPREAD_M:
     return zeros
 
-  # drop locks that jump away from the local trend, then interpolate the offset
-  # across gaps/rejects and smooth it so the corridor bends, not jitters.
+  # Robustly fit the locked offsets as a straight line in along-line distance.
+  # Two degrees of freedom capture the cases the on-road data actually shows - a
+  # constant shift (slope 0) and an offset that grows with distance / gentle
+  # curvature (slope != 0) - while a handful of spurious locks on road texture
+  # or a bright curb can't warp the fit the way free per-sample interpolation
+  # did. One trim pass drops the gross outliers before the final fit.
   idx = np.arange(n)
-  trend = np.interp(idx, idx[locked], off_at[locked])
-  keep = locked & (np.abs(off_at - trend) <= LOCATE_OUTLIER_M)
-  if int(keep.sum()) < LOCATE_MIN_SAMPLES:
+  xk = idx[locked].astype(np.float64)
+  ok = off_at[locked].astype(np.float64)
+  slope, icept = np.polyfit(xk, ok, 1)
+  inlier = np.abs(ok - (slope * xk + icept)) <= max(LOCATE_OUTLIER_M, 2.0 * np.median(np.abs(ok - (slope * xk + icept))))
+  if int(inlier.sum()) < LOCATE_MIN_SAMPLES:
     return zeros
+  slope, icept = np.polyfit(xk[inlier], ok[inlier], 1)
+  track = (slope * idx + icept).astype(np.float32)
 
-  track = np.interp(idx, idx[keep], off_at[keep]).astype(np.float32)
-  win = max(1, int(round(cfg.locate_track_smooth_m / SAMPLE_STEP_M)))
-  track = _smooth_valid_signal(track, np.ones(n, dtype=np.bool_), win)
+  # trust the fit only across the span the inlier locks actually cover; fade it
+  # back to the model line outside that span so a slope is never extrapolated
+  # into paint-free samples (the bright-median-curb drag).
+  span = idx[locked][inlier]
+  first, last = int(span.min()), int(span.max())
+  ramp = max(1.0, cfg.locate_track_smooth_m / SAMPLE_STEP_M)
+  dist = np.zeros(n, dtype=np.float32)
+  if first > 0:
+    dist[:first] = np.arange(first, 0, -1)
+  if last < n - 1:
+    dist[last + 1:] = np.arange(1, n - last)
+  track *= np.clip(1.0 - dist / ramp, 0.0, 1.0)
   track = np.clip(track, -cfg.locate_half_m, cfg.locate_half_m).astype(np.float32)
   if float(np.max(np.abs(track))) < LOCATE_MIN_SHIFT_M:
     return zeros                                  # well registered: leave as-is
