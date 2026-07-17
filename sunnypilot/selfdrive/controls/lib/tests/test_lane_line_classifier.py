@@ -161,6 +161,22 @@ def test_large_projection_offset_recovered_by_recentering():
     assert res.line_type == LaneLineType.BROKEN, (offset_m, res)
 
 
+def test_curved_offset_tracked_per_sample():
+  # a registration error that grows along the line (curve / calibration yaw):
+  # the paint drifts across a fixed-shift scan, so a single scalar correction
+  # centres only the middle and leaves the ends off the paint. Per-sample
+  # tracking must bend the scan to follow the marking end-to-end.
+  frame, x, y, z = _render(solid=True)          # paint straight at y=1.85
+  x = np.asarray(x, float)
+  ramp = 0.8 * np.clip((x - 4.0) / 31.0, 0.0, 1.0)   # model line 0 -> 0.8 m off
+  res = classify_line(frame, x, y + ramp, z, TRANSFORM)
+  assert res.line_type == LaneLineType.SOLID, res
+  assert res.duty > 0.75, res.duty
+  # the applied track must vary along the line, not be one constant shift
+  assert res.lateral_track.size == res.n_samples
+  assert float(np.ptp(res.lateral_track)) > 0.3, float(np.ptp(res.lateral_track))
+
+
 def test_recentering_can_be_disabled():
   # with recentring off a large offset falls back to the old behaviour: the
   # scan misses the paint and cannot call it SOLID

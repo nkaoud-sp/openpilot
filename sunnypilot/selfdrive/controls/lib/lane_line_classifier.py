@@ -89,6 +89,13 @@ LOCATE_MIN_SAMPLES = 6     # strongly-marked samples required to trust a shift
 LOCATE_MAX_SPREAD_M = 0.35 # reject the shift if the per-sample locks disagree
 LOCATE_MIN_SHIFT_M = 0.06  # ignore sub-scan jitter so well-registered lines are
                            # left bit-for-bit unchanged
+# per-sample tracking: a single scalar shift cannot follow a curve or a
+# registration error that grows with distance (the paint drifts across the scan
+# along the line). Instead lock the paint at every sample, reject locks that
+# jump away from their neighbours, interpolate across dash gaps and smooth, so
+# the corridor bends to follow the marking end-to-end.
+LOCATE_TRACK_SMOOTH_M = 4.0  # along-line smoothing of the offset track (m)
+LOCATE_OUTLIER_M = 0.40      # a lock this far from the local track is dropped
 
 # --- classification tunables (TUNE ON REAL DATA) -----------------------------
 # Contrast = selected bright-evidence(scan) - median(scan), in 8-bit luminance
@@ -159,6 +166,7 @@ class LaneLineClassifierConfig:
   contrast_method: int = CONTRAST_METHOD_P90
   locate_enabled: bool = True          # recentre the scan on the marking
   locate_half_m: float = LOCATE_HALF_M  # locate search half-width (m)
+  locate_track_smooth_m: float = LOCATE_TRACK_SMOOTH_M  # offset-track smoothing (m)
 
 
 DEFAULT_CONFIG = LaneLineClassifierConfig()
@@ -171,11 +179,14 @@ class LaneLineResult:
   duty: float = 0.0             # fraction of samples with marking present
   period_m: float = 0.0         # estimated dash period (0 if none/solid)
   valid_frac: float = 0.0       # fraction of samples that projected in-frame
-  lateral_offset_m: float = 0.0  # lateral correction applied to recentre the scan
+  lateral_offset_m: float = 0.0  # median lateral correction applied (summary)
   n_samples: int = 0
   # raw signal kept for offline plotting / debugging
   contrast: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float32))
   present: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.bool_))
+  # per-sample lateral correction (m) that bent the scan onto the marking; kept
+  # so overlays can draw the same recentred corridor the classifier used.
+  lateral_track: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float32))
 
   @property
   def crossable(self) -> bool:
@@ -230,24 +241,39 @@ def _shift_grid(grid: np.ndarray, offset_m: float) -> np.ndarray:
   return out
 
 
-def _locate_lateral_offset(frame_y: np.ndarray, grid: np.ndarray, transform: np.ndarray,
-                           cfg: LaneLineClassifierConfig) -> float:
-  """Estimate a lateral correction (m) that recentres the scan on the marking.
+def _apply_track(grid: np.ndarray, track: np.ndarray) -> np.ndarray:
+  """Bend the along-line grid laterally by a per-sample offset (m)."""
+  if track is None or track.size == 0 or not np.any(track):
+    return grid
+  out = grid.copy()
+  out[:, :2] += _ground_perp(grid) * np.asarray(track, dtype=np.float64)[:, None]
+  return out
+
+
+def _locate_lateral_track(frame_y: np.ndarray, grid: np.ndarray, transform: np.ndarray,
+                          cfg: LaneLineClassifierConfig) -> np.ndarray:
+  """Per-sample lateral correction (m) that bends the scan onto the marking.
 
   A wide strip is projected at each along-line sample and scored with a
   shoulder-normalised bar detector: response(o) = luma(o) - mean(luma at
   o +/- one paint-and-a-bit). This peaks on an isolated bright bar sitting on
   road (a lane marking) but stays low on a bright region that keeps extending
   outward (curb, barrier, guard-rail), so the search can't be captured by
-  roadside structure. Per-sample locks that clear the contrast/SNR gates vote;
-  the robust median of their offsets is the correction.
+  roadside structure.
 
-  Returns 0.0 when there is no strong, agreeing lock - so a correctly registered
-  line, blank road or pure texture is left untouched (the model line stands).
+  A single scalar shift cannot follow a curve, or a registration error that
+  grows with distance, so the marking drifts across the scan *along the line*.
+  Instead every sample keeps its own lock: locks that jump away from the local
+  trend are dropped, the offset is interpolated across dash gaps and smoothed,
+  and the corridor bends to track the paint end-to-end.
+
+  Returns an all-zero array (len == grid rows) when there is no trustworthy
+  lock - so a correctly registered line, blank road or texture is untouched.
   """
   n = grid.shape[0]
+  zeros = np.zeros(n, dtype=np.float32)
   if not cfg.locate_enabled or n < 2:
-    return 0.0
+    return zeros
   half = max(cfg.scan_half_m, cfg.locate_half_m)
   h, w = frame_y.shape[:2]
   perp = _ground_perp(grid)
@@ -264,44 +290,65 @@ def _locate_lateral_offset(frame_y: np.ndarray, grid: np.ndarray, transform: np.
   inb = np.isfinite(ix) & np.isfinite(iy) & (ix >= 0) & (ix < w) & (iy >= 0) & (iy < h)
   row_ok = inb.mean(axis=1) >= MIN_INFRAME_FRAC
   if not row_ok.any():
-    return 0.0
+    return zeros
 
   vals = np.full((n, LOCATE_STEPS), np.nan, dtype=np.float32)
   vals[inb] = frame_y[iy[inb].astype(np.int64), ix[inb].astype(np.int64)]
-  v = vals[row_ok]
 
   # shoulder-normalised bar response; only offsets with both shoulders in-window
   # are candidates, so the effective search range shrinks by one shoulder width.
   d = max(1, int(round(LOCATE_SHOULDER_M / (2.0 * half / (LOCATE_STEPS - 1)))))
   if LOCATE_STEPS - 2 * d < 3:
-    return 0.0
-  centre = v[:, d:LOCATE_STEPS - d]
-  shoulders = 0.5 * (v[:, :LOCATE_STEPS - 2 * d] + v[:, 2 * d:])
-  resp = centre - shoulders                      # rows x (LOCATE_STEPS-2d)
+    return zeros
+  centre = vals[:, d:LOCATE_STEPS - d]
+  shoulders = 0.5 * (vals[:, :LOCATE_STEPS - 2 * d] + vals[:, 2 * d:])
+  resp = centre - shoulders                       # n x (LOCATE_STEPS-2d)
   cand_offsets = offsets[d:LOCATE_STEPS - d]
 
-  med = np.nanmedian(v, axis=1)
-  mad = np.nanmedian(np.abs(v - med[:, None]), axis=1)
-  noise = 1.4826 * mad + 0.5
+  # robust road-texture noise, computed only on in-frame rows (fully-out-of-frame
+  # rows would be an all-NaN slice); off rows keep inf noise and never lock.
+  med = np.full(n, np.nan, dtype=np.float64)
+  mad = np.full(n, np.nan, dtype=np.float64)
+  med[row_ok] = np.nanmedian(vals[row_ok], axis=1)
+  mad[row_ok] = np.nanmedian(np.abs(vals[row_ok] - med[row_ok, None]), axis=1)
+  noise = np.where(row_ok, 1.4826 * mad + 0.5, np.inf)
 
   filled = np.where(np.isfinite(resp), resp, -np.inf)
   peak_idx = np.argmax(filled, axis=1)
-  peak = filled[np.arange(filled.shape[0]), peak_idx]
-  snr = peak / np.maximum(noise, 1e-6)
-  strong = np.isfinite(peak) & (peak >= cfg.min_contrast) & (snr >= cfg.min_snr)
-  if int(strong.sum()) < LOCATE_MIN_SAMPLES:
-    return 0.0
+  peak = filled[np.arange(n), peak_idx]
+  with np.errstate(invalid='ignore', divide='ignore'):
+    snr = peak / np.maximum(noise, 1e-6)          # nan/inf on off rows -> not locked
+  off_at = cand_offsets[peak_idx].astype(np.float32)     # per-sample locked offset
+  locked = row_ok & np.isfinite(peak) & (peak >= cfg.min_contrast) & (snr >= cfg.min_snr)
+  if int(locked.sum()) < LOCATE_MIN_SAMPLES:
+    return zeros
 
-  locked = cand_offsets[peak_idx][strong]
-  delta = float(np.median(locked))
-  spread = float(np.median(np.abs(locked - delta)))   # robust (MAD) agreement
-  if spread > LOCATE_MAX_SPREAD_M or abs(delta) < LOCATE_MIN_SHIFT_M:
-    return 0.0
-  return float(np.clip(delta, -cfg.locate_half_m, cfg.locate_half_m))
+  # a marking gives locks that agree; if they scatter wildly it is road texture,
+  # not paint -> no correction at all (fail safe to the model line).
+  base = float(np.median(off_at[locked]))
+  if float(np.median(np.abs(off_at[locked] - base))) > LOCATE_MAX_SPREAD_M:
+    return zeros
+
+  # drop locks that jump away from the local trend, then interpolate the offset
+  # across gaps/rejects and smooth it so the corridor bends, not jitters.
+  idx = np.arange(n)
+  trend = np.interp(idx, idx[locked], off_at[locked])
+  keep = locked & (np.abs(off_at - trend) <= LOCATE_OUTLIER_M)
+  if int(keep.sum()) < LOCATE_MIN_SAMPLES:
+    return zeros
+
+  track = np.interp(idx, idx[keep], off_at[keep]).astype(np.float32)
+  win = max(1, int(round(cfg.locate_track_smooth_m / SAMPLE_STEP_M)))
+  track = _smooth_valid_signal(track, np.ones(n, dtype=np.bool_), win)
+  track = np.clip(track, -cfg.locate_half_m, cfg.locate_half_m).astype(np.float32)
+  if float(np.max(np.abs(track))) < LOCATE_MIN_SHIFT_M:
+    return zeros                                  # well registered: leave as-is
+  return track
 
 
 def scan_geometry_uv(line_x, line_y, line_z, transform: np.ndarray, camera_offset: float = 0.0,
-                     cfg: LaneLineClassifierConfig | None = None, lateral_offset_m: float = 0.0):
+                     cfg: LaneLineClassifierConfig | None = None, lateral_offset_m: float = 0.0,
+                     lateral_track: np.ndarray | None = None):
   """Project the scan geometry into image pixels for overlays/debug snapshots.
 
   Returns (centre_uv, [left_rail_uv, right_rail_uv]) - each an Nx2 array with
@@ -309,16 +356,19 @@ def scan_geometry_uv(line_x, line_y, line_z, transform: np.ndarray, camera_offse
   short to classify. centre_uv rows correspond 1:1 with the classifier's
   along-line samples (and thus with ``LaneLineResult.present``).
 
-  ``lateral_offset_m`` recentres the drawn corridor by the same correction the
-  classifier applied (``LaneLineResult.lateral_offset_m``), so the snapshot
-  shows where it actually looked.
+  Pass ``LaneLineResult.lateral_track`` (per-sample) - or a scalar
+  ``lateral_offset_m`` - to redraw the same recentred corridor the classifier
+  used, so the snapshot shows where it actually looked.
   """
   if cfg is None:
     cfg = DEFAULT_CONFIG
   grid = _resample_line_uniform_x(line_x, line_y, line_z, camera_offset, cfg.sample_x_max)
   if grid is None:
     return None
-  grid = _shift_grid(grid, lateral_offset_m)
+  if lateral_track is not None and len(lateral_track) == grid.shape[0]:
+    grid = _apply_track(grid, np.asarray(lateral_track, dtype=np.float32))
+  else:
+    grid = _shift_grid(grid, lateral_offset_m)
   perp = _ground_perp(grid)
   centre = _project(grid, transform)
   rails = []
@@ -516,10 +566,12 @@ def classify_line(frame_y: np.ndarray, line_x, line_y, line_z,
     return LaneLineResult()
 
   frame_y = np.asarray(frame_y)
-  # the projected model line is only a prior for where the marking is; recentre
-  # the scan on the actual paint before measuring its duty cycle.
-  offset_m = _locate_lateral_offset(frame_y, grid, transform, cfg)
-  grid = _shift_grid(grid, offset_m)
+  # the projected model line is only a prior for where the marking is; bend the
+  # scan onto the actual paint (per-sample, so it follows curves) before
+  # measuring its duty cycle.
+  track = _locate_lateral_track(frame_y, grid, transform, cfg)
+  grid = _apply_track(grid, track)
+  offset_m = float(np.median(track[track != 0.0])) if np.any(track) else 0.0
 
   contrast, noise, valid = _scan_contrast(frame_y, grid, transform,
                                           cfg.scan_half_m, cfg.contrast_method)
@@ -530,6 +582,7 @@ def classify_line(frame_y: np.ndarray, line_x, line_y, line_z,
   # dash edges (~0.5 m per side) and push long-dash patterns over the solid
   # duty threshold. The smoothed copy is only for plotting/debug output.
   res = LaneLineResult(valid_frac=valid_frac, n_samples=n, lateral_offset_m=offset_m,
+                       lateral_track=track,
                        contrast=_smooth_valid_signal(contrast, valid, cfg.contrast_smooth_window))
   if valid_frac < cfg.min_valid_frac:
     return res  # UNKNOWN
@@ -659,6 +712,7 @@ class _TemporalLineFilter:
           period_m=last_known.period_m,
           valid_frac=result.valid_frac,
           lateral_offset_m=result.lateral_offset_m,
+          lateral_track=result.lateral_track,
           n_samples=result.n_samples,
           contrast=result.contrast,
           present=result.present,
@@ -673,6 +727,7 @@ class _TemporalLineFilter:
           period_m=float(0.4 * last_known.period_m + 0.6 * result.period_m),
           valid_frac=result.valid_frac,
           lateral_offset_m=result.lateral_offset_m,
+          lateral_track=result.lateral_track,
           n_samples=result.n_samples,
           contrast=result.contrast,
           present=result.present,

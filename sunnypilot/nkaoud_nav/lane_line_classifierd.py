@@ -206,7 +206,7 @@ class LaneLineClassifierD:
       if idx < len(lines) and self.logger.snapshot_due(side, label):
         ll = lines[idx]
         geometry = scan_geometry_uv(ll.x, ll.y, ll.z, transform, camera_offset, self._cfg,
-                                    res.lateral_offset_m)
+                                    res.lateral_offset_m, res.lateral_track)
         name = self.logger.save_snapshot(frame_y, side, label, res.duty, geometry, res.present)
         if name:
           snapshots.append(name)
