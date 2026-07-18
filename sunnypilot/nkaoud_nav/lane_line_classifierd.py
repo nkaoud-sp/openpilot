@@ -201,6 +201,7 @@ class LaneLineClassifierD:
 
     snapshots = []
     lines = list(model.laneLines)
+    probs = list(getattr(model, "laneLineProbs", []) or [])
     for side, res, idx in (("L", gate.left, LEFT_EGO_LINE), ("R", gate.right, RIGHT_EGO_LINE)):
       label = LABELS.get(int(res.line_type), "unknown")
       if idx < len(lines) and self.logger.snapshot_due(side, label):
@@ -210,11 +211,37 @@ class LaneLineClassifierD:
         name = self.logger.save_snapshot(frame_y, side, label, res.duty, geometry, res.present)
         if name:
           snapshots.append(name)
+          # exact inputs to replay classify_line offline against this frame
+          self.logger.save_raw(name, self._raw_inputs(model, lines, probs, side, label,
+                                                       camera_offset))
 
     # carState is deliberately not subscribed to in this isolation test.
     # Keep the CSV shape stable while marking speed as unavailable.
     v_ego = None
     self.logger.log_row(time.monotonic(), int(model.frameId), v_ego, gate, snapshots)
+
+  def _raw_inputs(self, model, lines, probs, side: str, label: str, camera_offset: float) -> dict:
+    """Everything needed to rebuild the transform and re-run classify_line
+    offline against the saved frame: both ego polylines, calib rpy, intrinsics."""
+    def line_dict(idx):
+      if idx >= len(lines):
+        return None
+      ll = lines[idx]
+      return {
+        "x": [float(v) for v in ll.x],
+        "y": [float(v) for v in ll.y],
+        "z": [float(v) for v in ll.z],
+        "prob": float(probs[idx]) if idx < len(probs) else None,
+      }
+    return {
+      "frame_id": int(model.frameId),
+      "snapshot_side": side,
+      "label": label,
+      "camera_offset": float(camera_offset),
+      "rpy_calib": [float(v) for v in (self.rpy_calib or [])],
+      "intrinsics": [[float(c) for c in row] for row in self.intrinsics],
+      "lines": {"L": line_dict(LEFT_EGO_LINE), "R": line_dict(RIGHT_EGO_LINE)},
+    }
 
   def run(self):
     # the loop runs at camera rate so the non-conflating VisionIPC queue never

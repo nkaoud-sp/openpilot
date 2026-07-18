@@ -14,12 +14,17 @@ lane_line_classifierd feeds every published assessment into a session:
       assessments.csv   one row per publish: both sides' label/duty/period/...
       summary.json      per-side label histograms (written at session end)
       <t>_L_unknown_d032.jpg   rate-limited annotated snapshots per label
+      <t>_L_unknown_d032.json  raw inputs to replay that frame offline
       ...
 
 Snapshots are the road-camera Y plane with the scan corridor drawn on: the two
 rails as white lines and one square per along-line sample - white where the
 classifier saw marking, black where it saw none - so a single image shows both
-where it looked and what it detected.
+where it looked and what it detected. Each snapshot has a matching .json
+sidecar with the exact classifier inputs for that frame - both ego lane-line
+polylines (x/y/z), the calibration rpy, the camera intrinsics and offset - so
+``classify_line`` can be re-run offline against the saved image to tell an
+algorithm miss from genuinely worn/absent paint.
 
 On disengage the session directory is zipped, queued on the nkaoud_nav
 mailer's pending queue, and the directory removed; the mailer emails the zip
@@ -158,6 +163,21 @@ class LaneLineSessionLogger:
     except (OSError, ValueError, ImportError):
       cloudlog.exception("lane_line_logger: snapshot failed")
       return None
+
+  def save_raw(self, snapshot_name: str, raw: dict) -> None:
+    """Write the classifier inputs for a snapshot as a matching .json sidecar.
+
+    Small (a couple of polylines + calib) and only written when a snapshot is,
+    so it inherits the snapshot rate-limit and session cap.
+    """
+    if not self.is_active:
+      return
+    try:
+      base = os.path.splitext(snapshot_name)[0]
+      with open(os.path.join(self._dir, base + ".json"), "w") as f:
+        json.dump(raw, f, separators=(",", ":"), default=float)
+    except (OSError, TypeError, ValueError):
+      cloudlog.exception("lane_line_logger: raw sidecar write failed")
 
   @staticmethod
   def _draw_polyline(draw, uv: np.ndarray, fill: int, width: int) -> None:
