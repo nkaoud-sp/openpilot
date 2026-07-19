@@ -7,13 +7,15 @@ See the LICENSE.md file in the root directory for more details.
 
 Offline replay for lane-line troubleshooting sessions.
 
-Each snapshot in a session (see lane_line_logger.py) has a matching ``.json``
-sidecar carrying the exact classifier inputs for that frame: both ego lane-line
+Each snapshot in a session (see lane_line_logger.py) has a lossless,
+unannotated ``.raw.png`` Y-plane frame and a matching ``.json`` sidecar. The
+sidecar carries the exact classifier inputs for that frame: both ego lane-line
 polylines, the calibration rpy, the camera intrinsics and offset. This tool
 rebuilds the device->image transform and re-runs ``classify_line`` against the
-saved Y-plane image, so a borderline result can be diagnosed as an algorithm
-miss vs. genuinely worn/absent paint - and tuning changes can be checked
-against real frames instead of synthetic ones.
+raw image, so a borderline result can be diagnosed as an algorithm miss vs.
+genuinely worn/absent paint - and tuning changes can be checked against real
+frames instead of synthetic ones. It intentionally refuses annotated JPEGs:
+the diagnostic overlay changes the pixels that the classifier samples.
 
 Pure numpy + Pillow; no cereal/openpilot runtime needed.
 
@@ -61,8 +63,13 @@ def replay_frame(session_dir: str, sidecar: str, cfg: LaneLineClassifierConfig):
 
   with open(os.path.join(session_dir, sidecar)) as f:
     raw = json.load(f)
-  jpg = os.path.splitext(sidecar)[0] + ".jpg"
-  frame_y = np.asarray(Image.open(os.path.join(session_dir, jpg)).convert("L"))
+  raw_png = os.path.splitext(sidecar)[0] + ".raw.png"
+  raw_path = os.path.join(session_dir, raw_png)
+  if not os.path.isfile(raw_path):
+    raise FileNotFoundError(
+      f"missing unannotated raw frame for {sidecar}: {raw_png}. "
+      "This session predates lossless raw-frame capture and cannot be replayed safely.")
+  frame_y = np.asarray(Image.open(raw_path).convert("L"))
   transform = build_transform(raw["rpy_calib"], raw["intrinsics"])
   offset = float(raw.get("camera_offset", 0.0))
 

@@ -13,6 +13,7 @@ lane_line_classifierd feeds every published assessment into a session:
       config.json       classifier config + camera offset at session start
       assessments.csv   one row per publish: both sides' label/duty/period/...
       summary.json      per-side label histograms (written at session end)
+      <t>_L_unknown_d032.raw.png  lossless, unannotated classifier input
       <t>_L_unknown_d032.jpg   rate-limited annotated snapshots per label
       <t>_L_unknown_d032.json  raw inputs to replay that frame offline
       ...
@@ -20,11 +21,13 @@ lane_line_classifierd feeds every published assessment into a session:
 Snapshots are the road-camera Y plane with the scan corridor drawn on: the two
 rails as white lines and one square per along-line sample - white where the
 classifier saw marking, black where it saw none - so a single image shows both
-where it looked and what it detected. Each snapshot has a matching .json
-sidecar with the exact classifier inputs for that frame - both ego lane-line
-polylines (x/y/z), the calibration rpy, the camera intrinsics and offset - so
-``classify_line`` can be re-run offline against the saved image to tell an
-algorithm miss from genuinely worn/absent paint.
+where it looked and what it detected. Each annotated JPEG has a paired,
+lossless unannotated Y-plane PNG and a matching .json sidecar. The PNG is the
+exact image fed to the classifier; replay must never sample the overlay because
+its rails and black/white detection squares would contaminate the result. The
+sidecar contains both ego lane-line polylines (x/y/z), the calibration rpy,
+the camera intrinsics and offset, so ``classify_line`` can be re-run offline
+to tell an algorithm miss from genuinely worn/absent paint.
 
 On disengage the session directory is zipped, queued on the nkaoud_nav
 mailer's pending queue, and the directory removed; the mailer emails the zip
@@ -137,12 +140,19 @@ class LaneLineSessionLogger:
 
   def save_snapshot(self, frame_y: np.ndarray, side: str, label: str, duty: float,
                     geometry, present: np.ndarray) -> str | None:
-    """Annotate the frame with the scan corridor + per-sample detections and save."""
+    """Save an untouched classifier input plus an annotated diagnostic view."""
     if not self.snapshot_due(side, label):
       return None
     try:
       from PIL import Image, ImageDraw
-      img = Image.fromarray(np.ascontiguousarray(frame_y), "L")
+      name = f"{time.strftime('%H%M%S')}_{side}_{label}_d{int(round(duty * 100)):03d}.jpg"
+      base = os.path.splitext(name)[0]
+      # Save the exact frame first, before any overlay pixels are drawn. PNG is
+      # lossless: JPEG artefacts can move a borderline contrast decision.
+      raw = Image.fromarray(np.ascontiguousarray(frame_y), "L")
+      raw.save(os.path.join(self._dir, base + ".raw.png"), "PNG")
+
+      img = raw.copy()
       draw = ImageDraw.Draw(img)
       if geometry is not None:
         centre, rails = geometry
@@ -155,7 +165,6 @@ class LaneLineSessionLogger:
             fill = 255 if present[i] else 0
             draw.rectangle((u - 2, v - 2, u + 2, v + 2), fill=fill)
 
-      name = f"{time.strftime('%H%M%S')}_{side}_{label}_d{int(round(duty * 100)):03d}.jpg"
       img.save(os.path.join(self._dir, name), "JPEG", quality=80)
       self._snap_last[(side, label)] = time.monotonic()
       self._snap_count += 1
