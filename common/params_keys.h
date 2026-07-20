@@ -182,7 +182,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LaneLineVisualizerLogging", {PERSISTENT | BACKUP, BOOL, "0"}},  // enable the LANE capture button + emailed troubleshooting bundles
     {"LaneLineVisualizerLogActive", {CLEAR_ON_MANAGER_START, BOOL}},   // onroad LANE button state: capture in progress
     {"LaneLineContrastMethod", {PERSISTENT | BACKUP, INT, "0"}},       // lateral evidence: 0=P90 1=P95 2=Top3 3=Max
-    {"LaneLineMinContrast", {PERSISTENT | BACKUP, INT, "18"}},        // marking-present luminance contrast threshold (5..60 counts)
+    {"LaneLineMinContrast", {PERSISTENT | BACKUP, INT, "18"}},        // marking-present luminance contrast threshold (2..60 counts)
     {"LaneLineSolidDuty", {PERSISTENT | BACKUP, INT, "80"}},          // duty %% at/above which a line is SOLID (50..99)
     {"LaneLineMinAutocorr", {PERSISTENT | BACKUP, INT, "30"}},        // min periodicity strength %% to call BROKEN (10..90)
     {"LaneLineMinPeriodM", {PERSISTENT | BACKUP, INT, "3"}},          // min plausible dash period, metres (1..10)

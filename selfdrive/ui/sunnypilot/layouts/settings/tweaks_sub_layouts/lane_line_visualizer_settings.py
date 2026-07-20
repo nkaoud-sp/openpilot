@@ -80,8 +80,9 @@ class LaneLineVisualizerSettingsLayout(Widget):
     self._min_contrast = option_item_sp(
       title=lambda: tr("Min Contrast"),
       description=lambda: tr("How much brighter than the road a marking must be to count as present "
-                            "(luminance counts). Lower for faded paint; raise if glare causes false positives."),
-      param="LaneLineMinContrast", min_value=5, max_value=60,
+                            "(luminance counts). Lower for faded or low-contrast paint; raise it if glare "
+                            "or road texture causes false positives."),
+      param="LaneLineMinContrast", min_value=2, max_value=60,
       label_callback=lambda v: str(v), inline=False,
     )
     self._solid_duty = option_item_sp(
