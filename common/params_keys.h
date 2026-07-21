@@ -181,6 +181,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LaneLineVisualizerScanArea", {PERSISTENT | BACKUP, BOOL, "0"}}, // amber border outlining the corridor the classifier samples
     {"LaneLineVisualizerLogging", {PERSISTENT | BACKUP, BOOL, "0"}},  // enable the LANE capture button + emailed troubleshooting bundles
     {"LaneLineVisualizerLogActive", {CLEAR_ON_MANAGER_START, BOOL}},   // onroad LANE button state: capture in progress
+    {"ExperimentalLongitudinalLogging", {PERSISTENT | BACKUP, BOOL, "0"}}, // email E2E longitudinal diagnostics after each drive
     {"LaneLineContrastMethod", {PERSISTENT | BACKUP, INT, "0"}},       // lateral evidence: 0=P90 1=P95 2=Top3 3=Max
     {"LaneLineMinContrast", {PERSISTENT | BACKUP, INT, "18"}},        // marking-present luminance contrast threshold (2..60 counts)
     {"LaneLineMinSnr", {PERSISTENT | BACKUP, INT, "30"}},             // marking-present SNR threshold in tenths (10..60 = 1.0..6.0)

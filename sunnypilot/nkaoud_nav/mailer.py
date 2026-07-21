@@ -58,6 +58,15 @@ LANE_EMAIL_BODY = (
   "assessments CSV, classifier config, and annotated road-camera snapshots.\n\n"
   "This message was generated automatically after openpilot was disengaged."
 )
+EXPERIMENTAL_LONG_ZIP_PREFIX = "experimental_longitudinal_log_"
+EXPERIMENTAL_LONG_LOGGING_PARAM = "ExperimentalLongitudinalLogging"
+EXPERIMENTAL_LONG_EMAIL_SUBJECT = "experimental longitudinal log"
+EXPERIMENTAL_LONG_EMAIL_BODY = (
+  "Attached is an experimental longitudinal diagnostics bundle: model action, "
+  "disengage predictions, planner output, lead state, and user intervention "
+  "markers.\n\n"
+  "This message was generated automatically when the drive ended."
+)
 DEFAULT_SMTP_HOST = "smtp-relay.brevo.com"
 DEFAULT_SMTP_PORT = 587
 SMTP_TIMEOUT = 20
@@ -230,8 +239,15 @@ def send_pending_log() -> bool:
     try:
       base = os.path.basename(path)
       is_lane = base.startswith(LANE_ZIP_PREFIX)
-      subject = f"{LANE_EMAIL_SUBJECT if is_lane else EMAIL_SUBJECT} - {base}"
-      message = _build_message(cfg, path, subject, LANE_EMAIL_BODY if is_lane else EMAIL_BODY)
+      is_experimental_long = base.startswith(EXPERIMENTAL_LONG_ZIP_PREFIX)
+      if is_lane:
+        subject_base, body = LANE_EMAIL_SUBJECT, LANE_EMAIL_BODY
+      elif is_experimental_long:
+        subject_base, body = EXPERIMENTAL_LONG_EMAIL_SUBJECT, EXPERIMENTAL_LONG_EMAIL_BODY
+      else:
+        subject_base, body = EMAIL_SUBJECT, EMAIL_BODY
+      subject = f"{subject_base} - {base}"
+      message = _build_message(cfg, path, subject, body)
       _send_via_smtp(cfg, message)
     except Exception:  # noqa: BLE001 -- surface any SMTP/network failure as a retry
       cloudlog.exception("nkaoud_nav mailer: send failed")
@@ -307,6 +323,13 @@ def _handle_drive_end(params: Params) -> None:
     except Exception:  # noqa: BLE001 -- never let cleanup kill the mailer
       cloudlog.exception("nkaoud_nav mailer: lane session cleanup failed")
 
+  if params.get_bool(EXPERIMENTAL_LONG_LOGGING_PARAM):
+    try:
+      from sunnypilot.nkaoud_nav.experimental_longitudinal_logger import finalize_orphan_sessions
+      finalize_orphan_sessions()
+    except Exception:  # noqa: BLE001 -- never let cleanup kill the mailer
+      cloudlog.exception("nkaoud_nav mailer: experimental long session cleanup failed")
+
 
 def main() -> None:
   # Imported here (not at module top) so the settings UI can reuse smtp_test
@@ -333,8 +356,8 @@ def main() -> None:
     # (original behaviour); lane-line troubleshooting bundles are queued on
     # disengage and may send mid-drive over LTE so they arrive promptly.
     nav_send_ok = not started and params.get_bool(AUTO_EMAIL_PARAM)
-    lane_send_ok = params.get_bool(LANE_LOGGING_PARAM)
-    if nav_send_ok or lane_send_ok:
+    diagnostics_send_ok = params.get_bool(LANE_LOGGING_PARAM) or params.get_bool(EXPERIMENTAL_LONG_LOGGING_PARAM)
+    if nav_send_ok or diagnostics_send_ok:
       if (params.get(PENDING_LOG_PARAM) or "").strip():
         if time.monotonic() - last_send_attempt >= SEND_RETRY_SECONDS:
           send_pending_log()

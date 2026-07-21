@@ -49,6 +49,13 @@ class EmailLogsSettingsLayout(Widget):
                             "Maneuvers\" and configured Email (SMTP) settings below."),
       param="NkaoudNavAutoEmail",
     )
+    self._experimental_longitudinal_logging = toggle_item_sp(
+      title=lambda: tr("Experimental Longitudinal Logs"),
+      description=lambda: tr("When openpilot is active, record model acceleration, disengage predictions, planner " +
+                            "output, lead state, and gas/brake/steering interventions. At drive end, the session " +
+                            "is zipped, emailed using the SMTP settings below, and deleted after the send succeeds."),
+      param="ExperimentalLongitudinalLogging",
+    )
     self._email_config_button = button_item_sp(
       title=lambda: self._email_config_title(),
       button_text=lambda: tr("Configure"),
@@ -59,6 +66,7 @@ class EmailLogsSettingsLayout(Widget):
     return [
       self._drive_logging,
       self._auto_email,
+      self._experimental_longitudinal_logging,
       self._email_config_button,
     ]
 
