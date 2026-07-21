@@ -143,7 +143,7 @@ class SelfdriveD(CruiseHelper):
     self.state_machine = StateMachine()
     self.rk = Ratekeeper(100, print_delay_threshold=None)
 
-    self.ignored_processes = {'mapd', }
+    self.ignored_processes = {'mapd', 'experimental_longitudinal_logger'}
 
     # Determine startup event
     # personal fork: use the normal startup chime instead of the "branch is not
