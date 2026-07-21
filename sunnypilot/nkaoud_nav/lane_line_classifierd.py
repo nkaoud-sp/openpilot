@@ -105,6 +105,7 @@ class LaneLineClassifierD:
     self._cfg = LaneLineClassifierConfig(
       sample_x_max=float(self._get_int("LaneLineSampleMaxM", 60)),
       min_contrast=float(self._get_int("LaneLineMinContrast", 18)),
+      min_snr=self._get_int("LaneLineMinSnr", 30) / 10.0,
       solid_duty=self._get_int("LaneLineSolidDuty", 80) / 100.0,
       min_period_m=float(self._get_int("LaneLineMinPeriodM", 3)),
       max_period_m=float(self._get_int("LaneLineMaxPeriodM", 30)),

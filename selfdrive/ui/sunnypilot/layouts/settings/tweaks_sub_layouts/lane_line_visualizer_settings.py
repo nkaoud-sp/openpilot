@@ -85,6 +85,15 @@ class LaneLineVisualizerSettingsLayout(Widget):
       param="LaneLineMinContrast", min_value=2, max_value=60,
       label_callback=lambda v: str(v), inline=False,
     )
+    self._min_snr = option_item_sp(
+      title=lambda: tr("Min SNR"),
+      description=lambda: tr("How far paint contrast must stand out from local road texture. Lower for "
+                            "faint markings; raise it to reject glare and textured pavement."),
+      # Store tenths as an integer Params value, allowing on-road tuning such
+      # as 1.5 or 2.0 while retaining the classifier's 3.0 default.
+      param="LaneLineMinSnr", min_value=10, max_value=60,
+      label_callback=lambda v: f"{v / 10:.1f}", inline=False,
+    )
     self._solid_duty = option_item_sp(
       title=lambda: tr("Solid Duty"),
       description=lambda: tr("Fraction of the line that must read as painted to call it SOLID."),
@@ -123,6 +132,7 @@ class LaneLineVisualizerSettingsLayout(Widget):
       self._logging,
       self._contrast_method,
       self._min_contrast,
+      self._min_snr,
       self._solid_duty,
       self._min_autocorr,
       self._min_period,
