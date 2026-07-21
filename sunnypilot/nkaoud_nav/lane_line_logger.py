@@ -59,8 +59,8 @@ LABELS = {0: "unknown", 1: "broken", 2: "solid", 3: "double"}
 
 CSV_FIELDS = [
   "wall_time", "mono_time", "frame_id", "v_ego",
-  "left_type", "left_conf", "left_duty", "left_period_m", "left_valid_frac", "left_offset_m", "left_n",
-  "right_type", "right_conf", "right_duty", "right_period_m", "right_valid_frac", "right_offset_m", "right_n",
+  "left_type", "left_reason", "left_conf", "left_duty", "left_period_m", "left_periodicity", "left_valid_frac", "left_offset_m", "left_n", "left_valid_n", "left_present_n", "left_low_contrast_n", "left_low_snr_n",
+  "right_type", "right_reason", "right_conf", "right_duty", "right_period_m", "right_periodicity", "right_valid_frac", "right_offset_m", "right_n", "right_valid_n", "right_present_n", "right_low_contrast_n", "right_low_snr_n",
   "left_crossable", "right_crossable", "snapshots",
 ]
 
@@ -121,12 +121,18 @@ class LaneLineSessionLogger:
       for side, res in (("left", gate.left), ("right", gate.right)):
         label = LABELS.get(int(res.line_type), "unknown")
         row[f"{side}_type"] = label
+        row[f"{side}_reason"] = res.reason
         row[f"{side}_conf"] = f"{res.confidence:.2f}"
         row[f"{side}_duty"] = f"{res.duty:.2f}"
         row[f"{side}_period_m"] = f"{res.period_m:.1f}"
+        row[f"{side}_periodicity"] = f"{res.periodicity:.2f}"
         row[f"{side}_valid_frac"] = f"{res.valid_frac:.2f}"
         row[f"{side}_offset_m"] = f"{res.lateral_offset_m:+.2f}"
         row[f"{side}_n"] = res.n_samples
+        row[f"{side}_valid_n"] = res.n_valid
+        row[f"{side}_present_n"] = res.n_present
+        row[f"{side}_low_contrast_n"] = res.n_low_contrast
+        row[f"{side}_low_snr_n"] = res.n_low_snr
         self._label_counts[side[0].upper()][label] += 1
       self._csv.writerow(row)
       self._csv_file.flush()

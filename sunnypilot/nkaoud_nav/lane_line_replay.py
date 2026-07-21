@@ -84,6 +84,9 @@ def replay_frame(session_dir: str, sidecar: str, cfg: LaneLineClassifierConfig):
       "type": LaneLineType(res.line_type).name,
       "duty": res.duty, "period_m": res.period_m,
       "valid_frac": res.valid_frac, "offset_m": res.lateral_offset_m,
+      "reason": res.reason, "periodicity": res.periodicity,
+      "n_samples": res.n_samples, "n_valid": res.n_valid, "n_present": res.n_present,
+      "n_low_contrast": res.n_low_contrast, "n_low_snr": res.n_low_snr,
       "prob": line.get("prob"),
     })
   return rows
@@ -122,13 +125,14 @@ def main() -> None:
     if not sidecars:
       raise SystemExit("no raw sidecars found (needs a session logged with raw capture)")
 
-    print(f"{'sidecar':<34} {'side':<4} {'type':<8} {'duty':>5} {'period':>7} "
-          f"{'validf':>6} {'offset':>7} {'prob':>5}")
+    print(f"{'sidecar':<34} {'side':<4} {'type':<8} {'reason':<26} {'duty':>5} {'period':>7} "
+          f"{'per':>5} {'valid':>7} {'pres':>4} {'lowc':>4} {'lows':>4} {'offset':>7} {'prob':>5}")
     for sc in sidecars:
       for r in replay_frame(session_dir, sc, cfg):
         prob = "-" if r["prob"] is None else f"{r['prob']:.2f}"
-        print(f"{r['sidecar']:<34} {r['side']:<4} {r['type']:<8} {r['duty']:>5.2f} "
-              f"{r['period_m']:>7.1f} {r['valid_frac']:>6.2f} {r['offset_m']:>+7.2f} {prob:>5}")
+        print(f"{r['sidecar']:<34} {r['side']:<4} {r['type']:<8} {r['reason']:<26} {r['duty']:>5.2f} "
+              f"{r['period_m']:>7.1f} {r['periodicity']:>5.2f} {r['n_valid']:>3}/{r['n_samples']:<3} "
+              f"{r['n_present']:>4} {r['n_low_contrast']:>4} {r['n_low_snr']:>4} {r['offset_m']:>+7.2f} {prob:>5}")
 
 
 if __name__ == "__main__":

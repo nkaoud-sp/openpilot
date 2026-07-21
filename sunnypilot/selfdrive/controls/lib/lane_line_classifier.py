@@ -45,7 +45,7 @@ per-side debounce for use against a live ``modelV2``.
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import IntEnum
 
 import numpy as np
@@ -181,6 +181,13 @@ class LaneLineResult:
   valid_frac: float = 0.0       # fraction of samples that projected in-frame
   lateral_offset_m: float = 0.0  # median lateral correction applied (summary)
   n_samples: int = 0
+  # Diagnostics explain UNKNOWN without changing its fail-safe behavior.
+  reason: str = "unclassified"
+  n_valid: int = 0
+  n_present: int = 0
+  n_low_contrast: int = 0
+  n_low_snr: int = 0
+  periodicity: float = 0.0
   # raw signal kept for offline plotting / debugging
   contrast: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float32))
   present: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.bool_))
@@ -580,7 +587,7 @@ def classify_line(frame_y: np.ndarray, line_x, line_y, line_z,
     cfg = DEFAULT_CONFIG
   grid = _resample_line_uniform_x(line_x, line_y, line_z, camera_offset, cfg.sample_x_max)
   if grid is None:
-    return LaneLineResult()
+    return LaneLineResult(reason="line_too_short")
 
   frame_y = np.asarray(frame_y)
   # the projected model line is only a prior for where the marking is; bend the
@@ -600,8 +607,10 @@ def classify_line(frame_y: np.ndarray, line_x, line_y, line_z,
   # duty threshold. The smoothed copy is only for plotting/debug output.
   res = LaneLineResult(valid_frac=valid_frac, n_samples=n, lateral_offset_m=offset_m,
                        lateral_track=track,
+                       n_valid=int(valid.sum()),
                        contrast=_smooth_valid_signal(contrast, valid, cfg.contrast_smooth_window))
   if valid_frac < cfg.min_valid_frac:
+    res.reason = "insufficient_in_frame_samples"
     return res  # UNKNOWN
 
   # marking present when contrast clears the absolute floor AND stands out from
@@ -610,7 +619,10 @@ def classify_line(frame_y: np.ndarray, line_x, line_y, line_z,
   snr = contrast / np.maximum(noise, 1e-6)
   strong = (contrast >= cfg.min_contrast) & (snr >= cfg.min_snr)
   weak = (contrast >= max(8.0, 0.4 * cfg.min_contrast)) & (snr >= 2.0 * cfg.min_snr)
-  present = valid & (strong | weak)
+  raw_present = valid & (strong | weak)
+  res.n_low_contrast = int((valid & (contrast < cfg.min_contrast)).sum())
+  res.n_low_snr = int((valid & (contrast >= cfg.min_contrast) & ~raw_present).sum())
+  present = raw_present
   present = _despeckle(present, valid)
   present = _repair_short_gaps(present, valid, cfg.max_repair_gap_m)
   res.present = present
@@ -618,8 +630,10 @@ def classify_line(frame_y: np.ndarray, line_x, line_y, line_z,
   duty = float(vpresent.mean()) if vpresent.size else 0.0
   res.duty = duty
   valid_n = int(vpresent.size)
+  res.n_present = int(vpresent.sum())
 
   period_m, ac_strength = _autocorr_period(present, valid, cfg.min_period_m, cfg.max_period_m)
+  res.periodicity = ac_strength
   present_runs = _run_lengths(vpresent)
   absent_runs = _run_lengths(~vpresent) if valid_n else []
   longest_present_frac = (max(present_runs) / valid_n) if present_runs and valid_n else 0.0
@@ -630,12 +644,19 @@ def classify_line(frame_y: np.ndarray, line_x, line_y, line_z,
     # almost nothing there: worn line, wrong projection, or no marking
     res.line_type = LaneLineType.UNKNOWN
     res.confidence = 0.0
+    if res.n_low_contrast > max(res.n_low_snr, res.n_present):
+      res.reason = "low_contrast"
+    elif res.n_low_snr > res.n_present:
+      res.reason = "low_snr"
+    else:
+      res.reason = "insufficient_paint_coverage"
     return res
 
   if duty >= cfg.solid_duty:
     res.line_type = LaneLineType.SOLID
     res.confidence = float(np.clip((duty - cfg.solid_duty) / (1 - cfg.solid_duty) * 0.5 + 0.5, 0, 1))
     res.period_m = 0.0
+    res.reason = "ok"
     return res
 
   # a solid line with dirt/shadow dropouts can look quasi-periodic, so don't
@@ -657,6 +678,7 @@ def classify_line(frame_y: np.ndarray, line_x, line_y, line_z,
     contig_score = 0.55 + 0.35 * longest_present_frac + 0.20 * duty - 0.15 * longest_absent_frac
     res.confidence = float(np.clip(contig_score, 0.0, 0.95))
     res.period_m = 0.0
+    res.reason = "ok"
     return res
 
   # mid-band duty: dashed if there's a plausible, strong period
@@ -664,6 +686,7 @@ def classify_line(frame_y: np.ndarray, line_x, line_y, line_z,
     res.line_type = LaneLineType.BROKEN
     res.period_m = period_m
     res.confidence = float(np.clip(ac_strength, 0, 1))
+    res.reason = "ok"
     return res
 
   # autocorr needs ~3 regular cycles in the window; real dashes are often too
@@ -679,12 +702,14 @@ def classify_line(frame_y: np.ndarray, line_x, line_y, line_z,
       res.line_type = LaneLineType.BROKEN
       res.period_m = dash_m + gap_m
       res.confidence = float(np.clip(0.35 + 0.05 * min(len(present_runs), 6), 0, 0.65))
+      res.reason = "ok"
       return res
 
   # gappy but neither periodic nor dash-shaped -> undecided, fail safe
   res.line_type = LaneLineType.UNKNOWN
   res.confidence = 0.0
   res.period_m = period_m
+  res.reason = "ambiguous_dash_pattern"
   return res
 
 
@@ -722,32 +747,28 @@ class _TemporalLineFilter:
       self._unknown_run += 1
       if (self._unknown_run <= self._hold_frames and last_known is not None and
           last_known.confidence >= 0.8 and result.valid_frac >= 0.5 * max(last_known.valid_frac, 1e-6)):
-        out = LaneLineResult(
-          line_type=last_known.line_type,
+        out = replace(last_known,
           confidence=last_known.confidence * 0.85,
-          duty=last_known.duty,
-          period_m=last_known.period_m,
           valid_frac=result.valid_frac,
           lateral_offset_m=result.lateral_offset_m,
           lateral_track=result.lateral_track,
           n_samples=result.n_samples,
+          reason=f"temporal_hold:{result.reason}",
+          n_valid=result.n_valid,
+          n_present=result.n_present,
+          n_low_contrast=result.n_low_contrast,
+          n_low_snr=result.n_low_snr,
+          periodicity=result.periodicity,
           contrast=result.contrast,
           present=result.present,
         )
     else:
       self._unknown_run = 0
       if last_known is not None and last_known.line_type == result.line_type:
-        out = LaneLineResult(
-          line_type=result.line_type,
+        out = replace(result,
           confidence=float(np.clip(0.4 * last_known.confidence + 0.6 * result.confidence, 0, 1)),
           duty=float(0.4 * last_known.duty + 0.6 * result.duty),
           period_m=float(0.4 * last_known.period_m + 0.6 * result.period_m),
-          valid_frac=result.valid_frac,
-          lateral_offset_m=result.lateral_offset_m,
-          lateral_track=result.lateral_track,
-          n_samples=result.n_samples,
-          contrast=result.contrast,
-          present=result.present,
         )
 
     self._history.append(out)
@@ -790,12 +811,12 @@ class LaneLineClassifier:
       ll = lines[LEFT_EGO_LINE]
       # when the model itself doesn't see a line, don't classify road texture
       res = (classify_line(frame_y, ll.x, ll.y, ll.z, transform, camera_offset, cfg)
-             if self._line_prob(modelV2, LEFT_EGO_LINE) >= MIN_LINE_PROB else LaneLineResult())
+             if self._line_prob(modelV2, LEFT_EGO_LINE) >= MIN_LINE_PROB else LaneLineResult(reason="model_low_confidence"))
       gate.left = self._left_filter.update(res)
     if len(lines) > RIGHT_EGO_LINE:
       rl = lines[RIGHT_EGO_LINE]
       res = (classify_line(frame_y, rl.x, rl.y, rl.z, transform, camera_offset, cfg)
-             if self._line_prob(modelV2, RIGHT_EGO_LINE) >= MIN_LINE_PROB else LaneLineResult())
+             if self._line_prob(modelV2, RIGHT_EGO_LINE) >= MIN_LINE_PROB else LaneLineResult(reason="model_low_confidence"))
       gate.right = self._right_filter.update(res)
 
     gate.left_crossable = self._left.update(gate.left.crossable)

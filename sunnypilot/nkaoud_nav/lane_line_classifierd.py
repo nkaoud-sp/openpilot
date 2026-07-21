@@ -212,7 +212,7 @@ class LaneLineClassifierD:
         if name:
           snapshots.append(name)
           # exact inputs to replay classify_line offline against this frame
-          self.logger.save_raw(name, self._raw_inputs(model, lines, probs, side, label,
+          self.logger.save_raw(name, self._raw_inputs(model, lines, probs, gate, side, label,
                                                        camera_offset))
 
     # carState is deliberately not subscribed to in this isolation test.
@@ -220,7 +220,7 @@ class LaneLineClassifierD:
     v_ego = None
     self.logger.log_row(time.monotonic(), int(model.frameId), v_ego, gate, snapshots)
 
-  def _raw_inputs(self, model, lines, probs, side: str, label: str, camera_offset: float) -> dict:
+  def _raw_inputs(self, model, lines, probs, gate, side: str, label: str, camera_offset: float) -> dict:
     """Everything needed to rebuild the transform and re-run classify_line
     offline against the saved frame: both ego polylines, calib rpy, intrinsics."""
     def line_dict(idx):
@@ -233,6 +233,13 @@ class LaneLineClassifierD:
         "z": [float(v) for v in ll.z],
         "prob": float(probs[idx]) if idx < len(probs) else None,
       }
+    def assessment_dict(res):
+      return {
+        "type": LABELS.get(int(res.line_type), "unknown"), "reason": res.reason,
+        "duty": float(res.duty), "periodicity": float(res.periodicity),
+        "n_valid": int(res.n_valid), "n_present": int(res.n_present),
+        "n_low_contrast": int(res.n_low_contrast), "n_low_snr": int(res.n_low_snr),
+      }
     return {
       "frame_id": int(model.frameId),
       "snapshot_side": side,
@@ -241,6 +248,7 @@ class LaneLineClassifierD:
       "rpy_calib": [float(v) for v in (self.rpy_calib or [])],
       "intrinsics": [[float(c) for c in row] for row in self.intrinsics],
       "lines": {"L": line_dict(LEFT_EGO_LINE), "R": line_dict(RIGHT_EGO_LINE)},
+      "assessment": {"L": assessment_dict(gate.left), "R": assessment_dict(gate.right)},
     }
 
   def run(self):
