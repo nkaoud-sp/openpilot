@@ -104,8 +104,7 @@ def nkaoud_nav_mailer_enabled(started: bool, params: Params, CP: car.CarParams) 
   # Also serves troubleshooting bundles, so it runs whenever any emailed
   # diagnostics feature is on.
   return (params.get_bool("NkaoudNavEnabled") or
-          params.get_bool("LaneLineVisualizerLogging") or
-          params.get_bool("ExperimentalLongitudinalLogging"))
+          params.get_bool("LaneLineVisualizerLogging"))
 
 
 def visual_vehicle_detector_enabled(started: bool, params: Params, CP: car.CarParams) -> bool:
@@ -114,10 +113,6 @@ def visual_vehicle_detector_enabled(started: bool, params: Params, CP: car.CarPa
 
 def lane_line_classifier_enabled(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started and params.get_bool("LaneLineVisualizer")
-
-
-def experimental_longitudinal_logger_enabled(started: bool, params: Params, CP: car.CarParams) -> bool:
-  return params.get_bool("ExperimentalLongitudinalLogging")
 
 
 def uploader_ready(started: bool, params: Params, CP: car.CarParams) -> bool:
@@ -218,7 +213,6 @@ procs += [
   PythonProcess("nkaoud_navd", "sunnypilot.nkaoud_nav.navd", nkaoud_nav_enabled),
   # Always-on (offroad too) so it survives drive-end to email the maneuver log.
   PythonProcess("nkaoud_nav_mailer", "sunnypilot.nkaoud_nav.mailer", nkaoud_nav_mailer_enabled),
-  PythonProcess("experimental_longitudinal_logger", "sunnypilot.nkaoud_nav.experimental_longitudinal_loggerd", experimental_longitudinal_logger_enabled),
   PythonProcess("visual_vehicle_detector", "sunnypilot.nkaoud_nav.adjacent_vehicle_detector", visual_vehicle_detector_enabled),
   PythonProcess("lane_line_classifier", "sunnypilot.nkaoud_nav.lane_line_classifierd", lane_line_classifier_enabled),
 ]
