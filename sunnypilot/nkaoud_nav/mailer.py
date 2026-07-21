@@ -71,8 +71,7 @@ DEFAULT_SMTP_HOST = "smtp-relay.brevo.com"
 DEFAULT_SMTP_PORT = 587
 SMTP_TIMEOUT = 20
 SEND_RETRY_SECONDS = 60
-EXPERIMENTAL_LONG_LOG_RATE_HZ = 5.0
-EXPERIMENTAL_LONG_POST_EVENT_SECONDS = 5.0
+EXPORT_RETRY_SECONDS = 60
 
 
 def _status_prefix() -> str:
@@ -327,70 +326,34 @@ def _handle_drive_end(params: Params) -> None:
     except Exception:  # noqa: BLE001 -- never let cleanup kill the mailer
       cloudlog.exception("nkaoud_nav mailer: lane session cleanup failed")
 
-  if params.get_bool(EXPERIMENTAL_LONG_LOGGING_PARAM):
-    try:
-      from sunnypilot.nkaoud_nav.experimental_longitudinal_logger import finalize_orphan_sessions
-      finalize_orphan_sessions()
-    except Exception:  # noqa: BLE001 -- never let cleanup kill the mailer
-      cloudlog.exception("nkaoud_nav mailer: experimental long session cleanup failed")
-
-
 def main() -> None:
   # Imported here (not at module top) so the settings UI can reuse smtp_test
   # via a lightweight import without pulling in cereal/messaging.
   import cereal.messaging as messaging
   from openpilot.common.realtime import Ratekeeper
-  from openpilot.sunnypilot.nkaoud_nav.experimental_longitudinal_logger import (
-    ExperimentalLongitudinalSessionLogger,
-  )
+  from sunnypilot.nkaoud_nav.experimental_longitudinal_exporter import export_latest_route
 
   params = Params()
-  services = [
-    'deviceState', 'selfdriveState', 'carState', 'carControl', 'controlsState',
-    'longitudinalPlan', 'longitudinalPlanSP', 'modelV2', 'radarState',
-  ]
-  sm = messaging.SubMaster(services)
-  rk = Ratekeeper(EXPERIMENTAL_LONG_LOG_RATE_HZ)
-  experimental_long_logger = ExperimentalLongitudinalSessionLogger()
+  sm = messaging.SubMaster(['deviceState'])
+  rk = Ratekeeper(2.0)
 
-  active_prev = False
   started_prev = False
-  post_until = 0.0
   last_send_attempt = 0.0
+  last_export_attempt = 0.0
 
   while True:
     sm.update(0)
     started = bool(sm['deviceState'].started)
-    experimental_long_enabled = params.get_bool(EXPERIMENTAL_LONG_LOGGING_PARAM)
-    active = bool(experimental_long_enabled and started and sm['selfdriveState'].enabled and sm['carControl'].enabled)
-    disengaged = active_prev and not active
-
-    if active and not experimental_long_logger.is_active:
-      experimental_long_logger.start({
-        "started_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
-        "rate_hz": EXPERIMENTAL_LONG_LOG_RATE_HZ,
-        "post_event_seconds": EXPERIMENTAL_LONG_POST_EVENT_SECONDS,
-      })
-
-    if active and (sm['carState'].gasPressed or sm['carState'].brakePressed):
-      post_until = time.monotonic() + EXPERIMENTAL_LONG_POST_EVENT_SECONDS
-    if disengaged:
-      post_until = time.monotonic() + EXPERIMENTAL_LONG_POST_EVENT_SECONDS
-
-    should_log_experimental_long = (experimental_long_logger.is_active and experimental_long_enabled and
-                                    (active or time.monotonic() < post_until))
-    if should_log_experimental_long:
-      experimental_long_logger.log(sm, disengaged)
 
     if started_prev and not started:
-      if experimental_long_logger.is_active:
-        experimental_long_logger.end()
       _handle_drive_end(params)
-    elif experimental_long_logger.is_active and not experimental_long_enabled and not active:
-      experimental_long_logger.end()
 
-    active_prev = active
     started_prev = started
+
+    if not started and params.get_bool(EXPERIMENTAL_LONG_LOGGING_PARAM):
+      if time.monotonic() - last_export_attempt >= EXPORT_RETRY_SECONDS:
+        export_latest_route()
+        last_export_attempt = time.monotonic()
 
     # Retry a queued send until the network is up. Nav logs only send offroad
     # (original behaviour); lane-line troubleshooting bundles are queued on

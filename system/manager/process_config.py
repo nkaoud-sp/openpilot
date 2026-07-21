@@ -104,7 +104,8 @@ def nkaoud_nav_mailer_enabled(started: bool, params: Params, CP: car.CarParams) 
   # Also serves troubleshooting bundles, so it runs whenever any emailed
   # diagnostics feature is on.
   return (params.get_bool("NkaoudNavEnabled") or
-          params.get_bool("LaneLineVisualizerLogging"))
+          params.get_bool("LaneLineVisualizerLogging") or
+          (not started and params.get_bool("ExperimentalLongitudinalLogging")))
 
 
 def visual_vehicle_detector_enabled(started: bool, params: Params, CP: car.CarParams) -> bool:

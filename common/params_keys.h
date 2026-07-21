@@ -221,6 +221,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"NkaoudNavLastDriveLog", {PERSISTENT | BACKUP, STRING, ""}},     // path to the most recent completed drive's CSV log
     {"NkaoudNavEmailPendingLog", {PERSISTENT | BACKUP, STRING, ""}},  // CSV queued for emailing; retried until sent, then all logs are deleted
     {"NkaoudNavEmailLastStatus", {PERSISTENT | BACKUP, STRING, ""}},  // human-readable status of the last logging/email action, shown in settings
+    {"ExperimentalLongitudinalLastExportedRoute", {PERSISTENT | BACKUP, STRING, ""}}, // last route mined for E2E long diagnostics
     {"CustomAccLongPressIncrement", {PERSISTENT | BACKUP, INT, "5"}},
     {"CustomAccShortPressIncrement", {PERSISTENT | BACKUP, INT, "1"}},
     {"DeviceBootMode", {PERSISTENT | BACKUP, INT, "0"}},
