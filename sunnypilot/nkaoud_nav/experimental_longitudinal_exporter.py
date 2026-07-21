@@ -23,6 +23,7 @@ from openpilot.tools.lib.logreader import LogReader
 LOG_DIR = os.environ.get("EXPERIMENTAL_LONG_LOG_DIR", "/data/media/0/experimental_longitudinal_logs")
 ZIP_PREFIX = "experimental_longitudinal_log_"
 LAST_EXPORTED_PARAM = "ExperimentalLongitudinalLastExportedRoute"
+MAX_EXPORTED_ROUTE_HISTORY = 20
 MAX_STORED_ZIPS = 10
 PRE_INTERVENTION_SECONDS = 10.0
 POST_INTERVENTION_SECONDS = 5.0
@@ -59,6 +60,7 @@ class RouteCandidate:
   route: str
   mtime: float
   paths: tuple[str, ...]
+  source_files: tuple[str, ...]
 
 
 def _fmt(value, digits: int = 3) -> str:
@@ -103,9 +105,11 @@ def _route_candidates() -> list[RouteCandidate]:
     if not os.path.isdir(path) or os.path.exists(os.path.join(path, "rlog.lock")):
       continue
     route = match.group("route")
-    qlog = os.path.join(path, "qlog.zst")
     rlog = os.path.join(path, "rlog.zst")
-    log_path = qlog if os.path.isfile(qlog) else rlog if os.path.isfile(rlog) else ""
+    qlog = os.path.join(path, "qlog.zst")
+    # modelV2 is not qlogged in this tree, and it is the most important signal
+    # for this diagnostic. Prefer rlog and only fall back to qlog if needed.
+    log_path = rlog if os.path.isfile(rlog) else qlog if os.path.isfile(qlog) else ""
     if not log_path:
       continue
     grouped.setdefault(route, []).append((int(match.group("segment")), log_path))
@@ -113,11 +117,37 @@ def _route_candidates() -> list[RouteCandidate]:
 
   now = time.time()
   candidates = [
-    RouteCandidate(route=route, mtime=mtimes[route], paths=tuple(path for _, path in sorted(paths)))
+    RouteCandidate(
+      route=route,
+      mtime=mtimes[route],
+      paths=tuple(path for _, path in sorted(paths)),
+      source_files=tuple(f"{segment}:{os.path.basename(path)}" for segment, path in sorted(paths)),
+    )
     for route, paths in grouped.items()
     if now - mtimes[route] >= ROUTE_SETTLE_SECONDS
   ]
   return sorted(candidates, key=lambda c: c.mtime, reverse=True)
+
+
+def _exported_routes(params: Params) -> list[str]:
+  raw = (params.get(LAST_EXPORTED_PARAM) or "").strip()
+  if not raw:
+    return []
+  try:
+    value = json.loads(raw)
+  except ValueError:
+    return [raw]
+  if isinstance(value, list):
+    return [str(route) for route in value if str(route).strip()]
+  if isinstance(value, str) and value.strip():
+    return [value.strip()]
+  return []
+
+
+def _mark_exported(params: Params, route: str) -> None:
+  routes = [r for r in _exported_routes(params) if r != route]
+  routes.append(route)
+  params.put(LAST_EXPORTED_PARAM, json.dumps(routes[-MAX_EXPORTED_ROUTE_HISTORY:]))
 
 
 def _blank_state() -> dict:
@@ -280,8 +310,8 @@ def _prune_zips() -> None:
 
 def export_latest_route() -> str | None:
   params = Params()
-  last_exported = (params.get(LAST_EXPORTED_PARAM) or "").strip()
-  candidates = [c for c in _route_candidates() if c.route != last_exported]
+  exported = set(_exported_routes(params))
+  candidates = [c for c in _route_candidates() if c.route not in exported]
   if not candidates:
     return None
 
@@ -292,7 +322,7 @@ def export_latest_route() -> str | None:
     cloudlog.exception(f"experimental_longitudinal_exporter: failed to read {candidate.route}")
     return None
 
-  params.put(LAST_EXPORTED_PARAM, candidate.route)
+  _mark_exported(params, candidate.route)
   if not rows:
     return None
 
@@ -307,7 +337,7 @@ def export_latest_route() -> str | None:
       json.dump({
         "route": candidate.route,
         "segments": len(candidate.paths),
-        "source_files": [os.path.basename(p) for p in candidate.paths],
+        "source_files": list(candidate.source_files),
         "rows": len(rows),
         "pre_intervention_seconds": PRE_INTERVENTION_SECONDS,
         "post_intervention_seconds": POST_INTERVENTION_SECONDS,
