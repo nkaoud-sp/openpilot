@@ -257,6 +257,9 @@ def _extract_rows(candidate: RouteCandidate) -> list[dict]:
     last_emit_s = time_s
 
     row = _row(candidate.route, time_s, which, state)
+    if not row["model_desired_accel"] or not row["plan_a_target"]:
+      continue
+
     pending.append(row)
     while pending and time_s - float(pending[0]["time_s"]) > PRE_INTERVENTION_SECONDS:
       if float(pending[0]["time_s"]) <= post_until:
@@ -264,7 +267,8 @@ def _extract_rows(candidate: RouteCandidate) -> list[dict]:
       else:
         pending.popleft()
 
-    if row["user_intervention"]:
+    enabled_context = any(p["enabled"] == 1 or p["enabled"] == "1" for p in pending)
+    if row["user_intervention"] and enabled_context:
       post_until = time_s + POST_INTERVENTION_SECONDS
       while pending:
         rows.append(pending.popleft())
