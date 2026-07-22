@@ -23,6 +23,7 @@ from openpilot.tools.lib.logreader import LogReader
 LOG_DIR = os.environ.get("EXPERIMENTAL_LONG_LOG_DIR", "/data/media/0/experimental_longitudinal_logs")
 ZIP_PREFIX = "experimental_longitudinal_log_"
 LAST_EXPORTED_PARAM = "ExperimentalLongitudinalLastExportedRoute"
+PENDING_ROUTE_PARAM = "ExperimentalLongitudinalPendingRoute"
 MAX_EXPORTED_ROUTE_HISTORY = 20
 MAX_STORED_ZIPS = 10
 PRE_INTERVENTION_SECONDS = 10.0
@@ -90,7 +91,7 @@ def _enum_name(value) -> str:
     return ""
 
 
-def _route_candidates() -> list[RouteCandidate]:
+def _route_candidates(require_settled: bool = True) -> list[RouteCandidate]:
   root = Paths.log_root()
   if not os.path.isdir(root):
     return []
@@ -124,9 +125,14 @@ def _route_candidates() -> list[RouteCandidate]:
       source_files=tuple(f"{segment}:{os.path.basename(path)}" for segment, path in sorted(paths)),
     )
     for route, paths in grouped.items()
-    if now - mtimes[route] >= ROUTE_SETTLE_SECONDS
+    if not require_settled or now - mtimes[route] >= ROUTE_SETTLE_SECONDS
   ]
   return sorted(candidates, key=lambda c: c.mtime, reverse=True)
+
+
+def latest_route_name() -> str:
+  candidates = _route_candidates(require_settled=False)
+  return candidates[0].route if candidates else ""
 
 
 def _exported_routes(params: Params) -> list[str]:
@@ -312,23 +318,34 @@ def _prune_zips() -> None:
     cloudlog.exception("experimental_longitudinal_exporter: prune failed")
 
 
-def export_latest_route() -> str | None:
+def export_route(route: str) -> bool:
+  """Export one specific route. Returns True once the route was considered.
+
+  False means it was not ready yet or failed before we could make a decision,
+  so the caller should retry later.
+  """
+  route = route.strip()
+  if not route:
+    return True
+
   params = Params()
-  exported = set(_exported_routes(params))
-  candidates = [c for c in _route_candidates() if c.route not in exported]
+  if route in set(_exported_routes(params)):
+    return True
+
+  candidates = [c for c in _route_candidates(require_settled=True) if c.route == route]
   if not candidates:
-    return None
+    return False
 
   candidate = candidates[0]
   try:
     rows = _extract_rows(candidate)
   except Exception:  # noqa: BLE001
     cloudlog.exception(f"experimental_longitudinal_exporter: failed to read {candidate.route}")
-    return None
+    return False
 
   _mark_exported(params, candidate.route)
   if not rows:
-    return None
+    return True
 
   try:
     session_dir = os.path.join(LOG_DIR, f"{candidate.route.replace('|', '_')}_{time.strftime('%Y%m%d_%H%M%S', time.localtime())}")
@@ -347,7 +364,17 @@ def export_latest_route() -> str | None:
         "post_intervention_seconds": POST_INTERVENTION_SECONDS,
         "route_settle_seconds": ROUTE_SETTLE_SECONDS,
       }, f, indent=2)
-    return _zip_and_queue(session_dir)
+    _zip_and_queue(session_dir)
+    return True
   except OSError:
     cloudlog.exception("experimental_longitudinal_exporter: write failed")
+    return False
+
+
+def export_latest_route() -> str | None:
+  exported = set(_exported_routes(Params()))
+  candidates = [c for c in _route_candidates(require_settled=True) if c.route not in exported]
+  if not candidates:
     return None
+  route = candidates[0].route
+  return route if export_route(route) else None

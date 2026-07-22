@@ -331,7 +331,11 @@ def main() -> None:
   # via a lightweight import without pulling in cereal/messaging.
   import cereal.messaging as messaging
   from openpilot.common.realtime import Ratekeeper
-  from sunnypilot.nkaoud_nav.experimental_longitudinal_exporter import export_latest_route
+  from sunnypilot.nkaoud_nav.experimental_longitudinal_exporter import (
+    PENDING_ROUTE_PARAM,
+    export_route,
+    latest_route_name,
+  )
 
   params = Params()
   sm = messaging.SubMaster(['deviceState'])
@@ -347,12 +351,18 @@ def main() -> None:
 
     if started_prev and not started:
       _handle_drive_end(params)
+      if params.get_bool(EXPERIMENTAL_LONG_LOGGING_PARAM):
+        pending_route = latest_route_name()
+        if pending_route:
+          params.put(PENDING_ROUTE_PARAM, pending_route)
 
     started_prev = started
 
     if not started and params.get_bool(EXPERIMENTAL_LONG_LOGGING_PARAM):
       if time.monotonic() - last_export_attempt >= EXPORT_RETRY_SECONDS:
-        export_latest_route()
+        pending_route = (params.get(PENDING_ROUTE_PARAM) or "").strip()
+        if pending_route and export_route(pending_route):
+          params.remove(PENDING_ROUTE_PARAM)
         last_export_attempt = time.monotonic()
 
     # Retry a queued send until the network is up. Nav logs only send offroad
