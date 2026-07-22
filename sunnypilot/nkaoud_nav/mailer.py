@@ -352,7 +352,7 @@ def main() -> None:
     if started_prev and not started:
       _handle_drive_end(params)
       if params.get_bool(EXPERIMENTAL_LONG_LOGGING_PARAM):
-        pending_route = latest_route_name()
+        pending_route = (params.get("CurrentRoute") or "").strip() or latest_route_name()
         if pending_route:
           params.put(PENDING_ROUTE_PARAM, pending_route)
 

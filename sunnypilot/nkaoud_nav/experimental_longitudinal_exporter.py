@@ -289,6 +289,8 @@ def _extract_rows(candidate: RouteCandidate) -> list[dict]:
       continue
     seen.add(key)
     deduped.append(row)
+  if not any(row["enabled"] == 1 or row["enabled"] == "1" for row in deduped):
+    return []
   return deduped
 
 
