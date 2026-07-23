@@ -7,6 +7,7 @@ live while driving. It only emits a compact CSV around gas/brake interventions.
 from __future__ import annotations
 
 import csv
+import gc
 import json
 import os
 import re
@@ -246,40 +247,44 @@ def _extract_rows(candidate: RouteCandidate) -> list[dict]:
   first_time_ns: int | None = None
   last_emit_s = -1.0
 
-  for msg in LogReader(list(candidate.paths), sort_by_time=True):
-    which = msg.which()
-    if which not in SERVICES:
-      continue
+  for path in candidate.paths:
+    try:
+      for msg in LogReader(path):
+        which = msg.which()
+        if which not in SERVICES:
+          continue
 
-    if first_time_ns is None:
-      first_time_ns = msg.logMonoTime
-    time_s = (msg.logMonoTime - first_time_ns) / 1e9
-    state[which] = getattr(msg, which)
+        if first_time_ns is None:
+          first_time_ns = msg.logMonoTime
+        time_s = (msg.logMonoTime - first_time_ns) / 1e9
+        state[which] = getattr(msg, which)
 
-    if which not in ("carState", "modelV2", "longitudinalPlan"):
-      continue
-    if time_s - last_emit_s < 0.18:
-      continue
-    last_emit_s = time_s
+        if which not in ("carState", "modelV2", "longitudinalPlan"):
+          continue
+        if time_s - last_emit_s < 0.18:
+          continue
+        last_emit_s = time_s
 
-    row = _row(candidate.route, time_s, which, state)
-    if not row["model_desired_accel"] or not row["plan_a_target"]:
-      continue
+        row = _row(candidate.route, time_s, which, state)
+        if not row["model_desired_accel"] or not row["plan_a_target"]:
+          continue
 
-    pending.append(row)
-    while pending and time_s - float(pending[0]["time_s"]) > PRE_INTERVENTION_SECONDS:
-      if float(pending[0]["time_s"]) <= post_until:
-        rows.append(pending.popleft())
-      else:
-        pending.popleft()
+        pending.append(row)
+        while pending and time_s - float(pending[0]["time_s"]) > PRE_INTERVENTION_SECONDS:
+          if float(pending[0]["time_s"]) <= post_until:
+            rows.append(pending.popleft())
+          else:
+            pending.popleft()
 
-    enabled_context = any(p["enabled"] == 1 or p["enabled"] == "1" for p in pending)
-    if row["user_intervention"] and enabled_context:
-      post_until = time_s + POST_INTERVENTION_SECONDS
-      while pending:
-        rows.append(pending.popleft())
-    elif time_s <= post_until:
-      rows.append(row)
+        enabled_context = any(p["enabled"] == 1 or p["enabled"] == "1" for p in pending)
+        if row["user_intervention"] and enabled_context:
+          post_until = time_s + POST_INTERVENTION_SECONDS
+          while pending:
+            rows.append(pending.popleft())
+        elif time_s <= post_until:
+          rows.append(row)
+    finally:
+      gc.collect()
 
   deduped = []
   seen = set()
