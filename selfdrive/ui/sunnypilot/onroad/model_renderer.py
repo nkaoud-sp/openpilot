@@ -11,6 +11,7 @@ from openpilot.selfdrive.ui.sunnypilot.onroad.lane_position_indicator import Lan
 from openpilot.selfdrive.ui.sunnypilot.onroad.lane_line_visualizer_readout import LaneLineVisualizerReadout
 from openpilot.selfdrive.ui.sunnypilot.onroad.launch_readout import LaunchReadout
 from openpilot.selfdrive.ui.sunnypilot.onroad.model_frame_drops_readout import ModelFrameDropsReadout
+from openpilot.selfdrive.ui.sunnypilot.onroad.speed_assist_readout import SpeedAssistReadout
 from openpilot.selfdrive.ui.sunnypilot.onroad.visual_vehicle_readout import VisualVehicleReadout
 from openpilot.selfdrive.ui.sunnypilot.onroad.rainbow_path import RainbowPath
 
@@ -25,4 +26,5 @@ class ModelRendererSP:
     self.lane_line_visualizer_readout = LaneLineVisualizerReadout()
     self.launch_readout = LaunchReadout()
     self.model_frame_drops_readout = ModelFrameDropsReadout()
+    self.speed_assist_readout = SpeedAssistReadout()
     self.visual_vehicle_readout = VisualVehicleReadout()

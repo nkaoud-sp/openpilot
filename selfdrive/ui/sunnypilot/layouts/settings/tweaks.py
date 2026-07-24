@@ -15,6 +15,7 @@ from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.lane_
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.launch_assist_settings import LaunchAssistSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.nav_settings import NavSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.park_assist_settings import ParkAssistSettingsLayout
+from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.speed_assist_settings import SpeedAssistSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.visual_vehicle_settings import VisualVehicleSettingsLayout
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.sunnypilot.widgets.list_view import toggle_item_sp, simple_button_item_sp
@@ -34,6 +35,7 @@ class PanelType(IntEnum):
   LANE_POSITION = 8
   EMAIL_LOGS = 9
   LANE_LINE_VISUALIZER = 10
+  SPEED_ASSIST = 11
 
 
 class TweaksLayout(Widget):
@@ -45,6 +47,7 @@ class TweaksLayout(Widget):
     self._dynamic_follow_layout = DynamicFollowSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._jerk_layout = JerkSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._launch_layout = LaunchAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
+    self._speed_assist_layout = SpeedAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._park_layout = ParkAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._navigation_layout = NavSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._visual_vehicle_layout = VisualVehicleSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
@@ -120,6 +123,12 @@ class TweaksLayout(Widget):
       button_text=lambda: tr("Manage Launch Assist Settings"),
       button_width=800,
       callback=lambda: self._set_current_panel(PanelType.LAUNCH),
+    )
+
+    self._speed_assist_button = simple_button_item_sp(
+      button_text=lambda: tr("Experimental Speed Assist"),
+      button_width=800,
+      callback=lambda: self._set_current_panel(PanelType.SPEED_ASSIST),
     )
 
     # Lead park assist (closer standstill gap behind a stopped lead).
@@ -216,6 +225,7 @@ class TweaksLayout(Widget):
       self._asymmetric_jerk_button,
       self._launch_assist,
       self._launch_assist_button,
+      self._speed_assist_button,
       self._park_assist,
       self._park_assist_button,
       self._lane_position_indicator,
@@ -239,6 +249,8 @@ class TweaksLayout(Widget):
       self._jerk_layout.render(rect)
     elif self._current_panel == PanelType.LAUNCH:
       self._launch_layout.render(rect)
+    elif self._current_panel == PanelType.SPEED_ASSIST:
+      self._speed_assist_layout.render(rect)
     elif self._current_panel == PanelType.PARK:
       self._park_layout.render(rect)
     elif self._current_panel == PanelType.NAVIGATION:
@@ -268,6 +280,8 @@ class TweaksLayout(Widget):
       self._jerk_layout.show_event()
     elif panel == PanelType.LAUNCH:
       self._launch_layout.show_event()
+    elif panel == PanelType.SPEED_ASSIST:
+      self._speed_assist_layout.show_event()
     elif panel == PanelType.PARK:
       self._park_layout.show_event()
     elif panel == PanelType.NAVIGATION:

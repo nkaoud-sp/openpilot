@@ -145,6 +145,7 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
     # jerk and launch readouts do not depend on a lead
     self.jerk_readout.draw(sm, self._rect)
     self.launch_readout.draw(sm, self._rect)
+    self.speed_assist_readout.draw(sm, self._rect)
     self.model_frame_drops_readout.draw(sm, self._rect)
     self.lane_position_indicator.draw(sm, self._rect)
     self.visual_vehicle_readout.draw(self._rect)

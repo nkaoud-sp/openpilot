@@ -38,6 +38,19 @@ LAUNCH_VLEAD_V = [1.5, 0.2]   # required lead speed (m/s): less eager .. more ea
 # until a genuine settled stop re-arms it (READY).
 LAUNCH_READY, LAUNCH_LAUNCHING, LAUNCH_DONE = 0, 1, 2
 
+# Experimental speed assist: a small, heavily gated acceleration nudge for
+# clean open-road cases where e2e is far below cruise but asks for near-zero
+# acceleration. Mode: 0=off, 1=readout only, 2=active.
+SPEED_ASSIST_OFF, SPEED_ASSIST_READOUT, SPEED_ASSIST_ON = 0, 1, 2
+SPEED_ASSIST_MAX_BOOSTS = [0.15, 0.25, 0.35]
+SPEED_ASSIST_FULL_GAP_KPH = 30.0
+SPEED_ASSIST_MODEL_PLAN_GAP_MAX = 0.10
+SPEED_ASSIST_GENTLE_ACCEL_MAX = 0.20
+SPEED_ASSIST_DECEL_BLOCK = -0.15
+SPEED_ASSIST_MODEL_LEAD_PROB_MAX = 0.35
+SPEED_ASSIST_BRAKE_PROB_MAX = 0.06
+SPEED_ASSIST_RC = 1.5
+
 # Lookup table for turns
 _A_TOTAL_MAX_V = [1.7, 3.2]
 _A_TOTAL_MAX_BP = [20., 40.]
@@ -76,6 +89,20 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.prev_accel_clip = [ACCEL_MIN, ACCEL_MAX]
     self.output_a_target = 0.0
     self.output_should_stop = False
+    self.speed_assist_mode = SPEED_ASSIST_OFF
+    self.speed_assist_strength = 1
+    self.speed_assist_min_kph = 50
+    self.speed_assist_max_kph = 130
+    self.speed_assist_start_gap_kph = 8
+    self.speed_assist_boost_filter = FirstOrderFilter(0.0, SPEED_ASSIST_RC, self.dt)
+    self.speed_assist_enabled = False
+    self.speed_assist_readout_only = False
+    self.speed_assist_eligible = False
+    self.speed_assist_active = False
+    self.speed_assist_a_target_original = 0.0
+    self.speed_assist_a_boost = 0.0
+    self.speed_assist_speed_gap_kph = 0.0
+    self.speed_assist_reason = "off"
 
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
@@ -118,6 +145,11 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
         self.jerk_decel_factor = 1.0
       self.launch_assist = self.params.get_bool("LaunchAssist")
       self.launch_eagerness = self.params.get("LaunchEagerness", return_default=True)
+      self.speed_assist_mode = self.params.get("ExperimentalSpeedAssistMode", return_default=True)
+      self.speed_assist_strength = self.params.get("ExperimentalSpeedAssistStrength", return_default=True)
+      self.speed_assist_min_kph = self.params.get("ExperimentalSpeedAssistMinKph", return_default=True)
+      self.speed_assist_max_kph = self.params.get("ExperimentalSpeedAssistMaxKph", return_default=True)
+      self.speed_assist_start_gap_kph = self.params.get("ExperimentalSpeedAssistStartGapKph", return_default=True)
       self.park_assist = self.params.get_bool("ParkAssist")
       self.park_distance = self.params.get("ParkDistance", return_default=True) / 100.0
       self.park_mode = self.params.get("ParkAssistMode", return_default=True)
@@ -161,6 +193,92 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       # quit departing) -> false start: back to READY so a real departure can fire.
       self.launch_state = LAUNCH_DONE if not stopped else LAUNCH_READY
     return False
+
+  @staticmethod
+  def _list_value(values, idx: int, default: float = 0.0) -> float:
+    return float(values[idx]) if len(values) > idx else default
+
+  def _model_lead_prob(self, model_msg) -> float:
+    if len(model_msg.leadsV3) == 0:
+      return 0.0
+    return max(float(lead.prob) for lead in model_msg.leadsV3)
+
+  def _speed_assist_desired_boost(self, sm, output_a_target: float, output_a_target_e2e: float) -> float:
+    self.speed_assist_enabled = self.speed_assist_mode != SPEED_ASSIST_OFF
+    self.speed_assist_readout_only = self.speed_assist_mode == SPEED_ASSIST_READOUT
+    self.speed_assist_eligible = False
+    self.speed_assist_active = False
+    self.speed_assist_a_target_original = float(output_a_target)
+    self.speed_assist_speed_gap_kph = 0.0
+
+    if not self.speed_assist_enabled:
+      self.speed_assist_reason = "off"
+      return 0.0
+
+    CS = sm['carState']
+    if not sm['selfdriveState'].experimentalMode:
+      self.speed_assist_reason = "not experimental"
+      return 0.0
+    if not sm['carControl'].enabled:
+      self.speed_assist_reason = "not enabled"
+      return 0.0
+    if self.mpc.source != LongitudinalPlanSource.e2e:
+      self.speed_assist_reason = "not e2e"
+      return 0.0
+    if CS.gasPressed or CS.brakePressed:
+      self.speed_assist_reason = "driver"
+      return 0.0
+    if CS.vCruise == V_CRUISE_UNSET or CS.vCruise >= V_CRUISE_UNSET:
+      self.speed_assist_reason = "no cruise"
+      return 0.0
+
+    v_ego_kph = CS.vEgo * CV.MS_TO_KPH
+    min_kph = min(self.speed_assist_min_kph, self.speed_assist_max_kph)
+    max_kph = max(self.speed_assist_min_kph, self.speed_assist_max_kph)
+    if v_ego_kph < min_kph or v_ego_kph > max_kph:
+      self.speed_assist_reason = "speed"
+      return 0.0
+
+    self.speed_assist_speed_gap_kph = float(CS.vCruise - v_ego_kph)
+    if self.speed_assist_speed_gap_kph < self.speed_assist_start_gap_kph:
+      self.speed_assist_reason = "gap"
+      return 0.0
+
+    if sm['radarState'].leadOne.status or self._model_lead_prob(sm['modelV2']) > SPEED_ASSIST_MODEL_LEAD_PROB_MAX:
+      self.speed_assist_reason = "lead"
+      return 0.0
+    if sm['modelV2'].action.shouldStop:
+      self.speed_assist_reason = "model stop"
+      return 0.0
+    if self.output_should_stop:
+      self.speed_assist_reason = "plan stop"
+      return 0.0
+
+    preds = sm['modelV2'].meta.disengagePredictions
+    brake_press = self._list_value(preds.brakePressProbs, 0)
+    brake_disengage = self._list_value(preds.brakeDisengageProbs, 0)
+    if brake_press > SPEED_ASSIST_BRAKE_PROB_MAX or brake_disengage > SPEED_ASSIST_BRAKE_PROB_MAX:
+      self.speed_assist_reason = "brake risk"
+      return 0.0
+
+    if output_a_target < SPEED_ASSIST_DECEL_BLOCK:
+      self.speed_assist_reason = "decel"
+      return 0.0
+    if abs(output_a_target_e2e - output_a_target) > SPEED_ASSIST_MODEL_PLAN_GAP_MAX:
+      self.speed_assist_reason = "model gap"
+      return 0.0
+    if output_a_target_e2e > SPEED_ASSIST_GENTLE_ACCEL_MAX or output_a_target > SPEED_ASSIST_GENTLE_ACCEL_MAX:
+      self.speed_assist_reason = "already accel"
+      return 0.0
+
+    max_boost = SPEED_ASSIST_MAX_BOOSTS[int(np.clip(self.speed_assist_strength, 0, len(SPEED_ASSIST_MAX_BOOSTS) - 1))]
+    full_gap_kph = max(float(self.speed_assist_start_gap_kph) + 1.0, SPEED_ASSIST_FULL_GAP_KPH)
+    boost = float(np.interp(self.speed_assist_speed_gap_kph,
+                            [self.speed_assist_start_gap_kph, full_gap_kph],
+                            [0.05, max_boost]))
+    self.speed_assist_eligible = True
+    self.speed_assist_reason = "active" if self.speed_assist_mode == SPEED_ASSIST_ON else "readout"
+    return boost
 
   @staticmethod
   def parse_model(model_msg):
@@ -287,6 +405,13 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     if self.mpc.park_assist_active and sm['carState'].vEgo <= LAUNCH_MAX_EGO_SPEED:
       output_a_target = output_a_target_mpc
       self.output_should_stop = output_should_stop_mpc
+
+    speed_assist_boost = self._speed_assist_desired_boost(sm, output_a_target, output_a_target_e2e)
+    self.speed_assist_a_boost = float(self.speed_assist_boost_filter.update(speed_assist_boost))
+    self.speed_assist_active = (self.speed_assist_mode == SPEED_ASSIST_ON and
+                                self.speed_assist_eligible and self.speed_assist_a_boost > 0.01)
+    if self.speed_assist_active:
+      output_a_target += self.speed_assist_a_boost
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
