@@ -94,6 +94,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.speed_assist_min_kph = 50
     self.speed_assist_max_kph = 130
     self.speed_assist_start_gap_kph = 8
+    self.speed_assist_lead_mode = 0
     self.speed_assist_boost_filter = FirstOrderFilter(0.0, SPEED_ASSIST_RC, self.dt)
     self.speed_assist_enabled = False
     self.speed_assist_readout_only = False
@@ -150,6 +151,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       self.speed_assist_min_kph = self.params.get("ExperimentalSpeedAssistMinKph", return_default=True)
       self.speed_assist_max_kph = self.params.get("ExperimentalSpeedAssistMaxKph", return_default=True)
       self.speed_assist_start_gap_kph = self.params.get("ExperimentalSpeedAssistStartGapKph", return_default=True)
+      self.speed_assist_lead_mode = self.params.get("ExperimentalSpeedAssistLeadMode", return_default=True)
       self.park_assist = self.params.get_bool("ParkAssist")
       self.park_distance = self.params.get("ParkDistance", return_default=True) / 100.0
       self.park_mode = self.params.get("ParkAssistMode", return_default=True)
@@ -244,7 +246,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       self.speed_assist_reason = "gap"
       return 0.0
 
-    if sm['radarState'].leadOne.status or self._model_lead_prob(sm['modelV2']) > SPEED_ASSIST_MODEL_LEAD_PROB_MAX:
+    if self.speed_assist_lead_mode == 0 and (sm['radarState'].leadOne.status or self._model_lead_prob(sm['modelV2']) > SPEED_ASSIST_MODEL_LEAD_PROB_MAX):
       self.speed_assist_reason = "lead"
       return 0.0
     if sm['modelV2'].action.shouldStop:

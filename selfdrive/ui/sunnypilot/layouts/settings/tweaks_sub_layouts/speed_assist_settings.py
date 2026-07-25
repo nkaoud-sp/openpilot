@@ -71,6 +71,16 @@ class SpeedAssistSettingsLayout(Widget):
       label_callback=lambda value: f"{value} kph",
       inline=True,
     )
+    self._lead_mode = multiple_button_item_sp(
+      title=lambda: tr("Lead Blocking"),
+      description=lambda: tr("Block keeps speed assist disabled whenever radar or the model reports a lead. Ignore " +
+                            "lets speed assist ignore lead detection for testing; normal longitudinal planning " +
+                            "still runs, but this is less conservative."),
+      buttons=[lambda: tr("Block"), lambda: tr("Ignore")],
+      param="ExperimentalSpeedAssistLeadMode",
+      button_width=260,
+      inline=False,
+    )
 
     return [
       self._mode,
@@ -78,6 +88,7 @@ class SpeedAssistSettingsLayout(Widget):
       self._min_speed,
       self._max_speed,
       self._start_gap,
+      self._lead_mode,
     ]
 
   def _render(self, rect):

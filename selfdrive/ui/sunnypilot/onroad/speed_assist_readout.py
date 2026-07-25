@@ -74,7 +74,7 @@ class SpeedAssistReadout:
       return "SPEED", _DIM, speed_gap_kph, 0.0
     if speed_gap_kph < ui_state.experimental_speed_assist_start_gap_kph:
       return "GAP", _DIM, speed_gap_kph, 0.0
-    if radar.leadOne.status or self._model_lead_prob(model) > _MODEL_LEAD_PROB_MAX:
+    if ui_state.experimental_speed_assist_lead_mode == 0 and (radar.leadOne.status or self._model_lead_prob(model) > _MODEL_LEAD_PROB_MAX):
       return "LEAD", _DIM, speed_gap_kph, 0.0
     if model.action.shouldStop or LP.shouldStop:
       return "STOP", _DIM, speed_gap_kph, 0.0

@@ -178,6 +178,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"ExperimentalSpeedAssistMinKph", {PERSISTENT | BACKUP, INT, "50"}}, // lower speed gate
     {"ExperimentalSpeedAssistMaxKph", {PERSISTENT | BACKUP, INT, "130"}}, // upper speed gate
     {"ExperimentalSpeedAssistStartGapKph", {PERSISTENT | BACKUP, INT, "8"}}, // starts this far below cruise
+    {"ExperimentalSpeedAssistLeadMode", {PERSISTENT | BACKUP, INT, "0"}}, // 0=block on lead/model lead, 1=ignore lead block
     {"LanePositionIndicator", {PERSISTENT | BACKUP, BOOL, "0"}},  // on-screen lane-position indicator (squares + confidence border)
     {"LaneEdgeFilterMode", {PERSISTENT | BACKUP, INT, "0"}},      // edge-lane blocking filter: 0=None 1=Width 2=Separation 3=Both(AND) 4=Both(OR)
     {"LaneLineVisualizer", {PERSISTENT | BACKUP, BOOL, "0"}},         // standalone solid-vs-broken lane-line classifier process (UI/debug)

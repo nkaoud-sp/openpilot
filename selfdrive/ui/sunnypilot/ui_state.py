@@ -156,6 +156,7 @@ class UIStateSP:
     self.experimental_speed_assist_min_kph = self.params.get("ExperimentalSpeedAssistMinKph", return_default=True)
     self.experimental_speed_assist_max_kph = self.params.get("ExperimentalSpeedAssistMaxKph", return_default=True)
     self.experimental_speed_assist_start_gap_kph = self.params.get("ExperimentalSpeedAssistStartGapKph", return_default=True)
+    self.experimental_speed_assist_lead_mode = self.params.get("ExperimentalSpeedAssistLeadMode", return_default=True)
     self.hide_v_ego_ui = self.params.get_bool("HideVEgoUI")
     self.onroad_brightness = int(float(self.params.get("OnroadScreenOffBrightness", return_default=True)))
     self.onroad_brightness_timer_param = self.params.get("OnroadScreenOffTimer", return_default=True)
