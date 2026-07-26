@@ -56,7 +56,7 @@ class LaneCenterAssistSettingsLayout(Widget):
       title=lambda: tr("Minimum Speed"),
       description=lambda: tr("Lane Center Assist is disabled below this speed, where the lane centre is noisy."),
       param="LaneCenterAssistMinKph",
-      min_value=20,
+      min_value=5,
       max_value=90,
       value_change_step=5,
       label_callback=lambda value: f"{value} kph",
