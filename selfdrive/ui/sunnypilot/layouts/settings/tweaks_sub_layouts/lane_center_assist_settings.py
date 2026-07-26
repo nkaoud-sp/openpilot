@@ -64,11 +64,12 @@ class LaneCenterAssistSettingsLayout(Widget):
     )
     self._confidence = multiple_button_item_sp(
       title=lambda: tr("Confidence Gate"),
-      description=lambda: tr("How sure the assist must be of both ego lane lines before it acts. Strict only acts " +
-                            "on strong, clear markings; Normal is more permissive."),
-      buttons=[lambda: tr("Normal"), lambda: tr("Strict")],
+      description=lambda: tr("How sure the assist must be of both ego lane lines before it acts. Loose (≥0.2) acts " +
+                            "on faint markings, Normal (≥0.4) is balanced, Strict (≥0.6) only acts on strong, " +
+                            "clear markings."),
+      buttons=[lambda: tr("Loose"), lambda: tr("Normal"), lambda: tr("Strict")],
       param="LaneCenterAssistConfidence",
-      button_width=260,
+      button_width=220,
       inline=False,
     )
 

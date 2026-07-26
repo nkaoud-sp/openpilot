@@ -17,7 +17,7 @@ from openpilot.system.ui.lib.text_measure import measure_text_cached
 LaneChangeState = log.LaneChangeState
 
 _STRENGTH_GAIN = (0.4, 0.7, 1.0)
-_CONF_MIN_PROB = (0.4, 0.6)
+_CONF_MIN_PROB = (0.2, 0.4, 0.6)
 _NEAR_X_LO = 5.0
 _NEAR_X_HI = 25.0
 _LANE_WIDTH_MIN = 2.6

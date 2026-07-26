@@ -49,7 +49,7 @@ MODE_ON = 2
 STRENGTH_GAIN = (0.4, 0.7, 1.0)
 
 # Confidence gate -> minimum probability required on both inner lane lines
-CONFIDENCE_MIN_PROB = (0.4, 0.6)  # 0=normal, 1=strict
+CONFIDENCE_MIN_PROB = (0.2, 0.4, 0.6)  # 0=loose, 1=normal, 2=strict
 
 # Near-field window used to measure the inner lane lines
 NEAR_FIELD_X_LO = 5.0    # metres ahead
