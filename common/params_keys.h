@@ -180,6 +180,11 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"ExperimentalSpeedAssistStartGapKph", {PERSISTENT | BACKUP, INT, "8"}}, // starts this far below cruise
     {"ExperimentalSpeedAssistLeadMode", {PERSISTENT | BACKUP, INT, "0"}}, // 0=block on lead/model lead, 1=ignore lead block
     {"LanePositionIndicator", {PERSISTENT | BACKUP, BOOL, "0"}},  // on-screen lane-position indicator (squares + confidence border)
+    {"LaneCenterAssistMode", {PERSISTENT | BACKUP, INT, "0"}},    // 0=off, 1=readout only, 2=active curvature nudge
+    {"LaneCenterAssistStrength", {PERSISTENT | BACKUP, INT, "1"}}, // 0=low, 1=medium, 2=high (offset->accel gain)
+    {"LaneCenterAssistMaxAccel", {PERSISTENT | BACKUP, INT, "35"}}, // hard cap on added lateral accel, x100 m/s^2
+    {"LaneCenterAssistMinKph", {PERSISTENT | BACKUP, INT, "40"}}, // lower speed gate
+    {"LaneCenterAssistConfidence", {PERSISTENT | BACKUP, INT, "0"}}, // inner lane-line confidence gate: 0=normal, 1=strict
     {"LaneEdgeFilterMode", {PERSISTENT | BACKUP, INT, "0"}},      // edge-lane blocking filter: 0=None 1=Width 2=Separation 3=Both(AND) 4=Both(OR)
     {"LaneLineVisualizer", {PERSISTENT | BACKUP, BOOL, "0"}},         // standalone solid-vs-broken lane-line classifier process (UI/debug)
     {"LaneLineVisualizerReadout", {PERSISTENT | BACKUP, BOOL, "0"}},  // on-road readout for lane-line solid/broken classification

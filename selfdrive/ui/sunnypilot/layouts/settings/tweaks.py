@@ -10,6 +10,7 @@ from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.auto_
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.dynamic_follow_settings import DynamicFollowSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.email_logs_settings import EmailLogsSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.jerk_settings import JerkSettingsLayout
+from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.lane_center_assist_settings import LaneCenterAssistSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.lane_position_settings import LanePositionSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.lane_line_visualizer_settings import LaneLineVisualizerSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.launch_assist_settings import LaunchAssistSettingsLayout
@@ -36,6 +37,7 @@ class PanelType(IntEnum):
   EMAIL_LOGS = 9
   LANE_LINE_VISUALIZER = 10
   SPEED_ASSIST = 11
+  LANE_CENTER = 12
 
 
 class TweaksLayout(Widget):
@@ -48,6 +50,7 @@ class TweaksLayout(Widget):
     self._jerk_layout = JerkSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._launch_layout = LaunchAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._speed_assist_layout = SpeedAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
+    self._lane_center_layout = LaneCenterAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._park_layout = ParkAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._navigation_layout = NavSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._visual_vehicle_layout = VisualVehicleSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
@@ -129,6 +132,15 @@ class TweaksLayout(Widget):
       button_text=lambda: tr("Experimental Speed Assist"),
       button_width=800,
       callback=lambda: self._set_current_panel(PanelType.SPEED_ASSIST),
+    )
+
+    # Lane Center Assist: small capped curvature bias toward the ego-lane centre,
+    # trimming the model's lane-hugging. Off/Readout never steer; detailed
+    # settings live in a sub-page reachable via the button below.
+    self._lane_center_button = simple_button_item_sp(
+      button_text=lambda: tr("Lane Center Assist"),
+      button_width=800,
+      callback=lambda: self._set_current_panel(PanelType.LANE_CENTER),
     )
 
     # Lead park assist (closer standstill gap behind a stopped lead).
@@ -226,6 +238,7 @@ class TweaksLayout(Widget):
       self._launch_assist,
       self._launch_assist_button,
       self._speed_assist_button,
+      self._lane_center_button,
       self._park_assist,
       self._park_assist_button,
       self._lane_position_indicator,
@@ -251,6 +264,8 @@ class TweaksLayout(Widget):
       self._launch_layout.render(rect)
     elif self._current_panel == PanelType.SPEED_ASSIST:
       self._speed_assist_layout.render(rect)
+    elif self._current_panel == PanelType.LANE_CENTER:
+      self._lane_center_layout.render(rect)
     elif self._current_panel == PanelType.PARK:
       self._park_layout.render(rect)
     elif self._current_panel == PanelType.NAVIGATION:
@@ -282,6 +297,8 @@ class TweaksLayout(Widget):
       self._launch_layout.show_event()
     elif panel == PanelType.SPEED_ASSIST:
       self._speed_assist_layout.show_event()
+    elif panel == PanelType.LANE_CENTER:
+      self._lane_center_layout.show_event()
     elif panel == PanelType.PARK:
       self._park_layout.show_event()
     elif panel == PanelType.NAVIGATION:

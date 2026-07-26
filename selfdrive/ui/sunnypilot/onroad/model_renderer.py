@@ -7,6 +7,7 @@ See the LICENSE.md file in the root directory for more details.
 from openpilot.selfdrive.ui.sunnypilot.onroad.chevron_metrics import ChevronMetrics
 from openpilot.selfdrive.ui.sunnypilot.onroad.follow_readout import FollowReadout
 from openpilot.selfdrive.ui.sunnypilot.onroad.jerk_readout import JerkReadout
+from openpilot.selfdrive.ui.sunnypilot.onroad.lane_center_assist_readout import LaneCenterAssistReadout
 from openpilot.selfdrive.ui.sunnypilot.onroad.lane_position_indicator import LanePositionIndicator
 from openpilot.selfdrive.ui.sunnypilot.onroad.lane_line_visualizer_readout import LaneLineVisualizerReadout
 from openpilot.selfdrive.ui.sunnypilot.onroad.launch_readout import LaunchReadout
@@ -22,6 +23,7 @@ class ModelRendererSP:
     self.chevron_metrics = ChevronMetrics()
     self.follow_readout = FollowReadout()
     self.jerk_readout = JerkReadout()
+    self.lane_center_assist_readout = LaneCenterAssistReadout()
     self.lane_position_indicator = LanePositionIndicator()
     self.lane_line_visualizer_readout = LaneLineVisualizerReadout()
     self.launch_readout = LaunchReadout()
