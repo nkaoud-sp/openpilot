@@ -90,7 +90,7 @@ class SpeedAssistReadout:
     if plan_accel < _DECEL_BLOCK:
       return "DECEL", _DIM, speed_gap_kph, 0.0
     if abs(model_accel - plan_accel) > _MODEL_PLAN_GAP_MAX:
-      return "GAP E2E", _DIM, speed_gap_kph, 0.0
+      return ("MPC LOW" if model_accel > plan_accel else "E2E LOW"), _DIM, speed_gap_kph, 0.0
     if model_accel > _GENTLE_ACCEL_MAX or plan_accel > _GENTLE_ACCEL_MAX:
       return "ACCEL", _DIM, speed_gap_kph, 0.0
 
