@@ -68,7 +68,7 @@ class LaneCenterAssistReadout:
     right_y = _median_y_near(lane_lines[2])
     if left_y is None or right_y is None:
       return False, 0.0
-    width = left_y - right_y
+    width = right_y - left_y  # right is +y, left is -y (see ldw.py)
     if not (_LANE_WIDTH_MIN <= width <= _LANE_WIDTH_MAX):
       return False, 0.0
     center = (left_y + right_y) / 2.0

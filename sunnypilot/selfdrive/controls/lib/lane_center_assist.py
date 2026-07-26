@@ -17,9 +17,11 @@ How it works:
     near-field window and take the median y of each (robust to single-frame
     outliers and to curve bias picked up by averaging the full prediction).
   * The lane centre relative to the car is the midpoint of those two lines.
-    In openpilot's frame y is positive to the left and the car is at y=0, so a
-    positive midpoint means the lane centre is to our left (the model is
-    hugging right) and we should steer left to re-centre.
+    In openpilot's model frame y is positive to the right and the car is at
+    y=0 (laneLines[1] left line sits at negative y, laneLines[2] right line at
+    positive y — see ldw.py), so a positive midpoint means the lane centre is
+    to our right (the model is hugging left) and we should steer right to
+    re-centre.
   * Convert that lateral offset into a target lateral acceleration (capped),
     then into a curvature bias (a_lat / v^2) so the *feel* is consistent across
     speeds. The bias is slew-limited for smooth engage/disengage and is only
@@ -64,8 +66,9 @@ BIAS_SLEW = 3.0e-5       # 1/m per control frame (100 Hz) — ~1.5 s to reach a 
 
 PARAM_READ_PERIOD_FRAMES = 50  # refresh params at ~2 Hz (controlsd runs at 100 Hz)
 
-# Positive desiredCurvature steers left; a positive lane-centre midpoint means the
-# centre is to our left, so a positive bias steers us toward it. Field-flippable.
+# Positive desiredCurvature steers right (see latcontrol_angle.py); a positive
+# lane-centre midpoint means the centre is to our right (we're hugging left), so a
+# positive bias steers us toward it. Field-flippable if a real drive disagrees.
 CENTER_SIGN = 1.0
 
 
@@ -124,7 +127,7 @@ class LaneCenterAssist:
     if left_y is None or right_y is None:
       return False, 0.0, "no points"
 
-    width = left_y - right_y  # left is +y, right is -y, so width is positive
+    width = right_y - left_y  # right is +y, left is -y, so width is positive
     if not (LANE_WIDTH_MIN <= width <= LANE_WIDTH_MAX):
       return False, 0.0, "bad width"
 
