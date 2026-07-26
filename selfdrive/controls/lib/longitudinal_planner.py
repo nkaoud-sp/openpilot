@@ -267,7 +267,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       self.speed_assist_reason = "decel"
       return 0.0
     if abs(output_a_target_e2e - output_a_target) > SPEED_ASSIST_MODEL_PLAN_GAP_MAX:
-      self.speed_assist_reason = "model gap"
+      self.speed_assist_reason = "gap e2e"
       return 0.0
     if output_a_target_e2e > SPEED_ASSIST_GENTLE_ACCEL_MAX or output_a_target > SPEED_ASSIST_GENTLE_ACCEL_MAX:
       self.speed_assist_reason = "already accel"
