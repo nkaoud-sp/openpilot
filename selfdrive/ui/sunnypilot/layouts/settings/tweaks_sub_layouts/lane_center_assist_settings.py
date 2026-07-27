@@ -74,9 +74,10 @@ class LaneCenterAssistSettingsLayout(Widget):
     )
     self._path_overlay = toggle_item_sp(
       title=lambda: tr("Show Commanded Path"),
-      description=lambda: tr("Draw a cyan arc on the driving view showing the commanded curvature (the driving " +
+      description=lambda: tr("Draw an arc on the driving view showing the commanded curvature (the driving " +
                             "model plus the assist's bias). The model's own predicted path stays green, so the " +
-                            "gap between them is what the nudge is adding."),
+                            "gap between them is what the nudge is adding. The arc tints from cyan toward red as " +
+                            "the requested correction approaches your Max Correction setting."),
       param="LaneCenterAssistPathOverlay",
     )
 

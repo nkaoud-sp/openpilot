@@ -104,6 +104,22 @@ class LaneCenterAssistReadout:
     lat_accel = float(np.clip(_STRENGTH_GAIN[strength] * offset, -max_accel, max_accel))
     return ("READY", _BLUE, offset, lat_accel) if mode == 1 else ("ACTIVE", _GREEN, offset, lat_accel)
 
+  def request_fraction(self, sm) -> float:
+    """|requested lateral accel| / Max Correction, clamped 0..1.
+
+    Used by the commanded-path overlay to tint the arc from cyan (no request)
+    toward red (at the Max Correction ceiling). Reflects the *requested*
+    correction, so it is meaningful in Readout mode too. Returns 0 when the
+    assist is off or gated.
+    """
+    if ui_state.lane_center_assist_mode <= 0:
+      return 0.0
+    _state, _color, _offset, lat_accel = self._status(sm)
+    max_accel = ui_state.lane_center_assist_max_accel / 100.0
+    if max_accel <= 0.0:
+      return 0.0
+    return float(min(1.0, abs(lat_accel) / max_accel))
+
   def draw(self, sm, rect: rl.Rectangle):
     visible = ui_state.lane_center_assist_mode > 0
     self._update_alpha(visible)

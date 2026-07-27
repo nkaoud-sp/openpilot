@@ -21,7 +21,10 @@ MAX_DRAW_DISTANCE = 100.0
 COMMANDED_PATH_LENGTH = 40.0     # metres ahead to draw the arc
 COMMANDED_PATH_POINTS = 40
 COMMANDED_PATH_HALF_W = 0.2      # metres — ribbon half-width
-COMMANDED_PATH_COLOR = rl.Color(0, 200, 255, 160)  # cyan, distinct from the green model path
+COMMANDED_PATH_ALPHA = 170
+# Arc tint scales with the assist's requested correction: cyan (none) -> red (at Max Correction)
+COMMANDED_PATH_COLOR_LOW = (0, 200, 255)    # cyan
+COMMANDED_PATH_COLOR_HIGH = (255, 45, 45)   # red
 
 THROTTLE_COLORS = [
   rl.Color(13, 248, 122, 102),   # HSLF(148/360, 0.94, 0.51, 0.4)
@@ -441,7 +444,13 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
     poly = self._map_line_to_polygon(line, COMMANDED_PATH_HALF_W, self._path_offset_z,
                                      max_idx, COMMANDED_PATH_LENGTH, allow_invert=False)
     if poly.size:
-      draw_polygon(self._rect, poly, COMMANDED_PATH_COLOR)
+      frac = self.lane_center_assist_readout.request_fraction(sm)
+      lo, hi = COMMANDED_PATH_COLOR_LOW, COMMANDED_PATH_COLOR_HIGH
+      color = rl.Color(int(lo[0] + (hi[0] - lo[0]) * frac),
+                       int(lo[1] + (hi[1] - lo[1]) * frac),
+                       int(lo[2] + (hi[2] - lo[2]) * frac),
+                       COMMANDED_PATH_ALPHA)
+      draw_polygon(self._rect, poly, color)
 
   def _draw_lead_indicator(self):
     # Draw lead vehicles if available
