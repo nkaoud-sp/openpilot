@@ -162,6 +162,7 @@ class UIStateSP:
     self.lane_center_assist_max_accel = self.params.get("LaneCenterAssistMaxAccel", return_default=True)
     self.lane_center_assist_min_kph = self.params.get("LaneCenterAssistMinKph", return_default=True)
     self.lane_center_assist_confidence = self.params.get("LaneCenterAssistConfidence", return_default=True)
+    self.lane_center_assist_path_overlay = self.params.get_bool("LaneCenterAssistPathOverlay")
     self.hide_v_ego_ui = self.params.get_bool("HideVEgoUI")
     self.onroad_brightness = int(float(self.params.get("OnroadScreenOffBrightness", return_default=True)))
     self.onroad_brightness_timer_param = self.params.get("OnroadScreenOffTimer", return_default=True)

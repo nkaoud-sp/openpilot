@@ -5,7 +5,7 @@ from collections.abc import Callable
 
 import pyray as rl
 from openpilot.system.ui.lib.multilang import tr
-from openpilot.system.ui.sunnypilot.widgets.list_view import multiple_button_item_sp, option_item_sp
+from openpilot.system.ui.sunnypilot.widgets.list_view import multiple_button_item_sp, option_item_sp, toggle_item_sp
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.network import NavButton
 from openpilot.system.ui.widgets.scroller_tici import Scroller
@@ -72,6 +72,13 @@ class LaneCenterAssistSettingsLayout(Widget):
       button_width=220,
       inline=False,
     )
+    self._path_overlay = toggle_item_sp(
+      title=lambda: tr("Show Commanded Path"),
+      description=lambda: tr("Draw a cyan arc on the driving view showing the commanded curvature (the driving " +
+                            "model plus the assist's bias). The model's own predicted path stays green, so the " +
+                            "gap between them is what the nudge is adding."),
+      param="LaneCenterAssistPathOverlay",
+    )
 
     return [
       self._mode,
@@ -79,6 +86,7 @@ class LaneCenterAssistSettingsLayout(Widget):
       self._max_accel,
       self._min_speed,
       self._confidence,
+      self._path_overlay,
     ]
 
   def _render(self, rect):

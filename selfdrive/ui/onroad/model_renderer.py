@@ -17,6 +17,12 @@ CLIP_MARGIN = 500
 MIN_DRAW_DISTANCE = 10.0
 MAX_DRAW_DISTANCE = 100.0
 
+# Lane Center Assist commanded-curvature overlay
+COMMANDED_PATH_LENGTH = 40.0     # metres ahead to draw the arc
+COMMANDED_PATH_POINTS = 40
+COMMANDED_PATH_HALF_W = 0.2      # metres — ribbon half-width
+COMMANDED_PATH_COLOR = rl.Color(0, 200, 255, 160)  # cyan, distinct from the green model path
+
 THROTTLE_COLORS = [
   rl.Color(13, 248, 122, 102),   # HSLF(148/360, 0.94, 0.51, 0.4)
   rl.Color(114, 255, 92, 89),    # HSLF(112/360, 1.0, 0.68, 0.35)
@@ -136,6 +142,7 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
     self._draw_lane_line_classification_overlay()
     self._draw_lane_line_scan_border()
     self._draw_path(sm)
+    self._draw_commanded_path(sm)
 
     if render_lead_indicator and radar_state:
       self._draw_lead_indicator()
@@ -410,6 +417,31 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
         stops=[0.0, 0.5, 1.0],
       )
       draw_polygon(self._rect, self._path.projected_points, gradient=gradient)
+
+  def _draw_commanded_path(self, sm):
+    """Draw the commanded-curvature arc (model action + Lane Center Assist bias).
+
+    controlsState.desiredCurvature is the final steering setpoint, so this shows
+    where the wheel is actually being told to go — including the assist's nudge,
+    which the green model path (drawn from modelV2.position) does not reflect.
+    Approximated as a constant-curvature parabola over a short distance.
+    """
+    if not getattr(ui_state, "lane_center_assist_path_overlay", False):
+      return
+    if not sm.valid.get('controlsState', False):
+      return
+
+    curv = float(sm['controlsState'].desiredCurvature)
+    xs = np.linspace(0.0, COMMANDED_PATH_LENGTH, COMMANDED_PATH_POINTS, dtype=np.float32)
+    ys = 0.5 * curv * xs * xs + self._camera_offset  # +y is right; positive curvature steers right
+    zs = np.zeros_like(xs)
+    line = np.column_stack((xs, ys, zs)).astype(np.float32)
+
+    max_idx = self._get_path_length_idx(xs, COMMANDED_PATH_LENGTH)
+    poly = self._map_line_to_polygon(line, COMMANDED_PATH_HALF_W, self._path_offset_z,
+                                     max_idx, COMMANDED_PATH_LENGTH, allow_invert=False)
+    if poly.size:
+      draw_polygon(self._rect, poly, COMMANDED_PATH_COLOR)
 
   def _draw_lead_indicator(self):
     # Draw lead vehicles if available

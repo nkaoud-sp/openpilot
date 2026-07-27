@@ -185,6 +185,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LaneCenterAssistMaxAccel", {PERSISTENT | BACKUP, INT, "35"}}, // hard cap on added lateral accel, x100 m/s^2
     {"LaneCenterAssistMinKph", {PERSISTENT | BACKUP, INT, "40"}}, // lower speed gate
     {"LaneCenterAssistConfidence", {PERSISTENT | BACKUP, INT, "1"}}, // inner lane-line confidence gate: 0=loose(>=0.2), 1=normal(>=0.4), 2=strict(>=0.6)
+    {"LaneCenterAssistPathOverlay", {PERSISTENT | BACKUP, BOOL, "0"}}, // draw the commanded-curvature (model + assist bias) arc on the driving view
     {"LaneEdgeFilterMode", {PERSISTENT | BACKUP, INT, "0"}},      // edge-lane blocking filter: 0=None 1=Width 2=Separation 3=Both(AND) 4=Both(OR)
     {"LaneLineVisualizer", {PERSISTENT | BACKUP, BOOL, "0"}},         // standalone solid-vs-broken lane-line classifier process (UI/debug)
     {"LaneLineVisualizerReadout", {PERSISTENT | BACKUP, BOOL, "0"}},  // on-road readout for lane-line solid/broken classification
