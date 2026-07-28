@@ -188,6 +188,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LaneCenterAssistPathOverlay", {PERSISTENT | BACKUP, BOOL, "0"}}, // draw the commanded-curvature (model + assist bias) arc on the driving view
     {"LaneCenterAssistMethod", {PERSISTENT | BACKUP, INT, "0"}}, // 0=curvature bias (controls), 1=camera offset (model input, experimental)
     {"LaneCenterAssistCamMaxM", {PERSISTENT | BACKUP, INT, "10"}}, // camera-offset method: max dynamic shift, x100 metres (default 0.10 m)
+    {"LaneCenterAssistCamDamping", {PERSISTENT | BACKUP, INT, "0"}}, // camera-offset method: derivative damping, x100 seconds (opt-in; raise if it weaves)
     {"LaneEdgeFilterMode", {PERSISTENT | BACKUP, INT, "0"}},      // edge-lane blocking filter: 0=None 1=Width 2=Separation 3=Both(AND) 4=Both(OR)
     {"LaneLineVisualizer", {PERSISTENT | BACKUP, BOOL, "0"}},         // standalone solid-vs-broken lane-line classifier process (UI/debug)
     {"LaneLineVisualizerReadout", {PERSISTENT | BACKUP, BOOL, "0"}},  // on-road readout for lane-line solid/broken classification

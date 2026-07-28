@@ -48,7 +48,7 @@ MODE_ON = 2
 
 # Strength -> camera-offset gain (metres of shift per metre of lane offset). Kept
 # well under 1 for stability, since this closes a loop through the model.
-STRENGTH_CAM_GAIN = (0.20, 0.35, 0.50)
+STRENGTH_CAM_GAIN = (0.15, 0.25, 0.40)
 
 CONFIDENCE_MIN_PROB = (0.2, 0.4, 0.6)  # 0=loose, 1=normal, 2=strict
 
@@ -61,6 +61,12 @@ OFFSET_DEADZONE = 0.05
 
 CAM_OFFSET_HARD_MAX = 0.35   # never exceed the range the static setting allows
 CAM_OFFSET_SLEW = 0.005      # metres per model frame (~20 Hz) => ~cap in ~1 s
+
+CONTROL_DT = 0.05            # model frame period (s), ~20 Hz
+# Derivative damping: opposes the rate of change of the offset to curb the
+# oscillation a proportional-only loop through the model tends to develop. Acts
+# on a lightly filtered offset so it doesn't chase measurement noise.
+DERIV_FILTER_ALPHA = 0.30    # EMA weight on the newest offset for the rate estimate
 
 PARAM_READ_PERIOD_FRAMES = 20  # ~1 Hz at the model rate
 
@@ -87,10 +93,13 @@ class LaneCenterCameraOffset:
     self.strength = 1
     self.confidence = 0
     self.max_delta = 0.10        # metres, from LaneCenterAssistCamMaxM
+    self.damping = 0.0           # seconds, derivative gain (LaneCenterAssistCamDamping); opt-in
     self.min_speed_ms = 40 * CV.KPH_TO_MS
 
     self.offset = 0.0            # last measured lane-centre offset (m)
     self.offset_delta = 0.0      # current dynamic camera-offset delta (m)
+    self._offset_filt = 0.0      # EMA of the offset, for the derivative term
+    self._prev_offset_filt = 0.0
 
     self.read_params()
 
@@ -104,6 +113,7 @@ class LaneCenterCameraOffset:
     self.strength = int(np.clip(self.params.get("LaneCenterAssistStrength", return_default=True), 0, len(STRENGTH_CAM_GAIN) - 1))
     self.confidence = int(np.clip(self.params.get("LaneCenterAssistConfidence", return_default=True), 0, len(CONFIDENCE_MIN_PROB) - 1))
     self.max_delta = min(CAM_OFFSET_HARD_MAX, self.params.get("LaneCenterAssistCamMaxM", return_default=True) / 100.0)
+    self.damping = self.params.get("LaneCenterAssistCamDamping", return_default=True) / 100.0
     self.min_speed_ms = self.params.get("LaneCenterAssistMinKph", return_default=True) * CV.KPH_TO_MS
 
   def _compute_offset(self, model_v2):
@@ -142,14 +152,22 @@ class LaneCenterCameraOffset:
 
     self.offset = 0.0
 
-    if not self.active_method or not lat_active or v_ego < self.min_speed_ms:
-      return self._slew_to(0.0)
-
-    offset = self._compute_offset(model_v2)
-    if offset is None or abs(offset) < OFFSET_DEADZONE:
+    offset = None if not self.active_method else self._compute_offset(model_v2)
+    if offset is None or not lat_active or v_ego < self.min_speed_ms or abs(offset) < OFFSET_DEADZONE:
+      # Not correcting this frame: hold the derivative filter flat so it doesn't
+      # register a spike when the assist re-engages.
+      self._offset_filt = 0.0
+      self._prev_offset_filt = 0.0
       return self._slew_to(0.0)
 
     self.offset = offset
-    # +offset (left-hug) -> negative camera offset (shift perceived centre right)
-    target = float(np.clip(-STRENGTH_CAM_GAIN[self.strength] * offset, -self.max_delta, self.max_delta))
+    # Derivative damping on a lightly filtered offset.
+    self._offset_filt += DERIV_FILTER_ALPHA * (offset - self._offset_filt)
+    offset_rate = (self._offset_filt - self._prev_offset_filt) / CONTROL_DT
+    self._prev_offset_filt = self._offset_filt
+
+    # +offset (left-hug) -> negative camera offset (shift perceived centre right).
+    # The damping term subtracts the trend so we stop pushing before overshoot.
+    command = STRENGTH_CAM_GAIN[self.strength] * offset + self.damping * offset_rate
+    target = float(np.clip(-command, -self.max_delta, self.max_delta))
     return self._slew_to(target)

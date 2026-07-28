@@ -74,6 +74,18 @@ class LaneCenterAssistSettingsLayout(Widget):
       label_callback=lambda value: f"{value / 100:.2f} m",
       inline=True,
     )
+    self._cam_damping = option_item_sp(
+      title=lambda: tr("Camera Damping"),
+      description=lambda: tr("Camera Offset method only: optional derivative damping (off by default). If the car " +
+                            "weaves with the camera method, raise this a little at a time; if centering feels " +
+                            "sluggish, lower it. 0 = pure proportional."),
+      param="LaneCenterAssistCamDamping",
+      min_value=0,
+      max_value=100,
+      value_change_step=5,
+      label_callback=lambda value: f"{value / 100:.2f} s",
+      inline=True,
+    )
     self._min_speed = option_item_sp(
       title=lambda: tr("Minimum Speed"),
       description=lambda: tr("Lane Center Assist is disabled below this speed, where the lane centre is noisy."),
@@ -109,6 +121,7 @@ class LaneCenterAssistSettingsLayout(Widget):
       self._strength,
       self._max_accel,
       self._cam_max,
+      self._cam_damping,
       self._min_speed,
       self._confidence,
       self._path_overlay,
