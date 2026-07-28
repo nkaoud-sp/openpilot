@@ -94,6 +94,7 @@ class LaneCenterCameraOffset:
     self.confidence = 0
     self.max_delta = 0.10        # metres, from LaneCenterAssistCamMaxM
     self.damping = 0.0           # seconds, derivative gain (LaneCenterAssistCamDamping); opt-in
+    self.gain_override = 0.0     # m/m, direct gain (LaneCenterAssistCamGain); 0 => use Strength
     self.min_speed_ms = 40 * CV.KPH_TO_MS
 
     self.offset = 0.0            # last measured lane-centre offset (m)
@@ -114,7 +115,12 @@ class LaneCenterCameraOffset:
     self.confidence = int(np.clip(self.params.get("LaneCenterAssistConfidence", return_default=True), 0, len(CONFIDENCE_MIN_PROB) - 1))
     self.max_delta = min(CAM_OFFSET_HARD_MAX, self.params.get("LaneCenterAssistCamMaxM", return_default=True) / 100.0)
     self.damping = self.params.get("LaneCenterAssistCamDamping", return_default=True) / 100.0
+    self.gain_override = self.params.get("LaneCenterAssistCamGain", return_default=True) / 100.0
     self.min_speed_ms = self.params.get("LaneCenterAssistMinKph", return_default=True) * CV.KPH_TO_MS
+
+  def _gain(self) -> float:
+    # Direct override when set (>0), otherwise the Strength-based gain.
+    return self.gain_override if self.gain_override > 0.0 else STRENGTH_CAM_GAIN[self.strength]
 
   def _compute_offset(self, model_v2):
     lane_lines = model_v2.laneLines
@@ -168,6 +174,6 @@ class LaneCenterCameraOffset:
 
     # +offset (left-hug) -> negative camera offset (shift perceived centre right).
     # The damping term subtracts the trend so we stop pushing before overshoot.
-    command = STRENGTH_CAM_GAIN[self.strength] * offset + self.damping * offset_rate
+    command = self._gain() * offset + self.damping * offset_rate
     target = float(np.clip(-command, -self.max_delta, self.max_delta))
     return self._slew_to(target)

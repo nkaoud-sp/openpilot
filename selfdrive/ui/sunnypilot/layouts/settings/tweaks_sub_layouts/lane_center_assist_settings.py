@@ -74,6 +74,18 @@ class LaneCenterAssistSettingsLayout(Widget):
       label_callback=lambda value: f"{value / 100:.2f} m",
       inline=True,
     )
+    self._cam_gain = option_item_sp(
+      title=lambda: tr("Camera Gain"),
+      description=lambda: tr("Camera Offset method only: fine control of the correction gain, overriding the " +
+                            "Strength steps. Auto uses Strength. Lower if the car weaves; raise if it under-" +
+                            "corrects a persistent hug."),
+      param="LaneCenterAssistCamGain",
+      min_value=0,
+      max_value=60,
+      value_change_step=5,
+      label_callback=lambda value: tr("Auto") if value == 0 else f"{value / 100:.2f}",
+      inline=True,
+    )
     self._cam_damping = option_item_sp(
       title=lambda: tr("Camera Damping"),
       description=lambda: tr("Camera Offset method only: optional derivative damping (off by default). If the car " +
@@ -121,6 +133,7 @@ class LaneCenterAssistSettingsLayout(Widget):
       self._strength,
       self._max_accel,
       self._cam_max,
+      self._cam_gain,
       self._cam_damping,
       self._min_speed,
       self._confidence,
