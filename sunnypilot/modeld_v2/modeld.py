@@ -29,6 +29,7 @@ from openpilot.sunnypilot.modeld_v2.constants import Plan
 from openpilot.sunnypilot.modeld_v2.warp import Warp
 from openpilot.sunnypilot.modeld_v2.meta_helper import load_meta_constants
 from openpilot.sunnypilot.modeld_v2.camera_offset_helper import CameraOffsetHelper
+from openpilot.sunnypilot.modeld_v2.lane_center_camera_offset import LaneCenterCameraOffset
 
 from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
 from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
@@ -229,11 +230,17 @@ def main(demo=False):
 
   model_transform_main = np.zeros((3, 3), dtype=np.float32)
   model_transform_extra = np.zeros((3, 3), dtype=np.float32)
+  # Base (pre camera-offset) transforms, kept so the dynamic Lane Center Assist
+  # camera-offset method can re-apply a fresh shear every frame.
+  base_transform_main = np.zeros((3, 3), dtype=np.float32)
+  base_transform_extra = np.zeros((3, 3), dtype=np.float32)
   live_calib_seen = False
   buf_main, buf_extra = None, None
   meta_main = FrameMeta()
   meta_extra = FrameMeta()
   camera_offset_helper = CameraOffsetHelper()
+  lane_center_cam = LaneCenterCameraOffset()
+  static_camera_offset = 0.0
 
 
   if demo:
@@ -289,15 +296,24 @@ def main(demo=False):
     if sm.frame % 60 == 0:
       model.lat_delay = get_lat_delay(params, sm["liveDelay"].lateralDelay)
       model.PLANPLUS_CONTROL = params.get("PlanplusControl", return_default=True)
-      camera_offset_helper.set_offset(params.get("CameraOffset", return_default=True))
+      static_camera_offset = params.get("CameraOffset", return_default=True)
+      camera_offset_helper.set_offset(static_camera_offset)
+      lane_center_cam.read_params()
     lat_delay = model.lat_delay + model.LAT_SMOOTH_SECONDS
     if sm.updated["liveCalibration"] and sm.seen['roadCameraState'] and sm.seen['deviceState']:
       device_from_calib_euler = np.array(sm["liveCalibration"].rpyCalib, dtype=np.float32)
       dc = DEVICE_CAMERAS[(str(sm['deviceState'].deviceType), str(sm['roadCameraState'].sensor))]
-      model_transform_main = get_warp_matrix(device_from_calib_euler, dc.ecam.intrinsics if main_wide_camera else dc.fcam.intrinsics, False).astype(np.float32)
-      model_transform_extra = get_warp_matrix(device_from_calib_euler, dc.ecam.intrinsics, True).astype(np.float32)
-      model_transform_main, model_transform_extra = camera_offset_helper.update(model_transform_main, model_transform_extra, sm, main_wide_camera)
+      base_transform_main = get_warp_matrix(device_from_calib_euler, dc.ecam.intrinsics if main_wide_camera else dc.fcam.intrinsics, False).astype(np.float32)
+      base_transform_extra = get_warp_matrix(device_from_calib_euler, dc.ecam.intrinsics, True).astype(np.float32)
+      model_transform_main, model_transform_extra = camera_offset_helper.update(base_transform_main, base_transform_extra, sm, main_wide_camera)
       live_calib_seen = True
+
+    # Lane Center Assist camera-offset method: re-apply the shear every frame from
+    # the stored base transforms using the static offset plus the dynamic delta.
+    # Default (curvature-bias) path is left untouched.
+    if lane_center_cam.active_method and live_calib_seen:
+      camera_offset_helper.set_offset(static_camera_offset + lane_center_cam.offset_delta)
+      model_transform_main, model_transform_extra = camera_offset_helper.update(base_transform_main, base_transform_extra, sm, main_wide_camera)
 
     traffic_convention = np.zeros(2)
     traffic_convention[int(is_rhd)] = 1
@@ -364,6 +380,10 @@ def main(demo=False):
       pm.send('drivingModelData', drivingdata_send)
       pm.send('cameraOdometry', posenet_send)
       pm.send('modelDataV2SP', mdv2sp_send)
+
+      # Update the Lane Center Assist camera-offset delta from this frame's model
+      # output; it is applied (one frame later) to the next inference's transform.
+      lane_center_cam.update(modelv2_send.modelV2, v_ego, sm['carControl'].latActive)
     last_vipc_frame_id = meta_main.frame_id
 
 

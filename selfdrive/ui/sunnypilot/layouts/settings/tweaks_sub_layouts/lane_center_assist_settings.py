@@ -22,6 +22,17 @@ class LaneCenterAssistSettingsLayout(Widget):
     self._scroller = Scroller(items, line_separator=True, spacing=0)
 
   def _initialize_items(self):
+    self._method = multiple_button_item_sp(
+      title=lambda: tr("Method"),
+      description=lambda: tr("Curvature Bias corrects the steering setpoint downstream (cooperative, inherits all " +
+                            "safety limits). Camera Offset (experimental) shifts the model's input so the model " +
+                            "itself re-plans centred — seamless, but the correction runs through the model and " +
+                            "moves its whole view, so it is kept small."),
+      buttons=[lambda: tr("Curvature Bias"), lambda: tr("Camera Offset")],
+      param="LaneCenterAssistMethod",
+      button_width=340,
+      inline=False,
+    )
     self._mode = multiple_button_item_sp(
       title=lambda: tr("Mode"),
       description=lambda: tr("Readout shows the offset from lane centre and what the assist would do, without " +
@@ -50,6 +61,17 @@ class LaneCenterAssistSettingsLayout(Widget):
       max_value=60,
       value_change_step=5,
       label_callback=lambda value: f"{value / 100:.2f} m/s²",
+      inline=True,
+    )
+    self._cam_max = option_item_sp(
+      title=lambda: tr("Max Camera Shift"),
+      description=lambda: tr("Camera Offset method only: hard cap on the dynamic virtual-camera shift. Kept small " +
+                            "because the shift moves the model's whole view, not just steering."),
+      param="LaneCenterAssistCamMaxM",
+      min_value=3,
+      max_value=25,
+      value_change_step=1,
+      label_callback=lambda value: f"{value / 100:.2f} m",
       inline=True,
     )
     self._min_speed = option_item_sp(
@@ -82,9 +104,11 @@ class LaneCenterAssistSettingsLayout(Widget):
     )
 
     return [
+      self._method,
       self._mode,
       self._strength,
       self._max_accel,
+      self._cam_max,
       self._min_speed,
       self._confidence,
       self._path_overlay,

@@ -45,6 +45,10 @@ MODE_OFF = 0
 MODE_READOUT = 1
 MODE_ON = 2
 
+# Method (LaneCenterAssistMethod): this controls-side bias only runs for method 0
+METHOD_CURVATURE_BIAS = 0
+METHOD_CAMERA_OFFSET = 1
+
 # Strength -> proportional gain from lateral offset (m) to target lat accel (m/s^2 per m)
 STRENGTH_GAIN = (0.4, 0.7, 1.0)
 
@@ -91,6 +95,7 @@ class LaneCenterAssist:
 
     # tunables (refreshed from params)
     self.mode = MODE_OFF
+    self.method = METHOD_CURVATURE_BIAS
     self.strength = 1
     self.max_accel = 0.35        # m/s^2, hard cap on the added lateral accel
     self.min_speed_ms = 40 * CV.KPH_TO_MS
@@ -107,6 +112,7 @@ class LaneCenterAssist:
 
   def _read_params(self) -> None:
     self.mode = self.params.get("LaneCenterAssistMode", return_default=True)
+    self.method = self.params.get("LaneCenterAssistMethod", return_default=True)
     self.strength = int(np.clip(self.params.get("LaneCenterAssistStrength", return_default=True), 0, len(STRENGTH_GAIN) - 1))
     self.max_accel = self.params.get("LaneCenterAssistMaxAccel", return_default=True) / 100.0
     self.min_speed_ms = self.params.get("LaneCenterAssistMinKph", return_default=True) * CV.KPH_TO_MS
@@ -155,6 +161,11 @@ class LaneCenterAssist:
     # element, which computes independently, so here we just ramp out.
     if self.mode != MODE_ON:
       self.reason = "off" if self.mode == MODE_OFF else "readout"
+      return self._slew_to(0.0)
+
+    # The camera-offset method corrects in modeld instead; don't also bias here.
+    if self.method != METHOD_CURVATURE_BIAS:
+      self.reason = "camera offset"
       return self._slew_to(0.0)
 
     if not lat_active:
