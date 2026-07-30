@@ -6,7 +6,7 @@ QR dialog (which starts the capture web server); while that dialog is open
 and the car is onroad, the detector records the selected camera's crop for
 training. A red dot marks active recording.
 
-Only visible when the VisualVehicleDetector feature is enabled.
+Only visible when the VisualVehicleDetector feature and image-capture button are enabled.
 """
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ class VisualVehicleCaptureButton(Widget):
     if now - self._last_poll < 0.5:
       return
     self._last_poll = now
-    self._enabled = self._params.get_bool("VisualVehicleDetector")
+    self._enabled = self._params.get_bool("VisualVehicleDetector") and self._params.get_bool("VisualVehicleDetectorCapture")
     self._recording = capture_requested()
 
   def _handle_mouse_release(self, _):

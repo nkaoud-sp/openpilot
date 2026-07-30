@@ -640,13 +640,19 @@ class VisualVehicleSettingsLayout(Widget):
     self._car_widget = toggle_item_sp(
       title=lambda: tr("Use Car Widget"),
       description=lambda: tr("Replace the detector readout panels with a top-down car widget. In Wide+Driver mode, "
-                            "each blocked zone lights the matching corner red."),
+                             "each blocked zone lights the matching corner red."),
       param="VisualVehicleDetectorCarWidget",
+    )
+    self._capture_button = toggle_item_sp(
+      title=lambda: tr("Show CAP Button"),
+      description=lambda: tr("Show the on-road CAP button next to the driver-monitoring widget. Tapping it opens "
+                             "the image-capture QR portal for collecting the selected camera's crop for training."),
+      param="VisualVehicleDetectorCapture",
     )
     self._allow_onnx = toggle_item_sp(
       title=lambda: tr("Allow ONNX Fallback (debug only)"),
       description=lambda: tr("If the PKL is missing, allow the detector daemon to try ONNX Runtime. Leave OFF on "
-                            "comma3x unless you are only debugging process/UI behavior."),
+                             "comma3x unless you are only debugging process/UI behavior."),
       param="VisualVehicleDetectorAllowOnnx",
     )
     self._debug_log = toggle_item_sp(
@@ -735,6 +741,7 @@ class VisualVehicleSettingsLayout(Widget):
       self._camera_source,
       self._readout,
       self._car_widget,
+      self._capture_button,
       self._allow_onnx,
       self._debug_log,
       self._live_preview,
