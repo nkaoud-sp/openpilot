@@ -83,6 +83,15 @@ class NavSettingsLayout(Widget):
                             "camera see the target side clear. Experimental."),
       param="NkaoudNavControlSteer",
     )
+    self._turn_assist = toggle_item_sp(
+      title=lambda: tr("Assist Turns With Curvature Nudge"),
+      description=lambda: tr("On top of the route's turn steering, add a small feedforward curvature nudge in the " +
+                            "turn direction to help the driving model follow through, scaled by how sharp the turn " +
+                            "is (gentler for slight turns, firmer for sharp ones; u-turns excluded). Requires " +
+                            "\"Steer / Lane-Change With The Route\". The nudge is capped and clears the instant " +
+                            "steering disengages. Experimental."),
+      param="NkaoudNavTurnAssist",
+    )
     self._visual_block_threshold = option_item_sp(
       title=lambda: tr("Camera Block Threshold"),
       description=lambda: tr("For route-requested lane changes, block the move when the visual vehicle detector's " +
@@ -115,6 +124,7 @@ class NavSettingsLayout(Widget):
       self._show_banner,
       self._control_speed,
       self._control_steer,
+      self._turn_assist,
       self._visual_block_threshold,
       self._highway_lane_pref,
     ]
