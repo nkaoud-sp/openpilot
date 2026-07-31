@@ -56,6 +56,12 @@ class Step:
   # Road classes from intersections[0].classes ("motorway", "primary", "tunnel"...).
   # Empty tuple if the step has no intersections (rare).
   road_classes: tuple[str, ...] = ()
+  # Mapbox maneuver bearings (compass degrees, clockwise from north): the
+  # heading just before and after the maneuver point. None when the step has
+  # no maneuver bearings (e.g. depart/arrive). The signed difference is the
+  # turn angle. Present on turn maneuvers, which is all the turn assist needs.
+  maneuver_bearing_before: float | None = None
+  maneuver_bearing_after: float | None = None
 
 
 @dataclass
@@ -120,6 +126,8 @@ def _parse_step(raw: dict[str, Any]) -> Step:
   if intersections:
     raw_classes = intersections[0].get("classes") or []
     road_classes = tuple(str(c) for c in raw_classes)
+  bearing_before = maneuver.get("bearing_before")
+  bearing_after = maneuver.get("bearing_after")
   return Step(
     geometry=geom,
     distance=float(raw.get("distance") or 0.0),
@@ -129,6 +137,8 @@ def _parse_step(raw: dict[str, Any]) -> Step:
     banners=_parse_banners(raw.get("bannerInstructions")),
     name=raw.get("name") or "",
     road_classes=road_classes,
+    maneuver_bearing_before=float(bearing_before) if bearing_before is not None else None,
+    maneuver_bearing_after=float(bearing_after) if bearing_after is not None else None,
   )
 
 

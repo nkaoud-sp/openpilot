@@ -454,6 +454,13 @@ struct LiveMapDataSP @0xf416ec09499d9d19 {
 struct ModelDataV2SP @0xa1680744031fdb2d {
   laneTurnDirection @0 :TurnDirection;
 
+  # nkaoud_nav turn assist: feedforward curvature bias (1/m, signed like
+  # desiredCurvature -- positive steers right) that nudges the model through a
+  # route-commanded turn. Computed in modeld from the applied nav desire and
+  # the route's turn angle; consumed and added downstream in controlsd. 0 when
+  # the assist is off or no turn is being executed.
+  navTurnAssistCurvature @1 :Float32;
+
   enum TurnDirection {
     none @0;
     turnLeft @1;
@@ -495,6 +502,13 @@ struct NkaoudNavigationSP @0xcb9fd56c7057593a {
   # isn't allowed to make the move itself.
   advisoryLaneChange @16 :LaneSide;
   advisoryLaneChangeBlockReason @17 :Text;  # why advisory lane-change is cue-only / blocked, if navd knows
+
+  # Signed turn angle of the upcoming maneuver, in degrees, from the Mapbox
+  # maneuver bearings (bearing_after - bearing_before, normalized to
+  # [-180, 180]). Positive = right, negative = left; 0 when there is no
+  # upcoming turn. Drives the turn-assist feedforward magnitude so the nudge is
+  # consistent with how sharp the turn is.
+  maneuverTurnAngle @18 :Float32;
 
   enum NavDesire {
     none @0;

@@ -143,9 +143,20 @@ class Controls(ControlsExt):
     else:
       new_desired_curvature = model_v2.action.desiredCurvature if CC.latActive else self.curvature
 
+    # Nav turn assist: feedforward curvature nudge through a route-commanded
+    # turn, computed in modeld and scaled by the route turn angle. 0 unless
+    # NkaoudNavTurnAssist is on and a turn is being executed.
+    nav_turn_curv = 0.0
+    if self.sm.valid.get('modelDataV2SP', False):
+      nav_turn_curv = self.sm['modelDataV2SP'].navTurnAssistCurvature
+
     # Lane Center Assist: small, capped curvature bias toward the ego-lane centre.
     # Returns 0 unless Mode is "On" and all gates pass; clip_curvature still bounds the total.
-    new_desired_curvature += self.lane_center_assist.update(model_v2, CS.vEgo, CC.latActive)
+    # Arbitration: the turn assist owns the curvature bias while it is active --
+    # LCA is a lane-centering trim and must not fight a commanded turn, so it
+    # yields (its own gates already suppress it during lane changes).
+    lca_curv = self.lane_center_assist.update(model_v2, CS.vEgo, CC.latActive)
+    new_desired_curvature += nav_turn_curv if nav_turn_curv != 0.0 else lca_curv
 
     self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
     lat_delay = self.sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS

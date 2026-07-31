@@ -30,6 +30,7 @@ from openpilot.sunnypilot.modeld_v2.warp import Warp
 from openpilot.sunnypilot.modeld_v2.meta_helper import load_meta_constants
 from openpilot.sunnypilot.modeld_v2.camera_offset_helper import CameraOffsetHelper
 from openpilot.sunnypilot.modeld_v2.lane_center_camera_offset import LaneCenterCameraOffset
+from openpilot.sunnypilot.selfdrive.controls.lib.nav_turn_assist import NavTurnAssist
 
 from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
 from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
@@ -254,6 +255,7 @@ def main(demo=False):
   prev_action = log.ModelDataV2.Action()
 
   DH = DesireHelper()
+  nav_turn_assist = NavTurnAssist()
 
   while True:
     # Keep receiving frames until we are at least 1 frame ahead of previous extra frame
@@ -372,6 +374,13 @@ def main(demo=False):
       modelv2_send.modelV2.meta.laneChangeState = DH.lane_change_state
       modelv2_send.modelV2.meta.laneChangeDirection = DH.lane_change_direction
       mdv2sp_send.modelDataV2SP.laneTurnDirection = DH.lane_turn_direction
+
+      # Nav turn assist: feedforward curvature nudge through a route-commanded
+      # turn, scaled by the route's turn angle. Direction comes from the applied
+      # desire (post-gating), never from the model output. controlsd adds it.
+      mdv2sp_send.modelDataV2SP.navTurnAssistCurvature = nav_turn_assist.update(
+        DH.desire, sm['nkaoudNavigationSP'].maneuverTurnAngle,
+        sm['carState'].vEgo, sm['carControl'].latActive)
       drivingdata_send.drivingModelData.meta.laneChangeState = DH.lane_change_state
       drivingdata_send.drivingModelData.meta.laneChangeDirection = DH.lane_change_direction
 

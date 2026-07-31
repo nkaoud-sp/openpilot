@@ -172,6 +172,16 @@ def _bearing_delta(a: float, b: float) -> float:
   return abs(d)
 
 
+def _signed_turn_angle(before: float | None, after: float | None) -> float:
+  """Signed turn angle (deg) from Mapbox maneuver bearings, normalized to
+  [-180, 180]. Bearings are compass degrees (clockwise from north), so a
+  positive result is a clockwise = right turn, negative a left turn. Returns
+  0.0 when either bearing is missing (e.g. depart/arrive steps)."""
+  if before is None or after is None:
+    return 0.0
+  return (after - before + 540.0) % 360.0 - 180.0
+
+
 def _read_destination(params: Params) -> Coordinate | None:
   # JSON-typed params come back as the parsed object directly (dict here), not a string.
   d = params.get("NkaoudNavDestination")
@@ -583,6 +593,11 @@ class NkaoudNavd:
     nav.maneuverType = upcoming.maneuver_type if upcoming is not None else ""
     nav.maneuverModifier = upcoming.maneuver_modifier if upcoming is not None else ""
     nav.recommendedDesire = self._recommended_desire()
+    # Signed turn angle of the upcoming maneuver (deg, + = right, - = left).
+    # Pure geometry -- no gating here; the turn assist downstream decides
+    # whether/how to use it. 0 when there is no upcoming step or no bearings.
+    nav.maneuverTurnAngle = float(_signed_turn_angle(
+      upcoming.maneuver_bearing_before, upcoming.maneuver_bearing_after)) if upcoming is not None else 0.0
 
     # Phase 8 fields.
     lane_keep_m, _ = _ranges_for(upcoming.maneuver_type if upcoming else "")
