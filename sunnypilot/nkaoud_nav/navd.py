@@ -28,7 +28,8 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import Ratekeeper
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.nkaoud_nav.geometry import (
-  Coordinate, closest_segment_index, distance_along_geometry, route_bearing_at, total_geometry_length,
+  Coordinate, closest_segment_index, closest_segment_in_window, distance_along_from,
+  distance_along_geometry, route_bearing_from, total_geometry_length,
 )
 from openpilot.sunnypilot.nkaoud_nav.route_client import (
   Banner, RouteData, RouteFetchError, fetch_route,
@@ -122,6 +123,17 @@ DEFAULT_RANGES = (200.0, 50.0)   # surface streets / "turn" / unknown
 # the post-turn geometry, which shows up as cross-track within seconds.)
 CROSS_TRACK_THRESHOLD_M = 30.0
 CROSS_TRACK_COUNTER_MIN = 25     # ~5 s at 5 Hz
+
+# Route-aware map-matching. The whole-route projection that feeds cross-track
+# and distance-along is restricted to a window around the last matched segment
+# and gated by heading, so it can't snap onto a parallel road, the opposing
+# carriageway, or a later pass of a route that loops back near itself. A large
+# perpendicular miss (GPS gap / tunnel exit / genuinely off-route) forces a
+# heading-gated global re-acquire so a real reroute is still measured honestly.
+MATCH_WINDOW_BACK_M = 40.0
+MATCH_WINDOW_FWD_M = 600.0
+MATCH_MAX_BEARING_DIFF_DEG = 75.0
+MATCH_REACQUIRE_PERP_M = 150.0
 
 # Advance to the next step once we are this far PAST the current step's
 # maneuver (signed along-step distance goes negative). Ported from the old
@@ -335,6 +347,10 @@ class NkaoudNavd:
     self.lane_conf: str = "unknown"
     self.cross_track_m: float = 0.0
     self.cross_track_counter: int = 0
+    # Last route-aware map-match (segment index + fraction along it into the
+    # full route polyline). Seeds the next tick's windowed projection.
+    self._match_idx: int = 0
+    self._match_t: float = 0.0
     self._enabled: bool = False
     self._highway_pref: int = HIGHWAY_LANE_PREF_CENTER
     self._lane_edge_filter_mode: int = FILTER_MODE_NONE
@@ -387,6 +403,8 @@ class NkaoudNavd:
       self.destination = new_dest
       self.route = None
       self.step_idx = 0
+      self._match_idx = 0
+      self._match_t = 0.0
       self.arrived = False
       self.bearing_misalign_counter = 0
       self._try_fetch_initial()
@@ -496,6 +514,8 @@ class NkaoudNavd:
       cloudlog.info(f"nkaoud_navd: route received ({result.distance_total:.0f} m, {len(result.steps)} steps)")
       self.route = result
       self.step_idx = 0
+      self._match_idx = 0
+      self._match_t = 0.0
       self.rerouting = False
     elif error is not None:
       cloudlog.warning(f"nkaoud_navd: route fetch failed: {error}")
@@ -514,10 +534,13 @@ class NkaoudNavd:
         self.params.remove("NkaoudNavDestination")
         return
 
-    # Whole-route progress -- kept only for the remaining-distance readout.
-    self.last_distance_along = distance_along_geometry(self.route.geometry, self.last_pos)
-    # Perpendicular distance to the route for the cross-track reroute net.
-    _idx, perp, _t = closest_segment_index(self.route.geometry, self.last_pos)
+    # Route-aware, heading-gated map-match onto the full route polyline. Feeds
+    # both the whole-route progress (remaining-distance readout) and the
+    # perpendicular distance used by the cross-track reroute net. Replaces the
+    # old global-nearest projection, which could snap onto a parallel road or a
+    # loop-back segment and corrupt both readings.
+    idx, perp, t = self._match_to_route()
+    self.last_distance_along = distance_along_from(self.route.geometry, idx, t)
     self.cross_track_m = perp
 
     # Advance step_idx forward-only, driven by actually passing the maneuver
@@ -528,6 +551,32 @@ class NkaoudNavd:
     # geometry and lets the along-step distance go negative.
     while self.step_idx + 1 < len(self.route.steps) and self._should_transition_to_next_step():
       self.step_idx += 1
+
+  def _match_to_route(self) -> tuple[int, float, float]:
+    """Route-aware, heading-gated projection of the vehicle onto the full route
+    polyline. Seeds from the last match (forward-biased via the window) and,
+    when the local anchor is lost (big GPS jump, tunnel exit, genuinely
+    off-route), re-acquires with a heading-gated global scan so a real reroute
+    is still measured against the true nearest point."""
+    geom = self.route.geometry
+    # Only trust heading once we're moving fast enough for it to be meaningful;
+    # a stopped/creeping estimate is too noisy to gate segments with.
+    bearing = self.last_bearing if self.last_v_ego >= BEARING_MISALIGN_MIN_SPEED_MS else None
+    idx, perp, t = closest_segment_in_window(
+      geom, self.last_pos, self._match_idx,
+      window_back_m=MATCH_WINDOW_BACK_M, window_fwd_m=MATCH_WINDOW_FWD_M,
+      bearing=bearing, max_bearing_diff_deg=MATCH_MAX_BEARING_DIFF_DEG,
+    )
+    if perp > MATCH_REACQUIRE_PERP_M:
+      g_idx, g_perp, g_t = closest_segment_in_window(
+        geom, self.last_pos, 0, window_back_m=0.0, window_fwd_m=float("inf"),
+        bearing=bearing, max_bearing_diff_deg=MATCH_MAX_BEARING_DIFF_DEG,
+      )
+      if g_perp < perp:
+        idx, perp, t = g_idx, g_perp, g_t
+    self._match_idx = idx
+    self._match_t = t
+    return idx, perp, t
 
   def _maybe_reroute(self) -> None:
     if self.route is None or self.last_pos is None:
@@ -542,7 +591,10 @@ class NkaoudNavd:
 
     geom = self.route.geometry
     if self.last_bearing is not None and self.last_v_ego >= BEARING_MISALIGN_MIN_SPEED_MS:
-      route_bearing = route_bearing_at(geom, self.last_pos)
+      # Reuse the route-aware match computed this tick in _update_progress
+      # rather than re-projecting globally (which could anchor to the wrong
+      # parallel/loop-back segment and mask a genuine misalignment).
+      route_bearing = route_bearing_from(geom, self._match_idx, self._match_t)
       if route_bearing is None:
         self.bearing_misalign_counter = 0
       else:
