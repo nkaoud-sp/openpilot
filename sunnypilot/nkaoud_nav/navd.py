@@ -148,6 +148,7 @@ HIGHWAY_CRUISE_MIN_DIST_M = 1500.0         # only cruise-bias when the next mane
 HIGHWAY_LANE_PREF_LEFT = 0
 HIGHWAY_LANE_PREF_CENTER = 1
 HIGHWAY_LANE_PREF_RIGHT = 2
+HIGHWAY_LANE_PREF_NONE = 3   # no cruise-lane bias at all (exit/fork positioning still applies)
 
 # Without a usable lane fix the maneuver advisory can't tell whether we're
 # already positioned, so cap how early that (possibly redundant) cue starts.
@@ -892,7 +893,9 @@ class NkaoudNavd:
     (NkaoudNavHighwayLanePref), or '' when none is wanted. Runs on any
     Mapbox road class, at speed, with no imminent maneuver, and with a
     medium+ lane fix. Center uses ceil(N/2): 3 lanes -> 2, 4 -> 2
-    (center-left), 5 -> 3."""
+    (center-left), 5 -> 3. "None" disables cruise-lane biasing entirely."""
+    if self._highway_pref == HIGHWAY_LANE_PREF_NONE:
+      return ""
     if 0.0 < dist < HIGHWAY_CRUISE_MIN_DIST_M:
       return ""
     if self.last_v_ego < HIGHWAY_CRUISE_MIN_SPEED_MS:
@@ -912,6 +915,8 @@ class NkaoudNavd:
   def _cruise_lane_preference_advisory(self, cur_step, dist: float) -> tuple[str, str]:
     """Broader highway-preference cue for the UI. Returns (side, reason).
     `reason` is empty only when navd would also allow the keep* desire."""
+    if self._highway_pref == HIGHWAY_LANE_PREF_NONE:
+      return "", ""
     if self._highway_pref == HIGHWAY_LANE_PREF_LEFT:
       side = "left"
       target = 1

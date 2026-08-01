@@ -229,7 +229,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"NkaoudNavTurnAssist", {PERSISTENT | BACKUP, BOOL, "0"}},        // feedforward curvature nudge through route turns, scaled by turn angle (opt-in assist on top of the turn desire)
     {"NkaoudNavVisualBlockThreshold", {PERSISTENT | BACKUP, FLOAT, "0.80"}}, // P(camera car present) threshold that blocks nav lane-change bias
     {"NkaoudNavPolylineStyle", {PERSISTENT | BACKUP, INT, "1"}},      // 0=solid, 1=smooth, 2=glow, 3=chevrons
-    {"NkaoudNavHighwayLanePref", {PERSISTENT | BACKUP, INT, "1"}},    // highway cruise lane target: 0=left most, 1=center, 2=right most
+    {"NkaoudNavHighwayLanePref", {PERSISTENT | BACKUP, INT, "1"}},    // highway cruise lane target: 0=left most, 1=center, 2=right most, 3=none (no cruise-lane bias)
     {"NkaoudNavShareEndpoint", {PERSISTENT | BACKUP, STRING, ""}},    // HTTP(S) URL that returns {"latitude":x,"longitude":y,"place_name":"..."} for the Share preset
     {"NkaoudNavShareTrigger", {CLEAR_ON_MANAGER_START, STRING, ""}},  // ephemeral token bumped each time the user taps Share; navd refetches when it changes
     {"NkaoudNavDriveLogging", {PERSISTENT | BACKUP, BOOL, "0"}},      // log navigation maneuvers to a per-drive CSV for later analysis

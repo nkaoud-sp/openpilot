@@ -106,13 +106,14 @@ class NavSettingsLayout(Widget):
     self._highway_lane_pref = multiple_button_item_sp(
       title=lambda: tr("Highway Lane Preference"),
       description=lambda: tr("Which lane to prefer while cruising a highway / main road with no upcoming " +
-                            "maneuver. Requires \"Steer / Lane-Change With The Route\", an AutoLaneChange timer " +
-                            "and a confident lane fix; the flashing arrow then shows the wanted move (with a " +
-                            "pill explaining what blocks it), and the blind-spot monitor and camera still gate " +
-                            "any move."),
-      buttons=[lambda: tr("Left Most"), lambda: tr("Center"), lambda: tr("Right Most")],
+                            "maneuver. \"None\" turns off cruise-lane positioning entirely (exit / fork / merge " +
+                            "lane positioning still applies). Otherwise requires \"Steer / Lane-Change With The " +
+                            "Route\", an AutoLaneChange timer and a confident lane fix; the flashing arrow then " +
+                            "shows the wanted move (with a pill explaining what blocks it), and the blind-spot " +
+                            "monitor and camera still gate any move."),
+      buttons=[lambda: tr("Left Most"), lambda: tr("Center"), lambda: tr("Right Most"), lambda: tr("None")],
       param="NkaoudNavHighwayLanePref",
-      button_width=280,
+      button_width=220,
     )
 
     items = [
