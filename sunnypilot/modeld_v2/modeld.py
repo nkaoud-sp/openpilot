@@ -391,7 +391,9 @@ def main(demo=False):
       mdv2sp_send.modelDataV2SP.navPathCurvature, mdv2sp_send.modelDataV2SP.navPathWeight = nav_path_assist.update(
         DH.desire, sm['nkaoudNavigationSP'].maneuverTurnAngle,
         sm['nkaoudNavigationSP'].distanceToManeuver, sm['carState'].vEgo,
-        action.desiredCurvature, sm['carControl'].latActive)
+        action.desiredCurvature, sm['carControl'].latActive,
+        sm['nkaoudNavigationSP'].navPathX, sm['nkaoudNavigationSP'].navPathY,
+        sm['nkaoudNavigationSP'].navPathValid)
       drivingdata_send.drivingModelData.meta.laneChangeState = DH.lane_change_state
       drivingdata_send.drivingModelData.meta.laneChangeDirection = DH.lane_change_direction
 

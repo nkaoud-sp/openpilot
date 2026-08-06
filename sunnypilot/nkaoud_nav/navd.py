@@ -28,7 +28,8 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import Ratekeeper
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.nkaoud_nav.geometry import (
-  Coordinate, closest_segment_index, distance_along_geometry, route_bearing_at, total_geometry_length,
+  Coordinate, closest_segment_index, distance_along_geometry, route_bearing_at, sample_route_ahead,
+  total_geometry_length,
 )
 from openpilot.sunnypilot.nkaoud_nav.route_client import (
   Banner, RouteData, RouteFetchError, fetch_route,
@@ -166,6 +167,14 @@ SHARE_FETCH_MAX_ATTEMPTS = 4
 
 def _ranges_for(maneuver_type: str) -> tuple[float, float]:
   return MANEUVER_RANGES.get((maneuver_type or "").strip(), DEFAULT_RANGES)
+
+
+# Device-frame route path published for mode B (NavPathAssist). Must be sampled
+# at NAV_PATH_SPACING_M (NavPathAssist assumes this spacing to convert indices to
+# arc length); needs at least a few points to measure curvature.
+NAV_PATH_HORIZON_M = 60.0
+NAV_PATH_SPACING_M = 2.0
+NAV_PATH_MIN_POINTS = 5
 
 
 def _bearing_delta(a: float, b: float) -> float:
@@ -599,6 +608,21 @@ class NkaoudNavd:
     # whether/how to use it. 0 when there is no upcoming step or no bearings.
     nav.maneuverTurnAngle = float(_signed_turn_angle(
       upcoming.maneuver_bearing_before, upcoming.maneuver_bearing_after)) if upcoming is not None else 0.0
+
+    # Route path ahead in device frame (mode B, NavPathAssist). Real geometry
+    # from the Mapbox polyline at the current pose -- only when we are on-route
+    # with a good fix and heading, so a stale/misaligned pose never steers.
+    path_pts: list[tuple[float, float]] = []
+    if self.route is not None and nav.onRoute and msg.valid and self.last_bearing is not None:
+      path_pts = sample_route_ahead(self.route.geometry, self.last_pos, self.last_bearing,
+                                    NAV_PATH_HORIZON_M, NAV_PATH_SPACING_M)
+    nav.navPathValid = len(path_pts) >= NAV_PATH_MIN_POINTS
+    if path_pts:
+      xs = nav.init('navPathX', len(path_pts))
+      ys = nav.init('navPathY', len(path_pts))
+      for i, (px, py) in enumerate(path_pts):
+        xs[i] = float(px)
+        ys[i] = float(py)
 
     # Phase 8 fields.
     lane_keep_m, _ = _ranges_for(upcoming.maneuver_type if upcoming else "")

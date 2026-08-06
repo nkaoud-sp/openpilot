@@ -519,6 +519,15 @@ struct NkaoudNavigationSP @0xcb9fd56c7057593a {
   # consistent with how sharp the turn is.
   maneuverTurnAngle @18 :Float32;
 
+  # Route path ahead in device frame (x forward, y left, metres), sampled from
+  # the Mapbox polyline at the current GPS pose. This is the geometry-sourced
+  # analogue of comma's old NavModelData.position; NavPathAssist measures its
+  # curvature to blend the model through the turn (mode B). navPathValid is
+  # false unless we are on-route with a good GPS fix and heading.
+  navPathX @19 :List(Float32);
+  navPathY @20 :List(Float32);
+  navPathValid @21 :Bool;
+
   enum NavDesire {
     none @0;
     turnLeft @1;

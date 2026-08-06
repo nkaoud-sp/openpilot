@@ -4,15 +4,29 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+import math
+
 import pytest
 
 from cereal import log
 from openpilot.common.params import Params
 from openpilot.sunnypilot.selfdrive.controls.lib.nav_path_assist import (
-  NavPathAssist, _proximity_ramp, W_MAX, KAPPA_PATH_MAX, ENGAGE_DIST_M, K_TRUST,
+  NavPathAssist, curvature_from_path, _proximity_ramp,
+  W_MAX, KAPPA_PATH_MAX, ENGAGE_DIST_M, K_TRUST, NAV_PATH_SPACING_M, TURN_LENGTH_M,
 )
 
 Desire = log.Desire
+
+
+def _arc_path(radius_m, sign, n=30, spacing=NAV_PATH_SPACING_M):
+  """Device-frame points along a constant-radius arc from the origin heading
+  +x. sign=+1 curves right (-y), sign=-1 curves left (+y). Curvature = 1/R."""
+  xs, ys = [], []
+  for i in range(n):
+    phi = (i * spacing) / radius_m
+    xs.append(radius_m * math.sin(phi))
+    ys.append(-sign * radius_m * (1.0 - math.cos(phi)))
+  return xs, ys
 
 # A model curvature that agrees in sign so the safety veto never trips in the
 # generic cases (turnLeft => negative curvature, turnRight => positive).
@@ -26,12 +40,13 @@ def _make(enabled=True):
   return a
 
 
-def _settle(a, desire, angle, dist, v_ego, kappa_model=None, lat_active=True, n=30):
+def _settle(a, desire, angle, dist, v_ego, kappa_model=None, lat_active=True, n=30,
+            path_x=None, path_y=None, path_valid=False):
   if kappa_model is None:
     kappa_model = AGREE.get(desire, 0.0)
   out = (0.0, 0.0)
   for _ in range(n):
-    out = a.update(desire, angle, dist, v_ego, kappa_model, lat_active)
+    out = a.update(desire, angle, dist, v_ego, kappa_model, lat_active, path_x, path_y, path_valid)
   return out  # (curvature, weight)
 
 
@@ -185,3 +200,70 @@ def test_ramp_out_on_desire_clear():
   assert peak > 0.0
   _, w = a.update(Desire.none, 0.0, 2.0, 12.0, 0.0, lat_active=True)
   assert w < peak
+
+
+# ---- curvature_from_path ----
+
+def test_curvature_from_path_straight_is_zero():
+  xs = [float(i * NAV_PATH_SPACING_M) for i in range(30)]
+  ys = [0.0] * 30
+  assert curvature_from_path(xs, ys, center_m=20.0, margin_m=25.0) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_curvature_from_path_recovers_radius():
+  # A 20 m radius arc -> curvature 0.05 /m, measured within the window.
+  xs, ys = _arc_path(20.0, sign=+1)
+  k = curvature_from_path(xs, ys, center_m=20.0, margin_m=25.0)
+  assert k == pytest.approx(0.05, rel=0.1)
+
+
+def test_curvature_from_path_too_short():
+  assert curvature_from_path([0.0, 1.0], [0.0, 0.0], center_m=5.0) == 0.0
+
+
+def test_curvature_from_path_window_excludes_far_bend():
+  # Straight for the near window, a sharp bend only far away -> a near window
+  # sees nothing.
+  xs = [float(i * NAV_PATH_SPACING_M) for i in range(30)]
+  ys = [0.0] * 20 + [0.5 * (i - 19) ** 2 for i in range(20, 30)]
+  assert curvature_from_path(xs, ys, center_m=6.0, margin_m=8.0) == pytest.approx(0.0, abs=1e-6)
+
+
+# ---- path magnitude vs angle fallback ----
+
+def test_uses_measured_path_when_valid():
+  # turnRight, gentle 10 deg angle (angle synthesis would be tiny) but the real
+  # path is a tight 12 m arc -> the measured curvature must dominate.
+  a = _make()
+  xs, ys = _arc_path(12.0, sign=+1)
+  curv, w = _settle(a, Desire.turnRight, 30.0, 6.0, 12.0,
+                    path_x=xs, path_y=ys, path_valid=True)
+  assert a.source == "path"
+  assert w > 0.0
+  # measured ~1/12 = 0.083, well above the angle synthesis for 30 deg (~0.026).
+  assert abs(curv) > math.radians(30.0) / TURN_LENGTH_M
+
+
+def test_falls_back_to_angle_without_path():
+  a = _make()
+  _settle(a, Desire.turnRight, 90.0, 2.0, 12.0)
+  assert a.source == "angle"
+
+
+def test_falls_back_to_angle_when_path_straight():
+  a = _make()
+  xs = [float(i * NAV_PATH_SPACING_M) for i in range(30)]
+  ys = [0.0] * 30
+  _settle(a, Desire.turnRight, 90.0, 2.0, 12.0, path_x=xs, path_y=ys, path_valid=True)
+  assert a.source == "angle"
+
+
+def test_measured_path_direction_still_from_desire():
+  # Path curves right, but the desire says left -> sign follows the desire, and
+  # the sign-vs-angle gate is unaffected (angle -90 agrees with turnLeft).
+  a = _make()
+  xs, ys = _arc_path(15.0, sign=+1)   # geometry curves right
+  curv, w = _settle(a, Desire.turnLeft, -90.0, 6.0, 12.0,
+                    path_x=xs, path_y=ys, path_valid=True)
+  assert w > 0.0
+  assert curv < 0.0                    # left, from the desire, not the path shape

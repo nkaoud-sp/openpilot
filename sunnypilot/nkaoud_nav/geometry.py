@@ -89,6 +89,58 @@ def total_geometry_length(geometry: list[Coordinate]) -> float:
   return sum(geometry[i].distance_to(geometry[i + 1]) for i in range(len(geometry) - 1))
 
 
+def local_xy(origin: Coordinate, pt: Coordinate, bearing_deg: float) -> tuple[float, float]:
+  """Device-frame offset (x forward, y left, metres) of pt relative to origin,
+  given the vehicle heading bearing_deg (NED, 0 = North, clockwise). Uses a
+  local equirectangular projection -- accurate to well under a metre over the
+  tens-of-metres path horizon we sample."""
+  dlat = math.radians(pt.latitude - origin.latitude)
+  dlon = math.radians(pt.longitude - origin.longitude)
+  d_north = dlat * EARTH_MEAN_RADIUS
+  d_east = dlon * EARTH_MEAN_RADIUS * math.cos(math.radians(origin.latitude))
+  b = math.radians(bearing_deg)
+  sb, cb = math.sin(b), math.cos(b)
+  x_forward = d_east * sb + d_north * cb
+  y_left = -d_east * cb + d_north * sb
+  return x_forward, y_left
+
+
+def _interp(a: Coordinate, b: Coordinate, t: float) -> Coordinate:
+  return Coordinate(a.latitude + (b.latitude - a.latitude) * t,
+                    a.longitude + (b.longitude - a.longitude) * t)
+
+
+def sample_route_ahead(geometry: list[Coordinate], pos: Coordinate, bearing_deg: float | None,
+                       horizon_m: float = 60.0, spacing_m: float = 2.0) -> list[tuple[float, float]]:
+  """Sample the route polyline from the point closest to pos forward to
+  horizon_m, at fixed spacing_m, returned as device-frame (x, y) points. Empty
+  if the route or heading is unusable. This is the route path comma's old
+  navigation model emitted as NavModelData.position, sourced here from geometry
+  instead of a learned model."""
+  if geometry is None or len(geometry) < 2 or bearing_deg is None:
+    return []
+  idx, _, t = closest_segment_index(geometry, pos)
+  start = _interp(geometry[idx], geometry[idx + 1], t)
+  # World-space points from the closest point onward.
+  world = [start] + list(geometry[idx + 1:])
+  out_world = [start]
+  acc = 0.0
+  target = spacing_m
+  j = 0
+  while j + 1 < len(world) and acc < horizon_m:
+    a, b = world[j], world[j + 1]
+    seg_len = a.distance_to(b)
+    if seg_len < 1e-6:
+      j += 1
+      continue
+    while target <= acc + seg_len and target <= horizon_m:
+      out_world.append(_interp(a, b, (target - acc) / seg_len))
+      target += spacing_m
+    acc += seg_len
+    j += 1
+  return [local_xy(pos, c, bearing_deg) for c in out_world]
+
+
 def route_bearing_at(geometry: list[Coordinate], pos: Coordinate, lookahead_m: float = 50.0) -> float | None:
   """Bearing of the route at the closest point to pos, measured ~lookahead_m ahead."""
   if len(geometry) < 2:
