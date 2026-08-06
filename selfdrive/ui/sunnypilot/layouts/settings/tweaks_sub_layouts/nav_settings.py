@@ -92,6 +92,16 @@ class NavSettingsLayout(Widget):
                             "steering disengages. Experimental."),
       param="NkaoudNavTurnAssist",
     )
+    self._path_assist = toggle_item_sp(
+      title=lambda: tr("Assist Turns With Path Blend (B)"),
+      description=lambda: tr("Alternative to \"Assist Turns With Curvature Nudge\" for comparison. Instead of adding " +
+                            "a fixed nudge, blend the driving model's steering toward the route's own turn geometry, " +
+                            "weighted by how close the turn is. The blend can only tighten the model's turn, never " +
+                            "straighten it, and drops out entirely if the model steers the other way (e.g. avoiding " +
+                            "something the route can't see). Takes precedence over the curvature nudge when both are " +
+                            "on. Requires \"Steer / Lane-Change With The Route\". Experimental."),
+      param="NkaoudNavPathAssist",
+    )
     self._visual_block_threshold = option_item_sp(
       title=lambda: tr("Camera Block Threshold"),
       description=lambda: tr("For route-requested lane changes, block the move when the visual vehicle detector's " +
@@ -126,6 +136,7 @@ class NavSettingsLayout(Widget):
       self._control_speed,
       self._control_steer,
       self._turn_assist,
+      self._path_assist,
       self._visual_block_threshold,
       self._highway_lane_pref,
     ]

@@ -143,12 +143,18 @@ class Controls(ControlsExt):
     else:
       new_desired_curvature = model_v2.action.desiredCurvature if CC.latActive else self.curvature
 
-    # Nav turn assist: feedforward curvature nudge through a route-commanded
-    # turn, computed in modeld and scaled by the route turn angle. 0 unless
-    # NkaoudNavTurnAssist is on and a turn is being executed.
+    # Nav turn assist (mode A): feedforward curvature nudge through a route-
+    # commanded turn, computed in modeld and scaled by the route turn angle.
+    # 0 unless NkaoudNavTurnAssist is on and a turn is being executed.
+    # Nav path assist (mode B): route-geometry curvature target + blend weight
+    # (NkaoudNavPathAssist). weight 0 unless it is on and a turn is executing.
     nav_turn_curv = 0.0
+    nav_path_curv = 0.0
+    nav_path_w = 0.0
     if self.sm.valid.get('modelDataV2SP', False):
       nav_turn_curv = self.sm['modelDataV2SP'].navTurnAssistCurvature
+      nav_path_curv = self.sm['modelDataV2SP'].navPathCurvature
+      nav_path_w = self.sm['modelDataV2SP'].navPathWeight
 
     # Lane Center Assist: small, capped curvature bias toward the ego-lane centre.
     # Returns 0 unless Mode is "On" and all gates pass; clip_curvature still bounds the total.
@@ -156,7 +162,18 @@ class Controls(ControlsExt):
     # LCA is a lane-centering trim and must not fight a commanded turn, so it
     # yields (its own gates already suppress it during lane changes).
     lca_curv = self.lane_center_assist.update(model_v2, CS.vEgo, CC.latActive)
-    new_desired_curvature += nav_turn_curv if nav_turn_curv != 0.0 else lca_curv
+
+    if nav_path_w > 0.0:
+      # Mode B: convex blend of the model curvature toward the route geometry.
+      # Guarded to only ever *strengthen* the model's turn, never straighten it
+      # (a route sign disagreement already sends weight 0 from modeld, so this
+      # only trims the case where the route is gentler than the model).
+      blended = (1.0 - nav_path_w) * new_desired_curvature + nav_path_w * nav_path_curv
+      if blended * new_desired_curvature >= 0.0 and abs(blended) >= abs(new_desired_curvature):
+        new_desired_curvature = blended
+    else:
+      # Mode A additive nudge, else the Lane Center Assist trim.
+      new_desired_curvature += nav_turn_curv if nav_turn_curv != 0.0 else lca_curv
 
     self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
     lat_delay = self.sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS

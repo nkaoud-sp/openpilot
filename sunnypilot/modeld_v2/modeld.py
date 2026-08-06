@@ -31,6 +31,7 @@ from openpilot.sunnypilot.modeld_v2.meta_helper import load_meta_constants
 from openpilot.sunnypilot.modeld_v2.camera_offset_helper import CameraOffsetHelper
 from openpilot.sunnypilot.modeld_v2.lane_center_camera_offset import LaneCenterCameraOffset
 from openpilot.sunnypilot.selfdrive.controls.lib.nav_turn_assist import NavTurnAssist
+from openpilot.sunnypilot.selfdrive.controls.lib.nav_path_assist import NavPathAssist
 
 from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
 from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
@@ -256,6 +257,7 @@ def main(demo=False):
 
   DH = DesireHelper()
   nav_turn_assist = NavTurnAssist()
+  nav_path_assist = NavPathAssist()
 
   while True:
     # Keep receiving frames until we are at least 1 frame ahead of previous extra frame
@@ -381,6 +383,15 @@ def main(demo=False):
       mdv2sp_send.modelDataV2SP.navTurnAssistCurvature = nav_turn_assist.update(
         DH.desire, sm['nkaoudNavigationSP'].maneuverTurnAngle,
         sm['carState'].vEgo, sm['carControl'].latActive)
+
+      # Nav path assist (mode B): route-geometry curvature target + blend weight,
+      # an alternative to the additive turn nudge above. controlsd blends the
+      # model curvature toward this by the weight (0 => no blend). Uses the
+      # model's own curvature for the sign-agreement safety veto.
+      mdv2sp_send.modelDataV2SP.navPathCurvature, mdv2sp_send.modelDataV2SP.navPathWeight = nav_path_assist.update(
+        DH.desire, sm['nkaoudNavigationSP'].maneuverTurnAngle,
+        sm['nkaoudNavigationSP'].distanceToManeuver, sm['carState'].vEgo,
+        action.desiredCurvature, sm['carControl'].latActive)
       drivingdata_send.drivingModelData.meta.laneChangeState = DH.lane_change_state
       drivingdata_send.drivingModelData.meta.laneChangeDirection = DH.lane_change_direction
 

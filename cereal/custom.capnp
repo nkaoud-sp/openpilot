@@ -461,6 +461,15 @@ struct ModelDataV2SP @0xa1680744031fdb2d {
   # the assist is off or no turn is being executed.
   navTurnAssistCurvature @1 :Float32;
 
+  # nkaoud_nav path assist (mode B, alternative to navTurnAssistCurvature): the
+  # route's own geometry expressed as a curvature target (1/m, signed like
+  # desiredCurvature) plus a convex blend weight in [0, 1]. controlsd blends the
+  # model curvature toward navPathCurvature by navPathWeight instead of adding a
+  # fixed nudge. weight is 0 (no blend) when the assist is off, no turn is being
+  # executed, or the route disagrees in sign with the model (safety veto).
+  navPathCurvature @2 :Float32;
+  navPathWeight @3 :Float32;
+
   enum TurnDirection {
     none @0;
     turnLeft @1;
