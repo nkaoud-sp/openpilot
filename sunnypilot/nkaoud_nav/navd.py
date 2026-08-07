@@ -29,7 +29,7 @@ from openpilot.common.realtime import Ratekeeper
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.nkaoud_nav.geometry import (
   Coordinate, closest_segment_index, distance_along_geometry, maneuver_passed, route_bearing_at,
-  sample_route_ahead, total_geometry_length,
+  sample_points_ahead, sample_route_ahead, total_geometry_length,
 )
 from openpilot.sunnypilot.nkaoud_nav.route_client import (
   Banner, RouteData, RouteFetchError, fetch_route,
@@ -623,13 +623,22 @@ class NkaoudNavd:
     nav.maneuverTurnAngle = float(_signed_turn_angle(
       upcoming.maneuver_bearing_before, upcoming.maneuver_bearing_after)) if upcoming is not None else 0.0
 
-    # Route path ahead in device frame (mode B, NavPathAssist). Real geometry
-    # from the Mapbox polyline at the current pose -- only when we are on-route
-    # with a good fix and heading, so a stale/misaligned pose never steers.
+    # Route path ahead in device frame (mode B, NavPathAssist). Sampled from the
+    # current step onward, not the whole route, so the start stays local to the
+    # step we are driving and can't snap back to an earlier nearby segment -- e.g.
+    # an on-ramp running parallel a few metres from an immediate off-ramp, which
+    # otherwise makes the path (and the amber overlay) point at the wrong ramp.
+    # Only published on-route with a good fix and heading, so a stale/misaligned
+    # pose never steers.
     path_pts: list[tuple[float, float]] = []
     if self.route is not None and nav.onRoute and msg.valid and self.last_bearing is not None:
-      path_pts = sample_route_ahead(self.route.geometry, self.last_pos, self.last_bearing,
-                                    NAV_PATH_HORIZON_M, NAV_PATH_SPACING_M)
+      fwd = self._forward_points(NAV_PATH_HORIZON_M)
+      if len(fwd) >= 2:
+        path_pts = sample_points_ahead(fwd, self.last_pos, self.last_bearing,
+                                       NAV_PATH_HORIZON_M, NAV_PATH_SPACING_M)
+      else:  # current step lacks usable geometry -- fall back to the whole route
+        path_pts = sample_route_ahead(self.route.geometry, self.last_pos, self.last_bearing,
+                                      NAV_PATH_HORIZON_M, NAV_PATH_SPACING_M)
     nav.navPathValid = len(path_pts) >= NAV_PATH_MIN_POINTS
     if path_pts:
       xs = nav.init('navPathX', len(path_pts))
@@ -828,6 +837,36 @@ class NkaoudNavd:
     if nxt >= len(self.route.steps):
       return None
     return self.route.steps[nxt]
+
+  def _forward_points(self, horizon_m: float) -> list[Coordinate]:
+    """Forward polyline for the nav path: the vehicle's projection onto the
+    CURRENT step, then subsequent steps, until ~horizon_m is covered.
+
+    Anchoring the start to the current step's own geometry (mirroring _along_step
+    / step transitions) keeps it local, so neither an earlier parallel segment
+    (an on-ramp beside an immediate off-ramp) nor a downstream fold can capture
+    the start the way a global-nearest search over the whole route can -- either
+    of which points the path, and the amber overlay, at the wrong ramp. Bounded
+    by the horizon so it stays cheap on long routes. Empty (caller falls back to
+    the whole route) if the current step has no usable geometry."""
+    if self.route is None or not self.route.steps or self.last_pos is None:
+      return []
+    idx = min(self.step_idx, len(self.route.steps) - 1)
+    cur = self.route.steps[idx].geometry
+    if len(cur) < 2:
+      return []
+    seg, _, t = closest_segment_index(cur, self.last_pos)
+    a, b = cur[seg], cur[seg + 1]
+    start = Coordinate(a.latitude + (b.latitude - a.latitude) * t,
+                       a.longitude + (b.longitude - a.longitude) * t)
+    pts: list[Coordinate] = [start, *cur[seg + 1:]]
+    acc = total_geometry_length(pts)
+    for step in self.route.steps[idx + 1:]:
+      if acc >= horizon_m + NAV_PATH_SPACING_M:
+        break
+      pts.extend(step.geometry)
+      acc += total_geometry_length(step.geometry)
+    return pts
 
   def _along_step(self, idx: int) -> float:
     """Distance covered along step `idx`'s own geometry. Projecting onto the

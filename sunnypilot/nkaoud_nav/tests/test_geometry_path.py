@@ -11,7 +11,7 @@ import math
 import pytest
 
 from openpilot.sunnypilot.nkaoud_nav.geometry import (
-  Coordinate, local_xy, maneuver_passed, sample_route_ahead,
+  Coordinate, local_xy, maneuver_passed, sample_points_ahead, sample_route_ahead,
 )
 
 # ~metres per degree near the equator, for building synthetic routes.
@@ -25,6 +25,10 @@ def _north_of(origin: Coordinate, metres: float) -> Coordinate:
 def _east_of(origin: Coordinate, metres: float) -> Coordinate:
   dlon = metres / (M_PER_DEG_LAT * math.cos(math.radians(origin.latitude)))
   return Coordinate(origin.latitude, origin.longitude + dlon)
+
+
+def _offset(origin: Coordinate, north_m: float, east_m: float) -> Coordinate:
+  return _east_of(_north_of(origin, north_m), east_m)
 
 
 # ---- local_xy ----
@@ -125,6 +129,54 @@ def test_maneuver_passed_requires_capture():
 def test_maneuver_passed_ignores_jitter():
   # Sitting near the maneuver with sub-hysteresis GPS jitter must not fire.
   assert _run_pass([12, 10, 11, 9, 12, 10, 13]) is None
+
+
+def test_sample_route_ahead_snaps_to_nearest_earlier_segment():
+  # Interchange shape: an "on-ramp" segment 5 m ahead running east, then the
+  # route folds to an "off-ramp" continuing straight ahead 20 m out. The vehicle
+  # is nearest the on-ramp, so sampling the WHOLE route starts there and the near
+  # path bends east (toward the wrong ramp) -- the backward-snap navd avoids by
+  # anchoring to the current step.
+  o = Coordinate(0.0, 0.0)
+  on_ramp = [_north_of(o, 5.0), _offset(o, 5.0, 30.0)]         # 5 m ahead, runs east
+  off_ramp = [_north_of(o, 20.0), _north_of(o, 60.0)]          # straight ahead, far
+  whole = on_ramp + off_ramp
+
+  pts_whole = sample_route_ahead(whole, o, 0.0, horizon_m=15.0, spacing_m=2.0)
+  # near path bends to the right (east -> negative y) toward the on-ramp
+  assert min(y for _, y in pts_whole) < -5.0
+
+  pts_step = sample_route_ahead(off_ramp, o, 0.0, horizon_m=40.0, spacing_m=2.0)
+  # current-step-onward: straight ahead, no eastward excursion
+  assert all(abs(y) < 1.0 for _, y in pts_step)
+  assert pts_step[-1][0] > pts_step[0][0]                      # advances forward
+
+
+def test_sample_points_ahead_resists_downstream_fold():
+  # Cloverleaf shape: the anchored forward polyline starts just ahead, runs north,
+  # then a downstream leg folds back to within a few metres of the vehicle and
+  # heads east. sample_route_ahead's nearest search snaps the start to that fold
+  # (near path bends east); sample_points_ahead is anchored to world[0] and does
+  # no search, so it stays forward.
+  o = Coordinate(0.0, 0.0)
+  world = [
+    _north_of(o, 5.0),            # anchored start, just ahead
+    _north_of(o, 30.0),           # forward leg (north)
+    _offset(o, 2.0, 3.0),         # folds back to ~3.6 m from the vehicle
+    _offset(o, 2.0, 40.0),        # then runs east
+  ]
+  pts_search = sample_route_ahead(world, o, 0.0, horizon_m=40.0, spacing_m=2.0)
+  assert min(y for _, y in pts_search) < -3.0                  # snapped to the fold, bends east
+
+  pts_anchor = sample_points_ahead(world, o, 0.0, horizon_m=40.0, spacing_m=2.0)
+  assert all(abs(y) < 1.0 for _, y in pts_anchor[:10])         # stays forward, no snap
+  assert pts_anchor[-1][0] > pts_anchor[0][0]
+
+
+def test_sample_points_ahead_needs_two_points():
+  o = Coordinate(0.0, 0.0)
+  assert sample_points_ahead([_north_of(o, 5.0)], o, 0.0) == []
+  assert sample_points_ahead([], o, 0.0) == []
 
 
 def test_sample_route_ahead_right_turn_bends_negative_y():

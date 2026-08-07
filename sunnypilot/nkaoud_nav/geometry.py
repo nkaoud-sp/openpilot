@@ -131,20 +131,16 @@ def _interp(a: Coordinate, b: Coordinate, t: float) -> Coordinate:
                     a.longitude + (b.longitude - a.longitude) * t)
 
 
-def sample_route_ahead(geometry: list[Coordinate], pos: Coordinate, bearing_deg: float | None,
-                       horizon_m: float = 60.0, spacing_m: float = 2.0) -> list[tuple[float, float]]:
-  """Sample the route polyline from the point closest to pos forward to
-  horizon_m, at fixed spacing_m, returned as device-frame (x, y) points. Empty
-  if the route or heading is unusable. This is the route path comma's old
-  navigation model emitted as NavModelData.position, sourced here from geometry
-  instead of a learned model."""
-  if geometry is None or len(geometry) < 2 or bearing_deg is None:
+def sample_points_ahead(world: list[Coordinate], pos: Coordinate, bearing_deg: float | None,
+                        horizon_m: float = 60.0, spacing_m: float = 2.0) -> list[tuple[float, float]]:
+  """Resample a forward polyline (world[0] is the start, e.g. the vehicle's
+  projection onto the current step) at fixed spacing out to horizon_m, returned
+  as device-frame (x, y) points. Does NO nearest-point search, so it cannot snap
+  the start to a later fold that passes near the vehicle -- the caller is
+  responsible for anchoring world[0]. Empty if unusable."""
+  if world is None or len(world) < 2 or bearing_deg is None:
     return []
-  idx, _, t = closest_segment_index(geometry, pos)
-  start = _interp(geometry[idx], geometry[idx + 1], t)
-  # World-space points from the closest point onward.
-  world = [start] + list(geometry[idx + 1:])
-  out_world = [start]
+  out_world = [world[0]]
   acc = 0.0
   target = spacing_m
   j = 0
@@ -160,6 +156,20 @@ def sample_route_ahead(geometry: list[Coordinate], pos: Coordinate, bearing_deg:
     acc += seg_len
     j += 1
   return [local_xy(pos, c, bearing_deg) for c in out_world]
+
+
+def sample_route_ahead(geometry: list[Coordinate], pos: Coordinate, bearing_deg: float | None,
+                       horizon_m: float = 60.0, spacing_m: float = 2.0) -> list[tuple[float, float]]:
+  """Sample the polyline from the point closest to pos forward to horizon_m. Uses
+  a global nearest-point search, so pass geometry that is already local to the
+  vehicle (a single step) to avoid snapping to a far segment. This is the route
+  path comma's old navigation model emitted as NavModelData.position, sourced
+  here from geometry instead of a learned model."""
+  if geometry is None or len(geometry) < 2 or bearing_deg is None:
+    return []
+  idx, _, t = closest_segment_index(geometry, pos)
+  start = _interp(geometry[idx], geometry[idx + 1], t)
+  return sample_points_ahead([start] + list(geometry[idx + 1:]), pos, bearing_deg, horizon_m, spacing_m)
 
 
 def route_bearing_at(geometry: list[Coordinate], pos: Coordinate, lookahead_m: float = 50.0) -> float | None:
