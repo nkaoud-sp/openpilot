@@ -89,6 +89,27 @@ def total_geometry_length(geometry: list[Coordinate]) -> float:
   return sum(geometry[i].distance_to(geometry[i + 1]) for i in range(len(geometry) - 1))
 
 
+def maneuver_passed(maneuver_point: Coordinate, pos: Coordinate, min_dist: float,
+                    capture_m: float, hyst_m: float) -> tuple[bool, float]:
+  """Closest-approach + departure detector for a maneuver point.
+
+  Feed the running minimum straight-line distance each tick; returns
+  (passed, updated_min). `passed` is True once the vehicle has come within
+  capture_m of the maneuver and then moved hyst_m back away from that closest
+  approach.
+
+  This is robust where along-track progress is not: distance_along_geometry
+  clamps the projection to the step polyline, so an along-step "distance to
+  maneuver" floors a few metres short whenever the driver cuts the corner or GPS
+  sits off to the side, and a signed along-track test can never go negative.
+  Watching the straight-line distance to the maneuver point turn back upward
+  detects the pass regardless of that floor."""
+  d = pos.distance_to(maneuver_point)
+  new_min = min(min_dist, d)
+  passed = bool(new_min <= capture_m and d > new_min + hyst_m)
+  return passed, new_min
+
+
 def local_xy(origin: Coordinate, pt: Coordinate, bearing_deg: float) -> tuple[float, float]:
   """Device-frame offset (x forward, y left, metres) of pt relative to origin,
   given the vehicle heading bearing_deg (NED, 0 = North, clockwise). Uses a

@@ -10,7 +10,9 @@ import math
 
 import pytest
 
-from openpilot.sunnypilot.nkaoud_nav.geometry import Coordinate, local_xy, sample_route_ahead
+from openpilot.sunnypilot.nkaoud_nav.geometry import (
+  Coordinate, local_xy, maneuver_passed, sample_route_ahead,
+)
 
 # ~metres per degree near the equator, for building synthetic routes.
 M_PER_DEG_LAT = math.radians(1.0) * 6371007.2
@@ -73,6 +75,56 @@ def test_sample_route_ahead_needs_heading():
 
 def test_sample_route_ahead_empty_geometry():
   assert sample_route_ahead([], Coordinate(0.0, 0.0), 0.0) == []
+
+
+# ---- maneuver_passed (step-transition detector) ----
+
+CAPTURE = 40.0
+HYST = 10.0
+
+
+def _run_pass(distances):
+  """Feed a sequence of straight-line distances (m) to the maneuver point and
+  return the tick index where `passed` first fires, or None."""
+  mp = Coordinate(0.0, 0.0)
+  mn = float("inf")
+  for i, d in enumerate(distances):
+    passed, mn = maneuver_passed(mp, _north_of(mp, d), mn, CAPTURE, HYST)
+    if passed:
+      return i
+  return None
+
+
+def test_maneuver_passed_on_departure():
+  # Approach to 5 m then drive away. min=5; d=15 is +10 (== HYST, no), d=20 is
+  # +15 (> HYST) -> fires at index 5.
+  assert _run_pass([50, 30, 15, 5, 15, 20]) == 5
+
+
+def test_maneuver_passed_is_permissive_on_dip_then_rise():
+  # By design maneuver_passed only sees distances, so a min-latching dip followed
+  # by a > HYST rise DOES fire even if the vehicle has not truly passed the
+  # maneuver (e.g. GPS multipath, or a jog in the approach). navd constrains this
+  # by additionally requiring the next step's geometry to be the closer one
+  # (on_next) before advancing; this test pins the raw detector's contract so a
+  # CAPTURE/HYST tuning change is caught.
+  assert _run_pass([38, 25, 38]) is not None
+
+
+def test_maneuver_passed_cut_corner_floor():
+  # Log scenario: closest straight-line approach ~18 m (corner cut wide, never
+  # within the old 10 m along-track threshold), then departs. Must still fire.
+  assert _run_pass([60, 40, 25, 18, 22, 30, 45]) is not None
+
+
+def test_maneuver_passed_requires_capture():
+  # Never comes within capture (closest 55 m) -> never fires even while leaving.
+  assert _run_pass([80, 70, 60, 55, 70, 90]) is None
+
+
+def test_maneuver_passed_ignores_jitter():
+  # Sitting near the maneuver with sub-hysteresis GPS jitter must not fire.
+  assert _run_pass([12, 10, 11, 9, 12, 10, 13]) is None
 
 
 def test_sample_route_ahead_right_turn_bends_negative_y():

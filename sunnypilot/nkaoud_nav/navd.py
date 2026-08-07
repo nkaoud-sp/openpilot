@@ -28,8 +28,8 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import Ratekeeper
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.nkaoud_nav.geometry import (
-  Coordinate, closest_segment_index, distance_along_geometry, route_bearing_at, sample_route_ahead,
-  total_geometry_length,
+  Coordinate, closest_segment_index, distance_along_geometry, maneuver_passed, route_bearing_at,
+  sample_route_ahead, total_geometry_length,
 )
 from openpilot.sunnypilot.nkaoud_nav.route_client import (
   Banner, RouteData, RouteFetchError, fetch_route,
@@ -129,6 +129,16 @@ CROSS_TRACK_COUNTER_MIN = 25     # ~5 s at 5 Hz
 # fork's MANEUVER_TRANSITION_THRESHOLD -- the piece that recovers step
 # tracking when we drive past a turn instead of taking it.
 MANEUVER_TRANSITION_THRESHOLD_M = 10.0
+
+# Maneuver-point closest-approach + departure detector (primary step-transition
+# trigger). The along-step distance floors a few metres short when the driver
+# cuts the corner (cross-track), so the signed test above can strand a step
+# forever; watching the straight-line distance to the maneuver point turn back
+# upward advances reliably. Capture is generous enough to cover a wide cut plus
+# GPS error; departure hysteresis rides out GPS jitter. Both are additionally
+# gated on being closer to the next step's geometry, so neither fires early.
+MANEUVER_CAPTURE_M = 40.0
+MANEUVER_DEPART_HYST_M = 10.0
 
 # Steering keep* intent is restricted to the maneuver types where advance
 # lane positioning actually pays off (long approach, hard-to-recover miss).
@@ -331,6 +341,7 @@ class NkaoudNavd:
     self.route: RouteData | None = None
     self.destination: Coordinate | None = None
     self.step_idx: int = 0
+    self._mp_min_dist: float = float("inf")  # closest approach to the current maneuver point
     self.bearing_misalign_counter: int = 0
     self.last_route_fetch_t: float = 0.0
     self.rerouting: bool = False
@@ -397,6 +408,7 @@ class NkaoudNavd:
       self.destination = new_dest
       self.route = None
       self.step_idx = 0
+      self._mp_min_dist = float("inf")
       self.arrived = False
       self.bearing_misalign_counter = 0
       self._try_fetch_initial()
@@ -506,6 +518,7 @@ class NkaoudNavd:
       cloudlog.info(f"nkaoud_navd: route received ({result.distance_total:.0f} m, {len(result.steps)} steps)")
       self.route = result
       self.step_idx = 0
+      self._mp_min_dist = float("inf")
       self.rerouting = False
     elif error is not None:
       cloudlog.warning(f"nkaoud_navd: route fetch failed: {error}")
@@ -538,6 +551,7 @@ class NkaoudNavd:
     # geometry and lets the along-step distance go negative.
     while self.step_idx + 1 < len(self.route.steps) and self._should_transition_to_next_step():
       self.step_idx += 1
+      self._mp_min_dist = float("inf")   # closest-approach tracking restarts per step
 
   def _maybe_reroute(self) -> None:
     if self.route is None or self.last_pos is None:
@@ -849,19 +863,37 @@ class NkaoudNavd:
     return perp
 
   def _should_transition_to_next_step(self) -> bool:
-    """Whether to advance from the current step to the next. Ported from the
-    old fork: advance once we are more than MANEUVER_TRANSITION_THRESHOLD_M
-    PAST the maneuver (signed along-step distance negative), and in the
-    ambiguous zone right around the maneuver, once the next step's geometry is
-    the closer one. Caller guarantees step_idx + 1 is in range."""
-    signed = self._maneuver_ref_distance(self.step_idx) - self._along_step(self.step_idx)
-    if signed < -MANEUVER_TRANSITION_THRESHOLD_M:
-      return True
-    if signed > MANEUVER_TRANSITION_THRESHOLD_M:
-      return False
+    """Whether to advance from the current step to the next. Caller guarantees
+    step_idx + 1 is in range.
+
+    Both triggers require `on_next` -- the next step's geometry being the closer
+    one -- so we only advance once the vehicle is genuinely onto the next step,
+    never on GPS jitter or a jog near the maneuver point.
+
+      * Primary: the maneuver point's closest-approach + departure. Fires even
+        when the driver cuts the corner, where _along_step clamps to the polyline
+        and the along-track distance floors a few metres short (the old
+        `signed < -threshold` "PAST" branch could never go negative and so
+        stranded the step -- it is removed).
+      * Secondary: the near zone, where the along-track distance does count down
+        cleanly, so we can advance right at the maneuver without waiting to
+        depart from it."""
     cur_d = self._path_min_distance(self.step_idx)
     nxt_d = self._path_min_distance(self.step_idx + 1)
-    return cur_d is not None and nxt_d is not None and nxt_d < cur_d
+    on_next = cur_d is not None and nxt_d is not None and nxt_d <= cur_d
+
+    step = self.route.steps[self.step_idx]
+    if len(step.geometry) >= 2 and self.last_pos is not None:
+      passed, self._mp_min_dist = maneuver_passed(
+        step.geometry[-1], self.last_pos, self._mp_min_dist,
+        MANEUVER_CAPTURE_M, MANEUVER_DEPART_HYST_M)
+      if passed and on_next:
+        return True
+
+    signed = self._maneuver_ref_distance(self.step_idx) - self._along_step(self.step_idx)
+    if signed <= MANEUVER_TRANSITION_THRESHOLD_M:
+      return on_next
+    return False
 
   def _distance_to_maneuver(self) -> float:
     if self.route is None or not self.route.steps or self.last_pos is None:
