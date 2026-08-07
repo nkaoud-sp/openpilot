@@ -300,26 +300,51 @@ def test_trajectory_recovers_arc_curvature():
   assert abs(curv) == pytest.approx(0.05, rel=0.2)
 
 
-def test_trajectory_side_gate_falls_back():
-  # Path bends right but desire says left -> pure-pursuit side gate rejects,
-  # falls back to measured magnitude with the desire's (left) sign.
+def test_trajectory_side_gate_stays_off():
+  # Path bends right but desire says left -> pure-pursuit side gate rejects, and
+  # trajectory mode does NOT fall back to the proximity arc; the assist stays off
+  # rather than steering the wrong way.
   a = _make(trajectory=True)
   xs, ys = _arc_path(20.0, sign=+1)   # curves right
   curv, w = _settle(a, Desire.turnLeft, -60.0, 6.0, 12.0, path_x=xs, path_y=ys, path_valid=True)
-  assert a.source == "path"           # trajectory rejected
-  assert curv < 0.0                    # left from the desire
+  assert w == 0.0
+  assert a.source != "trajectory"
 
 
-def test_trajectory_far_corner_does_not_engage_near_field():
-  # Straight for the first 24 m, corner only beyond that. At low speed the
-  # lookahead point is still straight -> pure pursuit contributes nothing and the
-  # source falls back off "trajectory".
+def test_trajectory_far_corner_does_not_engage():
+  # Straight for the first 24 m, corner only beyond that. The lookahead point is
+  # still straight, so pure pursuit stays below the engage threshold and the
+  # assist commands nothing -- this is the fix for leading the turn early.
   a = _make(trajectory=True)
   n = 40
   xs = [float(i * 2.0) for i in range(n)]
   ys = [0.0] * 12 + [-0.15 * (i - 11) ** 2 for i in range(12, n)]  # bends right past ~24 m
-  _settle(a, Desire.turnRight, 60.0, 26.0, 4.0, path_x=xs, path_y=ys, path_valid=True)
-  assert a.source != "trajectory"
+  curv, w = _settle(a, Desire.turnRight, 60.0, 26.0, 4.0, path_x=xs, path_y=ys, path_valid=True)
+  assert w == 0.0
+  assert a.reason == "waiting for bend"
+
+
+def test_trajectory_no_fallback_on_path_dropout():
+  # With trajectory on but the path invalid (GPS dropout), the assist stays off
+  # rather than falling through to the proximity arc/angle modes -- which would
+  # re-introduce the early turn.
+  a = _make(trajectory=True)
+  curv, w = _settle(a, Desire.turnRight, 90.0, 20.0, 12.0, path_valid=False)
+  assert w == 0.0
+  assert a.reason == "no path"
+  assert a.source != "angle"
+
+
+def test_trajectory_engages_when_bend_enters_lookahead():
+  # Same geometry, but now the bend is close enough to fall inside the lookahead
+  # -> pure pursuit engages. Contrast with the far case above (same path, no
+  # engage), which is the early-turn fix.
+  a = _make(trajectory=True)
+  xs, ys = _arc_path(15.0, sign=+1)   # curves right from the start
+  curv, w = _settle(a, Desire.turnRight, 60.0, 4.0, 12.0, path_x=xs, path_y=ys, path_valid=True)
+  assert a.source == "trajectory"
+  assert w > 0.0
+  assert curv > 0.0
 
 
 def test_trajectory_capped():

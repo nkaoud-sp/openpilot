@@ -13,19 +13,22 @@ target* -- the curvature the road geometry implies -- and asks controlsd to
 navigation model, which output a route path (NavModelData.position) rather than
 a scalar bias.
 
-The curvature target's magnitude has three sources, in preference order:
+Two engagement modes, selected by NkaoudNavPathTrajectory:
 
-  * trajectory (NkaoudNavPathTrajectory): a pure-pursuit path-following target --
-    aim at the point on the route a speed-scaled lookahead ahead and command the
-    curvature that reaches it (2*y / Ld^2). Unlike the Menger measurement this
-    uses the path's lateral *position*, so it follows the route line (correcting
-    heading and cross-track), and the lookahead anticipates the corner instead of
-    reacting at the controller's short lookahead. Produced as a blend target, so
-    it reuses the same safe pipeline (weight, veto, clip_curvature) as scalar mode.
-  * path: the real route path (navPathX/Y in device frame) measured with a
-    3-point/Menger curvature around the maneuver.
-  * angle: geometric synthesis from the Mapbox turn angle (theta / L), the
-    fallback when no valid path is available.
+  * trajectory (pure pursuit): aim at the point on the route a speed-scaled
+    lookahead ahead and command the curvature that reaches it (2*y / Ld^2).
+    Because it reads the path's lateral position at the lookahead, it is ~0 while
+    the road is straight and only builds as the bend enters the lookahead -- so
+    it engages roughly a lookahead before the corner, NOT from the routing
+    waypoint. It does not fall back to the proximity modes: when the path is not
+    curving yet the assist stays off and the model drives (this is what stops it
+    leading the turn early).
+  * proximity (arc / angle): lead the turn from ENGAGE_DIST_M ahead of the
+    maneuver point, weight and curvature scaled by a proximity ramp. Magnitude is
+    the measured route-path (3-point/Menger) curvature around the maneuver, or a
+    turn-angle synthesis (theta / L) when no valid path is available. These
+    intentionally anticipate by proximity to the waypoint, so they can begin
+    steering before the road physically bends.
 
 Direction always comes from the trusted turn desire, never from the GPS-derived
 path, so a pose or bearing error can change the shape we blend toward but never
@@ -112,8 +115,14 @@ BEND_MARGIN_M = 12.0        # search window half-width around dist_to_maneuver
 # route heading there is ~0 -- pure pursuit aims at a point that reaches into the
 # turn). Clamped to a sane window.
 LD_TIME_S = 1.0
-LD_MIN_M = 6.0
+LD_MIN_M = 10.0
 LD_MAX_M = 30.0
+
+# Trajectory mode engages only once the route path is actually curving within
+# the lookahead (this curvature, 1/m => R ~ 165 m). Below it the road is
+# effectively straight, so the assist stays off and does NOT lead the turn from
+# the routing waypoint the way the proximity-ramped arc/angle modes do.
+KAPPA_ENGAGE_MIN = 0.006
 
 
 def _proximity_ramp(dist_to_maneuver_m: float) -> float:
@@ -222,18 +231,10 @@ class NavPathAssist:
       return None
     return abs(2.0 * y_l / (ld_eff * ld_eff))
 
-  def _target_magnitude(self, mag_deg: float, dist_to_maneuver_m: float,
-                        nav_path_x, nav_path_y, nav_path_valid: bool, sign: float,
-                        v_ego: float) -> float:
-    """Unsigned curvature target (1/m). Prefers the pure-pursuit trajectory
-    target, then the measured route-path curvature, then the turn-angle
-    synthesis."""
-    have_path = nav_path_valid and nav_path_x is not None and nav_path_y is not None
-    if self.trajectory and have_path:
-      kappa = self._pure_pursuit_curvature(nav_path_x, nav_path_y, sign, v_ego, dist_to_maneuver_m)
-      if kappa is not None and kappa > 0.0:
-        self.source = "trajectory"
-        return kappa
+  def _arc_magnitude(self, mag_deg: float, dist_to_maneuver_m: float,
+                     nav_path_x, nav_path_y, have_path: bool) -> float:
+    """Unsigned curvature target (1/m) for the proximity-ramp modes: the measured
+    route-path curvature around the maneuver, else the turn-angle synthesis."""
     if have_path:
       kappa = curvature_from_path(nav_path_x, nav_path_y, dist_to_maneuver_m)
       if kappa > 0.0:
@@ -277,10 +278,36 @@ class NavPathAssist:
     if turn_angle_deg != 0.0 and np.sign(turn_angle_deg) != sign:
       return self._off("sign mismatch")
 
-    # Route curvature target: measured from the real path when available, else
-    # synthesized from the angle. Direction from the desire, magnitude capped.
-    kappa_mag = self._target_magnitude(mag, dist_to_maneuver_m, nav_path_x, nav_path_y,
-                                       nav_path_valid, sign, v_ego)
+    have_path = nav_path_valid and nav_path_x is not None and nav_path_y is not None
+
+    # Trajectory (pure-pursuit) mode engages on the ROAD GEOMETRY, not on
+    # proximity to the routing waypoint: pure pursuit is ~0 until the bend enters
+    # its lookahead, so the assist does not command a turn while the road is
+    # still straight (the failure the proximity-ramp modes below have -- they
+    # lead the turn from ENGAGE_DIST_M before the maneuver point). It is
+    # exclusive: without a usable path, or before the bend, it stays off and lets
+    # the model drive rather than falling back to the proximity modes (which
+    # would re-introduce the early turn on a GPS path dropout).
+    if self.trajectory:
+      if not have_path:
+        return self._off("no path")
+      kappa_pp = self._pure_pursuit_curvature(nav_path_x, nav_path_y, sign, v_ego, dist_to_maneuver_m)
+      if kappa_pp is None or kappa_pp <= KAPPA_ENGAGE_MIN:
+        return self._off("waiting for bend")
+      self.source = "trajectory"
+      self.kappa = sign * float(min(kappa_pp, KAPPA_PATH_MAX))
+      if kappa_model != 0.0 and np.sign(kappa_model) != sign and abs(kappa_model) > K_TRUST:
+        self.reason = "model disagrees"
+        self.active = False
+        return self.kappa, self._slew_weight(0.0)
+      self.active = True
+      self.reason = "active"
+      return self.kappa, self._slew_weight(W_MAX)
+
+    # Proximity-ramp modes (arc / angle): lead the turn from ENGAGE_DIST_M ahead
+    # of the maneuver point, magnitude measured or synthesized, direction from
+    # the desire, capped.
+    kappa_mag = self._arc_magnitude(mag, dist_to_maneuver_m, nav_path_x, nav_path_y, have_path)
     kappa_turn = sign * float(np.clip(kappa_mag, 0.0, KAPPA_PATH_MAX))
 
     ramp = _proximity_ramp(dist_to_maneuver_m)
