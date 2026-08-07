@@ -33,10 +33,12 @@ def _arc_path(radius_m, sign, n=30, spacing=NAV_PATH_SPACING_M):
 AGREE = {Desire.turnLeft: -0.01, Desire.turnRight: 0.01}
 
 
-def _make(enabled=True):
+def _make(enabled=True, trajectory=False):
   Params().put_bool("NkaoudNavPathAssist", enabled)
+  Params().put_bool("NkaoudNavPathTrajectory", trajectory)
   a = NavPathAssist()
   a.enabled = enabled
+  a.trajectory = trajectory
   return a
 
 
@@ -46,7 +48,8 @@ def _settle(a, desire, angle, dist, v_ego, kappa_model=None, lat_active=True, n=
     kappa_model = AGREE.get(desire, 0.0)
   out = (0.0, 0.0)
   for _ in range(n):
-    out = a.update(desire, angle, dist, v_ego, kappa_model, lat_active, path_x, path_y, path_valid)
+    out = a.update(desire, angle, dist, v_ego, kappa_model, lat_active,
+                   path_x, path_y, path_valid)
   return out  # (curvature, weight)
 
 
@@ -267,3 +270,60 @@ def test_measured_path_direction_still_from_desire():
                     path_x=xs, path_y=ys, path_valid=True)
   assert w > 0.0
   assert curv < 0.0                    # left, from the desire, not the path shape
+
+
+# ---- trajectory (pure pursuit) mode ----
+
+def test_trajectory_mode_selected():
+  a = _make(trajectory=True)
+  xs, ys = _arc_path(20.0, sign=+1)
+  curv, w = _settle(a, Desire.turnRight, 60.0, 6.0, 12.0, path_x=xs, path_y=ys, path_valid=True)
+  assert a.source == "trajectory"
+  assert w > 0.0
+  assert curv > 0.0                    # right
+
+
+def test_trajectory_left_negative():
+  a = _make(trajectory=True)
+  xs, ys = _arc_path(20.0, sign=-1)    # curves left
+  curv, w = _settle(a, Desire.turnLeft, -60.0, 6.0, 12.0, path_x=xs, path_y=ys, path_valid=True)
+  assert a.source == "trajectory"
+  assert curv < 0.0
+  assert w > 0.0
+
+
+def test_trajectory_recovers_arc_curvature():
+  # Pure pursuit on a constant-radius arc recovers ~1/R independent of speed.
+  a = _make(trajectory=True)
+  xs, ys = _arc_path(20.0, sign=+1, n=40)
+  curv, _ = _settle(a, Desire.turnRight, 60.0, 2.0, 12.0, path_x=xs, path_y=ys, path_valid=True)
+  assert abs(curv) == pytest.approx(0.05, rel=0.2)
+
+
+def test_trajectory_side_gate_falls_back():
+  # Path bends right but desire says left -> pure-pursuit side gate rejects,
+  # falls back to measured magnitude with the desire's (left) sign.
+  a = _make(trajectory=True)
+  xs, ys = _arc_path(20.0, sign=+1)   # curves right
+  curv, w = _settle(a, Desire.turnLeft, -60.0, 6.0, 12.0, path_x=xs, path_y=ys, path_valid=True)
+  assert a.source == "path"           # trajectory rejected
+  assert curv < 0.0                    # left from the desire
+
+
+def test_trajectory_far_corner_does_not_engage_near_field():
+  # Straight for the first 24 m, corner only beyond that. At low speed the
+  # lookahead point is still straight -> pure pursuit contributes nothing and the
+  # source falls back off "trajectory".
+  a = _make(trajectory=True)
+  n = 40
+  xs = [float(i * 2.0) for i in range(n)]
+  ys = [0.0] * 12 + [-0.15 * (i - 11) ** 2 for i in range(12, n)]  # bends right past ~24 m
+  _settle(a, Desire.turnRight, 60.0, 26.0, 4.0, path_x=xs, path_y=ys, path_valid=True)
+  assert a.source != "trajectory"
+
+
+def test_trajectory_capped():
+  a = _make(trajectory=True)
+  xs, ys = _arc_path(6.0, sign=+1)    # very tight -> large curvature
+  curv, _ = _settle(a, Desire.turnRight, 120.0, 0.0, 6.0, path_x=xs, path_y=ys, path_valid=True)
+  assert abs(curv) <= KAPPA_PATH_MAX + 1e-9

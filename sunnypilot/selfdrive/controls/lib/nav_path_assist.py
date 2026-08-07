@@ -13,12 +13,23 @@ target* -- the curvature the road geometry implies -- and asks controlsd to
 navigation model, which output a route path (NavModelData.position) rather than
 a scalar bias.
 
-The curvature target's magnitude comes from the real route path when navd
-publishes one (navPathX/Y in device frame, measured here with a 3-point/Menger
-curvature around the maneuver). When no valid path is available it falls back to
-a geometric synthesis from the Mapbox turn angle (theta / L). Direction always
-comes from the trusted turn desire, never from the GPS-derived path, so a pose
-or bearing error can change the shape we blend toward but never the side.
+The curvature target's magnitude has three sources, in preference order:
+
+  * trajectory (NkaoudNavPathTrajectory): a pure-pursuit path-following target --
+    aim at the point on the route a speed-scaled lookahead ahead and command the
+    curvature that reaches it (2*y / Ld^2). Unlike the Menger measurement this
+    uses the path's lateral *position*, so it follows the route line (correcting
+    heading and cross-track), and the lookahead anticipates the corner instead of
+    reacting at the controller's short lookahead. Produced as a blend target, so
+    it reuses the same safe pipeline (weight, veto, clip_curvature) as scalar mode.
+  * path: the real route path (navPathX/Y in device frame) measured with a
+    3-point/Menger curvature around the maneuver.
+  * angle: geometric synthesis from the Mapbox turn angle (theta / L), the
+    fallback when no valid path is available.
+
+Direction always comes from the trusted turn desire, never from the GPS-derived
+path, so a pose or bearing error can change the shape we blend toward but never
+the side.
 
 Why a blend instead of an add:
 
@@ -29,10 +40,12 @@ Why a blend instead of an add:
     An additive nudge is at its most dangerous exactly when it is most wrong;
     this is the opposite.
 
-  * Geometry, not a speed heuristic. The target curvature comes from the turn
-    angle over a characteristic turn length (theta / L), i.e. the road's actual
-    radius -- speed-independent, because a corner's radius does not change with
-    how fast you take it. clip_curvature downstream still bounds lateral accel.
+  * Geometry, not a lateral-accel heuristic. The path/angle targets come from the
+    road's actual radius (a corner's radius does not change with how fast you take
+    it), and the trajectory target from a pure-pursuit lookahead that *does* scale
+    with speed (a faster car aims further ahead, the standard path-tracking
+    behaviour). Either way the magnitude is a real turn radius, not an a_lat
+    budget; clip_curvature downstream still bounds lateral accel.
 
 Safety envelope (all still in force):
   * weight is hard-capped below 1 (W_MAX) -- the model always keeps authority.
@@ -93,6 +106,15 @@ NAV_PATH_SPACING_M = 2.0
 TRIPLE_SPACING_M = 6.0      # gap between the three points of each curvature sample
 BEND_MARGIN_M = 12.0        # search window half-width around dist_to_maneuver
 
+# Trajectory (pure-pursuit) mode. The lookahead distance is speed-scaled so the
+# assist anticipates the corner instead of reacting at the controller's short
+# lookahead (a corner tens of metres away is straight at 3 m, so evaluating the
+# route heading there is ~0 -- pure pursuit aims at a point that reaches into the
+# turn). Clamped to a sane window.
+LD_TIME_S = 1.0
+LD_MIN_M = 6.0
+LD_MAX_M = 30.0
+
 
 def _proximity_ramp(dist_to_maneuver_m: float) -> float:
   """0 at or beyond ENGAGE_DIST, ramping linearly to 1 at the maneuver point."""
@@ -140,12 +162,14 @@ class NavPathAssist:
     self.active = False
     self.reason = "off"
     self.turn_angle = 0.0
-    self.source = "none"      # "path" (measured) or "angle" (synthesized fallback)
+    self.trajectory = False   # NkaoudNavPathTrajectory: use the heading-profile target
+    self.source = "none"      # "trajectory" | "path" (measured) | "angle" (fallback)
 
     self._read_params()
 
   def _read_params(self) -> None:
     self.enabled = self.params.get_bool("NkaoudNavPathAssist")
+    self.trajectory = self.params.get_bool("NkaoudNavPathTrajectory")
 
   def _slew_weight(self, target: float) -> float:
     self._weight = float(np.clip(target, self._weight - WEIGHT_SLEW, self._weight + WEIGHT_SLEW))
@@ -163,11 +187,54 @@ class NavPathAssist:
       return 0.0, 0.0
     return 0.0, self._slew_weight(0.0)
 
+  def _pure_pursuit_curvature(self, nav_path_x, nav_path_y, sign: float, v_ego: float,
+                              dist_to_maneuver_m: float) -> float | None:
+    """Pure-pursuit path-following curvature magnitude (1/m): aim at the point on
+    the route a speed-scaled lookahead ahead and command the curvature that
+    reaches it (kappa = 2*y / Ld^2). Unlike the Menger measurement this uses the
+    path's lateral *position*, so it corrects heading and cross-track toward the
+    route line, and the lookahead anticipates the corner. None if the path is too
+    short or the lookahead point is on the opposite side to the commanded turn.
+    Magnitude only; the caller applies the desire's sign."""
+    xs = np.asarray(list(nav_path_x), dtype=np.float64)
+    ys = np.asarray(list(nav_path_y), dtype=np.float64)
+    n = min(len(xs), len(ys))
+    if n < 2:
+      return None
+    arc = np.arange(n) * NAV_PATH_SPACING_M
+    ld = float(np.clip(LD_TIME_S * v_ego, LD_MIN_M, LD_MAX_M))
+    # Don't aim well past the maneuver apex onto post-corner geometry (matters on
+    # tight corners / S-curves at high speed); keep the target on the corner we
+    # are taking, but never below the minimum lookahead.
+    ld = min(ld, max(LD_MIN_M, float(dist_to_maneuver_m) + BEND_MARGIN_M))
+    if arc[-1] >= ld:
+      x_l = float(np.interp(ld, arc, xs[:n]))
+      y_l = float(np.interp(ld, arc, ys[:n]))
+    else:                                   # path shorter than Ld: use its end
+      x_l, y_l = float(xs[n - 1]), float(ys[n - 1])
+    ld_eff = float(np.hypot(x_l, y_l))
+    if ld_eff < 1.0:
+      return None
+    # Side gate: the lookahead point must be on the commanded turn side. y is
+    # left; a right turn (sign +1) puts the point at y < 0 -> side_sign +1.
+    side_sign = -np.sign(y_l)
+    if side_sign != 0.0 and side_sign != sign:
+      return None
+    return abs(2.0 * y_l / (ld_eff * ld_eff))
+
   def _target_magnitude(self, mag_deg: float, dist_to_maneuver_m: float,
-                        nav_path_x, nav_path_y, nav_path_valid: bool) -> float:
-    """Unsigned curvature target (1/m). Measured from the real route path when
-    valid and non-straight, else synthesized from the turn angle (theta / L)."""
-    if nav_path_valid and nav_path_x is not None and nav_path_y is not None:
+                        nav_path_x, nav_path_y, nav_path_valid: bool, sign: float,
+                        v_ego: float) -> float:
+    """Unsigned curvature target (1/m). Prefers the pure-pursuit trajectory
+    target, then the measured route-path curvature, then the turn-angle
+    synthesis."""
+    have_path = nav_path_valid and nav_path_x is not None and nav_path_y is not None
+    if self.trajectory and have_path:
+      kappa = self._pure_pursuit_curvature(nav_path_x, nav_path_y, sign, v_ego, dist_to_maneuver_m)
+      if kappa is not None and kappa > 0.0:
+        self.source = "trajectory"
+        return kappa
+    if have_path:
       kappa = curvature_from_path(nav_path_x, nav_path_y, dist_to_maneuver_m)
       if kappa > 0.0:
         self.source = "path"
@@ -212,7 +279,8 @@ class NavPathAssist:
 
     # Route curvature target: measured from the real path when available, else
     # synthesized from the angle. Direction from the desire, magnitude capped.
-    kappa_mag = self._target_magnitude(mag, dist_to_maneuver_m, nav_path_x, nav_path_y, nav_path_valid)
+    kappa_mag = self._target_magnitude(mag, dist_to_maneuver_m, nav_path_x, nav_path_y,
+                                       nav_path_valid, sign, v_ego)
     kappa_turn = sign * float(np.clip(kappa_mag, 0.0, KAPPA_PATH_MAX))
 
     ramp = _proximity_ramp(dist_to_maneuver_m)

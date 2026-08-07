@@ -8,6 +8,7 @@ import numpy as np
 import pyray as rl
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.selfdrive.ui.sunnypilot.onroad.nav_route_overlay import NavRouteOverlay
+from openpilot.selfdrive.ui.sunnypilot.onroad.nav_path_overlay import NavPathOverlay
 from openpilot.selfdrive.ui.ui_state import UIStatus, ui_state
 from openpilot.system.ui.lib.application import gui_app
 
@@ -22,6 +23,7 @@ class AugmentedRoadViewSP:
     self._fade_texture = gui_app.texture("icons_mici/onroad/onroad_fade.png")
     self._fade_alpha_filter = FirstOrderFilter(0, 0.1, 1 / gui_app.target_fps)
     self.nav_route_overlay = NavRouteOverlay()
+    self.nav_path_overlay = NavPathOverlay()
 
   def update_fade_out_bottom_overlay(self, _content_rect):
     # Fade out bottom of overlays for looks (only when engaged)
@@ -35,6 +37,8 @@ class AugmentedRoadViewSP:
 
   def set_nav_route_transform(self, transform: np.ndarray) -> None:
     self.nav_route_overlay.set_transform(transform)
+    self.nav_path_overlay.set_transform(transform)
 
   def render_nav_route(self, content_rect: rl.Rectangle) -> None:
     self.nav_route_overlay.render(content_rect)
+    self.nav_path_overlay.render(content_rect)

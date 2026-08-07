@@ -228,6 +228,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"NkaoudNavControlSteer", {PERSISTENT | BACKUP, BOOL, "0"}},      // allow nav to influence steering (desire flag injection)
     {"NkaoudNavTurnAssist", {PERSISTENT | BACKUP, BOOL, "0"}},        // feedforward curvature nudge through route turns, scaled by turn angle (opt-in assist on top of the turn desire)
     {"NkaoudNavPathAssist", {PERSISTENT | BACKUP, BOOL, "0"}},        // route-geometry curvature blend through turns (mode B alternative to NkaoudNavTurnAssist); convex, capped, safety sign-gated. Takes precedence over the turn-angle nudge when on
+    {"NkaoudNavPathTrajectory", {PERSISTENT | BACKUP, BOOL, "0"}},    // path-assist sub-mode: derive the blend target from the route heading profile (curv_from_psis) instead of a flat arc curvature
+    {"NkaoudNavShowPath", {PERSISTENT | BACKUP, BOOL, "0"}},          // debug overlay: draw the device-frame nav path (what NavPathAssist steers toward) on the driving view
     {"NkaoudNavVisualBlockThreshold", {PERSISTENT | BACKUP, FLOAT, "0.80"}}, // P(camera car present) threshold that blocks nav lane-change bias
     {"NkaoudNavPolylineStyle", {PERSISTENT | BACKUP, INT, "1"}},      // 0=solid, 1=smooth, 2=glow, 3=chevrons
     {"NkaoudNavHighwayLanePref", {PERSISTENT | BACKUP, INT, "1"}},    // highway cruise lane target: 0=left most, 1=center, 2=right most, 3=none (no cruise-lane bias)

@@ -102,6 +102,21 @@ class NavSettingsLayout(Widget):
                             "on. Requires \"Steer / Lane-Change With The Route\". Experimental."),
       param="NkaoudNavPathAssist",
     )
+    self._path_trajectory = toggle_item_sp(
+      title=lambda: tr("Path Blend: Follow Route Trajectory"),
+      description=lambda: tr("Sub-option of \"Assist Turns With Path Blend (B)\". Aim the blend at a point on the " +
+                            "route a speed-scaled distance ahead (pure pursuit) instead of matching a single arc " +
+                            "curvature, so it follows the route line and anticipates the corner. Requires \"Assist " +
+                            "Turns With Path Blend (B)\". Experimental."),
+      param="NkaoudNavPathTrajectory",
+    )
+    self._show_path = toggle_item_sp(
+      title=lambda: tr("Show Nav Path (Debug)"),
+      description=lambda: tr("Draw the route path that Path Blend steers toward on the driving view, in amber, " +
+                            "next to the blue route line. Useful for checking the path lines up with the road " +
+                            "before trusting it for steering."),
+      param="NkaoudNavShowPath",
+    )
     self._visual_block_threshold = option_item_sp(
       title=lambda: tr("Camera Block Threshold"),
       description=lambda: tr("For route-requested lane changes, block the move when the visual vehicle detector's " +
@@ -137,6 +152,8 @@ class NavSettingsLayout(Widget):
       self._control_steer,
       self._turn_assist,
       self._path_assist,
+      self._path_trajectory,
+      self._show_path,
       self._visual_block_threshold,
       self._highway_lane_pref,
     ]
