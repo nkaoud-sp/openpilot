@@ -539,9 +539,11 @@ class NkaoudNavd:
 
     # Whole-route progress -- kept only for the remaining-distance readout.
     self.last_distance_along = distance_along_geometry(self.route.geometry, self.last_pos)
-    # Perpendicular distance to the route for the cross-track reroute net.
-    _idx, perp, _t = closest_segment_index(self.route.geometry, self.last_pos)
-    self.cross_track_m = perp
+    # Perpendicular distance to the road we are driving (cross-track). Measured
+    # per-step, not against the whole route, so a parallel segment elsewhere (an
+    # on-ramp beside an immediate off-ramp) can't inflate it and spuriously trip
+    # the reroute net -- which otherwise routes you back up the on-ramp.
+    self.cross_track_m = self._cross_track()
 
     # Advance step_idx forward-only, driven by actually passing the maneuver
     # (per-step signed distance) rather than by where the global-nearest
@@ -891,6 +893,28 @@ class NkaoudNavd:
     if len(step.geometry) >= 2:
       return total_geometry_length(step.geometry)
     return step.distance
+
+  def _cross_track(self) -> float:
+    """Perpendicular distance to the road we are driving -- the current step, or
+    the next at a step boundary. Per-step (local) so a parallel segment elsewhere
+    on the route can't inflate it. Falls back to the whole route if per-step
+    geometry is unavailable."""
+    if self.route is None or self.last_pos is None:
+      return 0.0
+    best: float | None = None
+    if self.route.steps:
+      idx = min(self.step_idx, len(self.route.steps) - 1)
+      for j in (idx, idx + 1):
+        if 0 <= j < len(self.route.steps):
+          d = self._path_min_distance(j)
+          if d is not None and (best is None or d < best):
+            best = d
+    if best is not None:
+      return best
+    if self.route.geometry:   # no usable per-step geometry: whole-route fallback
+      _i, perp, _t = closest_segment_index(self.route.geometry, self.last_pos)
+      return perp
+    return 0.0
 
   def _path_min_distance(self, idx: int) -> float | None:
     """Perpendicular distance from the vehicle to step `idx`'s geometry, or

@@ -96,6 +96,18 @@ K_TRUST = 0.008
 
 MIN_SPEED = 2.0             # m/s; below this we don't blend (parking/creep)
 
+# Cross-track weight fade -- an off-route backstop. Far off the route line the
+# path (and especially pure pursuit, which aims at the line) would command a
+# large sideways correction, so fade the assist out: full at/below XT_FULL_M,
+# zero at/above XT_ZERO_M. The band is deliberately high: rounding a sharply
+# decimated corner leaves an in-lane vehicle ~7-10 m from the polyline at the
+# apex, and that is exactly when the assist should be helping, not fading -- so
+# the fade must not reach into normal-turn cross-track. It only bites on a
+# genuine departure (per-step crossTrackDistance from navd, which no longer
+# inflates on parallel-segment interchanges), below the 30 m reroute threshold.
+XT_FULL_M = 15.0
+XT_ZERO_M = 25.0
+
 # Slew the weight so engagement/handoff is smooth. Model runs at ~20 Hz.
 WEIGHT_SLEW = 4.0e-2        # per frame => ~0.75 s to reach W_MAX
 
@@ -180,6 +192,11 @@ class NavPathAssist:
     self.enabled = self.params.get_bool("NkaoudNavPathAssist")
     self.trajectory = self.params.get_bool("NkaoudNavPathTrajectory")
 
+  def _cross_track_factor(self, cross_track_m: float) -> float:
+    """1 at/below XT_FULL_M, ramping to 0 at/above XT_ZERO_M."""
+    xt = abs(float(cross_track_m))
+    return float(np.clip((XT_ZERO_M - xt) / (XT_ZERO_M - XT_FULL_M), 0.0, 1.0))
+
   def _slew_weight(self, target: float) -> float:
     self._weight = float(np.clip(target, self._weight - WEIGHT_SLEW, self._weight + WEIGHT_SLEW))
     return self._weight
@@ -245,12 +262,15 @@ class NavPathAssist:
 
   def update(self, desire, turn_angle_deg: float, dist_to_maneuver_m: float,
              v_ego: float, kappa_model: float, lat_active: bool,
-             nav_path_x=None, nav_path_y=None, nav_path_valid: bool = False) -> tuple[float, float]:
+             nav_path_x=None, nav_path_y=None, nav_path_valid: bool = False,
+             cross_track_m: float = 0.0) -> tuple[float, float]:
     """Return (navPathCurvature, navPathWeight) for controlsd to blend. Weight
     is 0 (no blend) unless enabled, lateral is active, a turn desire is applied,
-    the angle is in the assisted band, and the route agrees in sign with the
-    model. The magnitude is measured from nav_path_x/y when a valid route path
-    is supplied, else synthesized from turn_angle_deg."""
+    the angle is in the assisted band, the route agrees in sign with the model,
+    and cross-track is within the fade band (weight is scaled down as cross_track_m
+    grows toward XT_ZERO_M, and zeroed beyond it). The magnitude is measured from
+    nav_path_x/y when a valid route path is supplied, else synthesized from
+    turn_angle_deg."""
     self._frame += 1
     if self._frame % PARAM_READ_PERIOD_FRAMES == 0:
       self._read_params()
@@ -278,6 +298,12 @@ class NavPathAssist:
     if turn_angle_deg != 0.0 and np.sign(turn_angle_deg) != sign:
       return self._off("sign mismatch")
 
+    # Fade the assist out when far off the route line -- the path is unreliable
+    # there and pure pursuit would command a large sideways yank.
+    xt_factor = self._cross_track_factor(cross_track_m)
+    if xt_factor <= 0.0:
+      return self._off("cross-track")
+
     have_path = nav_path_valid and nav_path_x is not None and nav_path_y is not None
 
     # Trajectory (pure-pursuit) mode engages on the ROAD GEOMETRY, not on
@@ -302,7 +328,7 @@ class NavPathAssist:
         return self.kappa, self._slew_weight(0.0)
       self.active = True
       self.reason = "active"
-      return self.kappa, self._slew_weight(W_MAX)
+      return self.kappa, self._slew_weight(W_MAX * xt_factor)
 
     # Proximity-ramp modes (arc / angle): lead the turn from ENGAGE_DIST_M ahead
     # of the maneuver point, magnitude measured or synthesized, direction from
@@ -327,4 +353,4 @@ class NavPathAssist:
 
     self.active = True
     self.reason = "active"
-    return self.kappa, self._slew_weight(W_MAX * ramp)
+    return self.kappa, self._slew_weight(W_MAX * ramp * xt_factor)

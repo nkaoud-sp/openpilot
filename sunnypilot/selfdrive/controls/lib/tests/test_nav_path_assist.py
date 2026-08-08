@@ -13,6 +13,7 @@ from openpilot.common.params import Params
 from openpilot.sunnypilot.selfdrive.controls.lib.nav_path_assist import (
   NavPathAssist, curvature_from_path, _proximity_ramp,
   W_MAX, KAPPA_PATH_MAX, ENGAGE_DIST_M, K_TRUST, NAV_PATH_SPACING_M, TURN_LENGTH_M,
+  XT_FULL_M, XT_ZERO_M,
 )
 
 Desire = log.Desire
@@ -43,13 +44,13 @@ def _make(enabled=True, trajectory=False):
 
 
 def _settle(a, desire, angle, dist, v_ego, kappa_model=None, lat_active=True, n=30,
-            path_x=None, path_y=None, path_valid=False):
+            path_x=None, path_y=None, path_valid=False, cross_track=0.0):
   if kappa_model is None:
     kappa_model = AGREE.get(desire, 0.0)
   out = (0.0, 0.0)
   for _ in range(n):
     out = a.update(desire, angle, dist, v_ego, kappa_model, lat_active,
-                   path_x, path_y, path_valid)
+                   path_x, path_y, path_valid, cross_track)
   return out  # (curvature, weight)
 
 
@@ -345,6 +346,50 @@ def test_trajectory_engages_when_bend_enters_lookahead():
   assert a.source == "trajectory"
   assert w > 0.0
   assert curv > 0.0
+
+
+def test_cross_track_fades_weight_out():
+  # Far off the route line -> assist fades to nothing rather than yanking back.
+  a = _make(trajectory=True)
+  xs, ys = _arc_path(15.0, sign=+1)
+  _, w = _settle(a, Desire.turnRight, 60.0, 4.0, 12.0, path_x=xs, path_y=ys,
+                 path_valid=True, cross_track=XT_ZERO_M + 2.0)
+  assert w == 0.0
+  assert a.reason == "cross-track"
+
+
+def test_cross_track_full_when_on_line():
+  # On the route line: full assist (a baseline for the fade tests).
+  a = _make(trajectory=True)
+  xs, ys = _arc_path(15.0, sign=+1)
+  _, w_on = _settle(a, Desire.turnRight, 60.0, 4.0, 12.0, path_x=xs, path_y=ys,
+                    path_valid=True, cross_track=0.0)
+  b = _make(trajectory=True)
+  _, w_mid = _settle(b, Desire.turnRight, 60.0, 4.0, 12.0, path_x=xs, path_y=ys,
+                     path_valid=True, cross_track=(XT_FULL_M + XT_ZERO_M) / 2.0)
+  assert w_on > 0.0
+  assert 0.0 < w_mid < w_on            # partial fade in the ramp band
+
+
+def test_cross_track_turn_apex_does_not_fade():
+  # Rounding a sharply decimated corner leaves an in-lane vehicle ~10 m from the
+  # polyline at the apex -- the fade band must sit above that so the assist keeps
+  # helping through the turn instead of cutting out.
+  assert XT_FULL_M > 10.0
+  a = _make(trajectory=True)
+  xs, ys = _arc_path(15.0, sign=+1)
+  _, w = _settle(a, Desire.turnRight, 60.0, 4.0, 12.0, path_x=xs, path_y=ys,
+                 path_valid=True, cross_track=10.0)
+  assert w > 0.0
+  assert a.reason == "active"
+
+
+def test_cross_track_fades_arc_mode_too():
+  a = _make(trajectory=False)          # proximity (arc) mode
+  xs, ys = _arc_path(12.0, sign=+1)
+  _, w = _settle(a, Desire.turnRight, 60.0, 6.0, 12.0, path_x=xs, path_y=ys,
+                 path_valid=True, cross_track=XT_ZERO_M + 2.0)
+  assert w == 0.0
 
 
 def test_trajectory_capped():

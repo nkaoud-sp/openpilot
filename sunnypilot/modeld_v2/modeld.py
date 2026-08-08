@@ -393,7 +393,7 @@ def main(demo=False):
         sm['nkaoudNavigationSP'].distanceToManeuver, sm['carState'].vEgo,
         action.desiredCurvature, sm['carControl'].latActive,
         sm['nkaoudNavigationSP'].navPathX, sm['nkaoudNavigationSP'].navPathY,
-        sm['nkaoudNavigationSP'].navPathValid)
+        sm['nkaoudNavigationSP'].navPathValid, sm['nkaoudNavigationSP'].crossTrackDistance)
       drivingdata_send.drivingModelData.meta.laneChangeState = DH.lane_change_state
       drivingdata_send.drivingModelData.meta.laneChangeDirection = DH.lane_change_direction
 
