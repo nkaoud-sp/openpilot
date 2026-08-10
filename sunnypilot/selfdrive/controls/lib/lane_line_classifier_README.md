@@ -13,11 +13,13 @@ marking's **duty cycle** and **periodicity**.
 
 Both sampling axes are in **world metres**, never fixed pixels:
 
-- *Along* the line: every 0.5 m of forward distance, 4–60 m ahead.
+- *Along* the line: every 0.5 m of forward distance, 4–40 m ahead by default.
+  The far field can be enabled for investigation, but its projected samples
+  become image-space duplicates and add both noise and compute.
 - *Across* the line: a ±0.45 m strip perpendicular to the line, projected into
   the image. On the real road camera (focal ~2650 px) a 13 cm marking is
-  ~30 px wide at 10 m but only ~5 px at 60 m; a fixed-pixel scan is swallowed
-  by the paint near-field and misses it far-field, which made results flip
+  ~30 px wide at 10 m but only a few pixels in the far field; a fixed-pixel
+  scan is swallowed by the paint near-field and misses it far-field, which made results flip
   with centimetres of projection jitter. The world-space strip keeps the paint
   at a constant ~14% of the scan at every distance, so
   `P90(scan) - median(scan)` measures paint-vs-road contrast identically near
@@ -40,10 +42,17 @@ day/night exposure.
 1. duty ≥ `SOLID_DUTY` → **SOLID**
 2. high duty with one/two dominant runs and no dash-shaped gaps → **SOLID**
    (continuity bias: fragmented paint, dirt, short occlusions)
-3. mid duty + strong autocorrelation peak at a plausible dash period → **BROKEN**
-4. mid duty + several dash-length paint runs separated by gap-length absences
+3. a faint ridge is **SOLID** only when both its two-sided stripe profile and
+   its raw-contrast profile stay continuous across physical gap limits
+4. mid duty + strong autocorrelation peak that agrees with the independent
+   two-sided stripe profile → **BROKEN**
+5. mid duty + several dash-length paint runs separated by gap-length absences
    → **BROKEN** (run-length fallback for dashes too irregular for autocorr)
-5. anything else → **UNKNOWN** (fails safe to not-crossable)
+6. anything else → **UNKNOWN** (fails safe to not-crossable)
+
+`BROKEN` is a crossability decision, so the default requires a 6 m-or-longer
+dash period. Lower **Min Crossable Dash Period** only after confirming a local
+road marking standard uses shorter dashed dividers.
 
 ## Files
 - `lane_line_classifier.py` — pure-numpy core.
@@ -62,9 +71,9 @@ day/night exposure.
 
 `lane_line_classifierd` keeps a small cache of recent camera Y-planes and
 classifies each `modelV2` against the exact frame it was computed from
-(`modelV2.frameId`), instead of pairing newest-frame with newest-model. A few
-frames of mismatch is metres of forward travel — on curves that alone pulled
-the far-field scan off the paint.
+(`modelV2.frameId`). If the exact frame is unavailable, it uses only the
+closest prior frame in a strict two-frame tolerance; it never selects a future
+image, which would put the camera ahead of the model polyline on curves.
 
 ## Test now (no hardware)
 ```bash
@@ -94,6 +103,15 @@ Prints per-frame `L[...] cross=0/1  R[...] cross=0/1`. Drive a stretch with a
 known solid line on one side and a dashed line on the other and confirm the
 labels match.
 
+## Test a troubleshooting ZIP
+```bash
+python -m sunnypilot.nkaoud_nav.lane_line_replay \
+    /path/to/lane_line_log_*.zip --cfg
+```
+This is a snapshot harness, not a full route replay: it validates the spatial
+classifier against the lossless raw PNGs in the bundle, but cannot validate
+temporal filtering because the snapshots are several seconds apart.
+
 ## The one thing to validate first
 Everything rests on the projection landing the sampling strip on the paint —
 the scan tolerates ~0.3 m of error, not more. On-device, enable **Show Scan
@@ -107,7 +125,7 @@ param.
 
 ## Tunables (in `lane_line_classifier.py`)
 Menu-exposed (via params): `LaneLineContrastMethod`, `MIN_CONTRAST`, `SOLID_DUTY`, `MIN_PERIOD_M`,
-`MAX_PERIOD_M`, `MIN_AUTOCORR`, `LaneLineSampleMaxM`.
+`LaneLineCrossableMinPeriodM`, `MAX_PERIOD_M`, `MIN_AUTOCORR`, `LaneLineSampleMaxM`.
 Config-only: `MIN_SNR`, `SCAN_HALF_M`, duty bands, continuity-bias and
 run-length-fallback shape limits. `UNKNOWN` always fails safe to
 not-crossable. Note that raising `MIN_AUTOCORR` no longer forces irregular

@@ -125,9 +125,13 @@ def test_broken_line_detected():
   assert 0.1 <= res.duty <= 0.75, res.duty
 
 
-def test_short_dash_detected():
+def test_short_dash_requires_explicit_crossability_tuning():
   frame, x, y, z = _render(solid=False, paint_m=1.0, period_m=4.0)
-  res = classify_line(frame, x, y, z, TRANSFORM)
+  # A short rhythm can be curb/road texture in real images, so it is not
+  # crossable by default. Regions with verified short dash cycles can opt in.
+  assert classify_line(frame, x, y, z, TRANSFORM).line_type == LaneLineType.UNKNOWN
+  cfg = LaneLineClassifierConfig(min_crossable_period_m=3.0)
+  res = classify_line(frame, x, y, z, TRANSFORM, cfg=cfg)
   assert res.line_type == LaneLineType.BROKEN, res
   assert 2.0 <= res.period_m <= 6.0, res.period_m
 
@@ -245,14 +249,39 @@ def test_faint_continuous_solid_recovered_by_ridge():
   assert classify_line(frame, x, y, z, TRANSFORM, cfg=off).line_type != LaneLineType.SOLID
 
 
-def test_faint_dashes_not_recovered_as_ridge_solid():
-  # the same dim paint laid down as dashes must NOT be rescued as SOLID: the
-  # periodic gaps drag the median SNR down and raise the below-floor fraction,
-  # so the ridge gates reject it (fail safe stays UNKNOWN/BROKEN, never SOLID).
-  for seed in range(4):
-    frame, x, y, z = _render(solid=False, paint_m=3.0, period_m=12.0, road=70, paint=88, noise=6, seed=seed)
+def test_faint_dashes_are_never_recovered_as_solid():
+  # Regression for the old faint_ridge hole: its generic P90 SNR profile was
+  # elevated by road noise while strict ``present`` collapsed to all-false, so
+  # long faint dashes (including paint-dominant 10/12 m ones) became SOLID.
+  # The two-sided stripe and raw-relative-contrast gap guards must reject every
+  # case as SOLID. When the stripe period resolves it should be BROKEN; when it
+  # does not, UNKNOWN is the safe result.
+  cases = [
+    dict(paint_m=3.0, period_m=12.0, road=70, paint=88, noise=6, seed=0),
+    dict(paint_m=8.0, period_m=12.0, road=70, paint=88, noise=6, seed=0),
+    dict(paint_m=9.0, period_m=12.0, road=70, paint=88, noise=6, seed=0),
+    dict(paint_m=10.0, period_m=12.0, road=70, paint=88, noise=6, seed=3),
+    dict(paint_m=4.0, period_m=8.0, road=70, paint=84, noise=5, seed=0),
+  ]
+  for kwargs in cases:
+    frame, x, y, z = _render(solid=False, **kwargs)
     res = classify_line(frame, x, y, z, TRANSFORM)
-    assert res.line_type != LaneLineType.SOLID, (seed, res)
+    assert res.line_type != LaneLineType.SOLID, (kwargs, res)
+
+
+def test_faint_dashes_with_clear_stripe_period_are_broken():
+  # The production default also requires a tiny amount of normal presence so a
+  # completely blank/noisy image can never become crossable. Disable just that
+  # floor here to exercise the stripe-only recovery itself.
+  cfg = LaneLineClassifierConfig(ridge_broken_min_raw_duty=0.0)
+  for kwargs in (
+    dict(paint_m=8.0, period_m=12.0, road=70, paint=88, noise=6, seed=0),
+    dict(paint_m=4.0, period_m=8.0, road=70, paint=84, noise=5, seed=0),
+  ):
+    frame, x, y, z = _render(solid=False, **kwargs)
+    res = classify_line(frame, x, y, z, TRANSFORM, cfg=cfg)
+    assert res.line_type == LaneLineType.BROKEN, (kwargs, res)
+    assert res.reason == "faint_stripe_dashes", (kwargs, res.reason)
 
 
 def test_heavy_road_texture_not_mistaken_for_paint():
@@ -277,7 +306,10 @@ def test_fragmented_solid_line_prefers_solid():
   frame, x, y, z = _render(solid=True)
   for x_start, x_end in ((16.0, 17.5), (26.0, 27.5), (38.0, 39.5)):
     _occlude_span(frame, x_start, x_end)
-  cfg = LaneLineClassifierConfig(solid_duty=0.95)
+  # Keep the evidence window in the near field; the three synthetic dropouts
+  # deliberately span most of a 40 m window, whereas the 35 m live setting
+  # mirrors the replay bundles and leaves a dominant continuous run.
+  cfg = LaneLineClassifierConfig(solid_duty=0.95, sample_x_max=35.0)
   res = classify_line(frame, x, y, z, TRANSFORM, cfg=cfg)
   assert res.line_type == LaneLineType.SOLID, res
   assert res.duty < cfg.solid_duty, res.duty
@@ -401,3 +433,23 @@ def test_temporal_filter_holds_confident_label_for_one_bad_frame():
 
   gate = clf.update(blank, model, TRANSFORM)
   assert gate.left.line_type == LaneLineType.SOLID, gate.left
+
+
+def test_temporal_filter_holds_verified_faint_solid_for_one_bad_frame():
+  # Faint-ridge confidence is intentionally below 0.8, so it needs its own
+  # bounded hold rule. This only preserves SOLID/not-crossable for one frame.
+  frame_solid, x, y, z = _render(solid=True, road=70, paint=88, noise=6, seed=5)
+  rng = np.random.default_rng(23)
+  blank = (ROAD_LUMA + rng.normal(0, 6, size=(FRAME_H, FRAME_W))).clip(0, 255).astype(np.uint8)
+  far = _FakeLine([0, 100], [6, 6], [CAM_Z, CAM_Z])
+  solid_line = _FakeLine(x, y, z)
+
+  clf = LaneLineClassifier()
+  model = _FakeModel([far, solid_line, far, far])
+  gate = clf.update(frame_solid, model, TRANSFORM)
+  assert gate.left.line_type == LaneLineType.SOLID
+  assert gate.left.reason == "faint_ridge"
+
+  gate = clf.update(blank, model, TRANSFORM)
+  assert gate.left.line_type == LaneLineType.SOLID, gate.left
+  assert gate.left.reason.startswith("temporal_hold:"), gate.left.reason

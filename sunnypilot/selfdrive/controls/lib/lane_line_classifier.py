@@ -27,8 +27,9 @@ Key ideas
   autocorrelation peak regardless of distance.
 * Scan laterally across the line **in real-world metres** too. On the real
   road camera (tici fcam, ~2650 px focal length) a 13 cm marking is ~30 px wide
-  at 10 m and ~5 px at 60 m, so any fixed-pixel scan is either swallowed by the
-  paint near-field or misses it far-field. A constant-width world-space scan
+  at 10 m but only a few pixels in the far field, so any fixed-pixel scan is
+  either swallowed by the paint near-field or misses it far-field. A
+  constant-width world-space scan
   keeps the paint at a constant *fraction* of the scan at every distance:
   high percentile - median then measures paint-vs-road contrast everywhere,
   and the scan width doubles as tolerance for projection/calibration error.
@@ -68,7 +69,7 @@ CROSSABLE_TYPES = (LaneLineType.BROKEN,)
 
 # --- sampling geometry (metres) ---------------------------------------------
 SAMPLE_X_MIN = 4.0       # start of the trusted window ahead (m)
-SAMPLE_X_MAX = 60.0      # end of the trusted window ahead (m); far field too few px
+SAMPLE_X_MAX = 40.0      # default trusted window; farther 0.5 m samples alias in image space
 SAMPLE_STEP_M = 0.5      # uniform along-line spacing (m); << typical dash period
 SCAN_HALF_M = 0.45       # lateral scan half-width in world metres; also the
                          # tolerance budget for projection/model/calib error
@@ -117,29 +118,34 @@ BROKEN_DUTY_HI = 0.75
 MIN_PERIOD_M = 3.0       # plausible dash period range (line+gap), metres
 MAX_PERIOD_M = 30.0
 MIN_AUTOCORR = 0.30      # normalised autocorrelation peak to trust periodicity
+# A camera-only BROKEN result opens the crossable gate, so demand a normal lane
+# divider period by default. ``MIN_PERIOD_M`` is kept lower for analysis and
+# tuning; local layouts with verified short dashes can explicitly lower this.
+MIN_CROSSABLE_PERIOD_M = 6.0
 SOLID_CONTIG_FRAC = 0.30  # longest continuous present-run as a fraction of valid samples
 SOLID_MAX_GAP_FRAC = 0.18 # largest absent run allowed for continuity-biased SOLID
 SOLID_TOP2_FRAC = 0.50    # combined coverage of the two largest present-runs
                           # (even a 9m/3m long-dash line only scores ~0.33 here,
                           # so this cleanly separates fragmented-solid from broken)
-# Faint-but-continuous solid recovery (night / worn paint). A dim solid line
-# can sit just above the road yet below the per-sample SNR *presence* gate, so
-# every sample reads "absent", its duty collapses, and it is reported
-# UNKNOWN/BROKEN even though it is unmistakably a *continuous* marking (the
-# on-road night logs are full of these). Such a line is separable from bare road
-# texture and from dashes by the shape of its per-sample SNR profile alone -
-# independent of the absolute presence thresholds the faint paint cannot clear:
-# a solid ridge stays elevated above the road-texture floor (~1.2) along its
-# whole length with no dash-length gaps, whereas texture never clears the
-# elevation and dashes punch periodic holes in it. This recovers the faint solid
-# without lowering the presence gate (which would let texture through). It is
-# deliberately confined to the collapsed/faint-duty regime with no clean dash
-# period, so bright, high-duty lines stay owned by the duty/continuity paths.
-RIDGE_SOLID_MIN_SNR = 1.5    # median per-sample SNR separating a faint paint
-                             # ridge from bare road texture (empirically ~1.2)
-RIDGE_SOLID_MAX_GAP_FRAC = 0.20  # max fraction of samples below the ridge floor;
-                                 # above this the line has real (dash) gaps
-RIDGE_LOW_SNR = 1.0          # a sample at/below this SNR is "off the ridge"
+# Faint-marking recovery (night / worn paint). A dim solid can sit below the
+# normal per-sample presence gate, collapsing its normal duty. Do *not* decide
+# from the generic P90 signal in that case: road noise often clears an SNR of 1
+# and a faint long dash then looks like a continuous ridge. Instead use a
+# two-sided stripe response (bright centre relative to both shoulders). It is
+# cheap -- it reuses the same projected scan pixels -- but rejects one-sided
+# curbs/edges and preserves the physical gaps that distinguish dashes.
+RIDGE_STRIPE_MIN_SNR = 1.0      # stripe sample is on at/above this low floor
+RIDGE_SOLID_MIN_SNR = 1.5       # median stripe SNR required for a faint solid
+RIDGE_SOLID_MIN_DUTY = 0.80     # faint solid must cover most of the window
+RIDGE_SOLID_MAX_GAP_FRAC = 0.20 # retained as a broad dropout budget
+RIDGE_SOLID_MAX_GAP_M = 1.5     # no individual low-evidence run may be longer
+RIDGE_MAX_RAW_DUTY = 0.30       # only recover genuinely weak normal evidence
+RIDGE_BROKEN_MAX_DUTY = 0.95    # faint long dashes can be paint-dominant
+RIDGE_BROKEN_MIN_RAW_DUTY = 0.02  # never turn a fully blank profile crossable
+RIDGE_RELATIVE_CONTRAST_FLOOR = 0.65  # raw-profile floor relative to its median
+# Any camera-only crossability decision needs an ordinary lane-divider period.
+# Short rhythms are too readily caused by road/curb texture, so they remain
+# UNKNOWN unless the user explicitly lowers MIN_CROSSABLE_PERIOD_M.
 # run-length fallback for dashes whose spacing is too irregular for autocorr
 DASH_RUN_MIN_M = 0.5      # plausible painted dash length range (m)
 DASH_RUN_MAX_M = 12.0
@@ -180,11 +186,19 @@ class LaneLineClassifierConfig:
   min_period_m: float = MIN_PERIOD_M
   max_period_m: float = MAX_PERIOD_M
   min_autocorr: float = MIN_AUTOCORR
+  min_crossable_period_m: float = MIN_CROSSABLE_PERIOD_M
   solid_contig_frac: float = SOLID_CONTIG_FRAC
   solid_max_gap_frac: float = SOLID_MAX_GAP_FRAC
   solid_top2_frac: float = SOLID_TOP2_FRAC
+  ridge_stripe_min_snr: float = RIDGE_STRIPE_MIN_SNR
   ridge_solid_min_snr: float = RIDGE_SOLID_MIN_SNR
+  ridge_solid_min_duty: float = RIDGE_SOLID_MIN_DUTY
   ridge_solid_max_gap_frac: float = RIDGE_SOLID_MAX_GAP_FRAC
+  ridge_solid_max_gap_m: float = RIDGE_SOLID_MAX_GAP_M
+  ridge_max_raw_duty: float = RIDGE_MAX_RAW_DUTY
+  ridge_broken_max_duty: float = RIDGE_BROKEN_MAX_DUTY
+  ridge_broken_min_raw_duty: float = RIDGE_BROKEN_MIN_RAW_DUTY
+  ridge_relative_contrast_floor: float = RIDGE_RELATIVE_CONTRAST_FLOOR
   scan_half_m: float = SCAN_HALF_M
   contrast_smooth_window: int = CONTRAST_SMOOTH_WINDOW
   max_repair_gap_m: float = MAX_REPAIR_GAP_M
@@ -287,11 +301,11 @@ def _locate_lateral_track(frame_y: np.ndarray, grid: np.ndarray, transform: np.n
   """Per-sample lateral correction (m) that bends the scan onto the marking.
 
   A wide strip is projected at each along-line sample and scored with a
-  shoulder-normalised bar detector: response(o) = luma(o) - mean(luma at
-  o +/- one paint-and-a-bit). This peaks on an isolated bright bar sitting on
-  road (a lane marking) but stays low on a bright region that keeps extending
-  outward (curb, barrier, guard-rail), so the search can't be captured by
-  roadside structure.
+  two-sided bar detector: response(o) = min(luma(o) - left_shoulder,
+  luma(o) - right_shoulder). This peaks on an isolated bright bar sitting on
+  road (a lane marking) but stays low when only one side has a contrast edge
+  (curb, barrier, guard-rail), so the search cannot be captured by roadside
+  structure.
 
   A single scalar shift cannot follow a curve, or a registration error that
   grows with distance, so the marking drifts across the scan *along the line*.
@@ -327,14 +341,17 @@ def _locate_lateral_track(frame_y: np.ndarray, grid: np.ndarray, transform: np.n
   vals = np.full((n, LOCATE_STEPS), np.nan, dtype=np.float32)
   vals[inb] = frame_y[iy[inb].astype(np.int64), ix[inb].astype(np.int64)]
 
-  # shoulder-normalised bar response; only offsets with both shoulders in-window
-  # are candidates, so the effective search range shrinks by one shoulder width.
+  # Two-sided bar response; only offsets with both shoulders in-window are
+  # candidates, so the effective search range shrinks by one shoulder width.
+  # Averaging the shoulders admits a bright one-sided curb: the dark shoulder
+  # can mask the fact that the candidate is merely an edge, not a paint stripe.
   d = max(1, int(round(LOCATE_SHOULDER_M / (2.0 * half / (LOCATE_STEPS - 1)))))
   if LOCATE_STEPS - 2 * d < 3:
     return zeros
   centre = vals[:, d:LOCATE_STEPS - d]
-  shoulders = 0.5 * (vals[:, :LOCATE_STEPS - 2 * d] + vals[:, 2 * d:])
-  resp = centre - shoulders                       # n x (LOCATE_STEPS-2d)
+  left_shoulder = vals[:, :LOCATE_STEPS - 2 * d]
+  right_shoulder = vals[:, 2 * d:]
+  resp = np.minimum(centre - left_shoulder, centre - right_shoulder)  # n x (LOCATE_STEPS-2d)
   cand_offsets = offsets[d:LOCATE_STEPS - d]
 
   # robust road-texture noise, computed only on in-frame rows (fully-out-of-frame
@@ -430,7 +447,7 @@ def scan_geometry_uv(line_x, line_y, line_z, transform: np.ndarray, camera_offse
 
 def _scan_contrast(frame_y: np.ndarray, grid: np.ndarray, transform: np.ndarray,
                    scan_half_m: float = SCAN_HALF_M,
-                   contrast_method: int = CONTRAST_METHOD_P90) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+                   contrast_method: int = CONTRAST_METHOD_P90) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
   """Scan laterally across the line in world metres at each along-line sample.
 
   At each grid point a constant-world-width strip perpendicular to the line is
@@ -440,16 +457,19 @@ def _scan_contrast(frame_y: np.ndarray, grid: np.ndarray, transform: np.ndarray,
   against the scan median. P90 is the default; alternatives are exposed by
   the Lane Visualizer tweaks menu for on-road comparison.
 
-  Returns (contrast, noise, valid) per along-line sample; ``noise`` is a robust
-  (MAD-based) estimate of the road texture inside the scan.
+  Returns ``(contrast, stripe_contrast, noise, valid)`` per along-line sample.
+  ``stripe_contrast`` is a two-sided centre-versus-shoulders response used only
+  to reason about faint paint; ``noise`` is a robust (MAD-based) road-texture
+  estimate inside the scan.
   """
   h, w = frame_y.shape[:2]
   n = grid.shape[0]
   contrast = np.zeros(n, dtype=np.float32)
+  stripe_contrast = np.zeros(n, dtype=np.float32)
   noise = np.full(n, np.inf, dtype=np.float32)
   valid = np.zeros(n, dtype=np.bool_)
   if n < 2:
-    return contrast, noise, valid
+    return contrast, stripe_contrast, noise, valid
 
   perp = _ground_perp(grid)
 
@@ -465,7 +485,7 @@ def _scan_contrast(frame_y: np.ndarray, grid: np.ndarray, transform: np.ndarray,
   inb = np.isfinite(ix) & np.isfinite(iy) & (ix >= 0) & (ix < w) & (iy >= 0) & (iy < h)
   valid = inb.mean(axis=1) >= MIN_INFRAME_FRAC
   if not valid.any():
-    return contrast, noise, valid
+    return contrast, stripe_contrast, noise, valid
 
   vals = np.full((n, SCAN_STEPS), np.nan, dtype=np.float32)
   vals[inb] = frame_y[iy[inb].astype(np.int64), ix[inb].astype(np.int64)]
@@ -487,7 +507,26 @@ def _scan_contrast(frame_y: np.ndarray, grid: np.ndarray, transform: np.ndarray,
   mad = np.nanmedian(np.abs(v - med[:, None]), axis=1)
   contrast[valid] = np.maximum(bright - med, 0.0).astype(np.float32)
   noise[valid] = (1.4826 * mad + 0.5).astype(np.float32)   # +0.5: quantisation floor
-  return contrast, noise, valid
+
+  # A genuine painted stripe has a bright narrow centre and road on *both*
+  # sides. This is intentionally stricter than P90-minus-median: an edge or a
+  # single bright shoulder can raise P90, but cannot pass the minimum of the
+  # two shoulder contrasts. The masks scale down safely if a caller narrows the
+  # scan corridor below the defaults.
+  centre_half_m = min(0.09, 0.30 * scan_half_m)
+  shoulder_inner_m = min(0.15, 0.55 * scan_half_m)
+  shoulder_outer_m = min(0.36, scan_half_m)
+  centre_mask = np.abs(offsets) <= centre_half_m
+  left_mask = (offsets >= -shoulder_outer_m) & (offsets <= -shoulder_inner_m)
+  right_mask = (offsets >= shoulder_inner_m) & (offsets <= shoulder_outer_m)
+  if centre_mask.any() and left_mask.any() and right_mask.any():
+    centre = np.nanpercentile(v[:, centre_mask], 90, axis=1)
+    left = np.nanmedian(v[:, left_mask], axis=1)
+    right = np.nanmedian(v[:, right_mask], axis=1)
+    bar = np.minimum(centre - left, centre - right)
+    stripe_contrast[valid] = np.nan_to_num(
+      np.maximum(bar, 0.0), nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+  return contrast, stripe_contrast, noise, valid
 
 
 def _smooth_valid_signal(values: np.ndarray, valid: np.ndarray, window: int) -> np.ndarray:
@@ -597,6 +636,13 @@ def _autocorr_period(present: np.ndarray, valid: np.ndarray,
   return k * SAMPLE_STEP_M, float(ac[k])
 
 
+def _periods_agree(period_a_m: float, period_b_m: float) -> bool:
+  """Whether two independent dash profiles support the same physical rhythm."""
+  if period_a_m <= 0.0 or period_b_m <= 0.0:
+    return False
+  return abs(period_a_m - period_b_m) <= max(1.5, 0.25 * max(period_a_m, period_b_m))
+
+
 def classify_line(frame_y: np.ndarray, line_x, line_y, line_z,
                   transform: np.ndarray, camera_offset: float = 0.0,
                   cfg: LaneLineClassifierConfig | None = None) -> LaneLineResult:
@@ -622,8 +668,8 @@ def classify_line(frame_y: np.ndarray, line_x, line_y, line_z,
   grid = _apply_track(grid, track)
   offset_m = float(np.median(track[track != 0.0])) if np.any(track) else 0.0
 
-  contrast, noise, valid = _scan_contrast(frame_y, grid, transform,
-                                          cfg.scan_half_m, cfg.contrast_method)
+  contrast, stripe_contrast, noise, valid = _scan_contrast(frame_y, grid, transform,
+                                                            cfg.scan_half_m, cfg.contrast_method)
 
   n = contrast.size
   valid_frac = float(valid.mean()) if n else 0.0
@@ -665,24 +711,43 @@ def classify_line(frame_y: np.ndarray, line_x, line_y, line_z,
   longest_absent_frac = (max(absent_runs) / valid_n) if absent_runs and valid_n else 0.0
   top2_present_frac = (sum(sorted(present_runs, reverse=True)[:2]) / valid_n) if present_runs and valid_n else 0.0
 
-  # Faint-but-continuous solid: a dim solid can fall below the per-sample SNR
-  # presence gate everywhere (collapsed duty) yet still be an unmistakable
-  # continuous ridge. Recover it from the *shape* of the SNR profile - elevated
-  # above the road-texture floor along its whole length with no dash-length gaps
-  # - which separates it from texture (never elevated) and from dashes (periodic
-  # holes, or a clean autocorr period). Confined to the collapsed/faint-duty,
-  # no-clean-period regime so bright high-duty lines stay with the duty and
-  # continuity paths below (and a dashed line, whose gaps drag the median down
-  # and raise the below-floor fraction, is rejected by both gates).
-  vsnr = snr[valid]
-  ridge_med_snr = float(np.median(vsnr)) if vsnr.size else 0.0
-  ridge_gap_frac = float(np.mean(vsnr < RIDGE_LOW_SNR)) if vsnr.size else 1.0
+  # Faint-marking path. Use two-sided stripe evidence, rather than the generic
+  # P90 SNR above: road noise commonly clears SNR=1 in the P90 signal, so faint
+  # long dashes could collapse ``present`` to all-false and then be called SOLID
+  # by an apparently gap-free generic ridge. The stripe profile preserves the
+  # real on/off gaps and rejects one-sided road edges.
+  stripe_snr = stripe_contrast / np.maximum(noise, 1e-6)
+  ridge_present = valid & (stripe_snr >= cfg.ridge_stripe_min_snr)
+  ridge_present = _despeckle(ridge_present, valid)
+  ridge_present = _repair_short_gaps(ridge_present, valid, cfg.max_repair_gap_m)
+  vridge = ridge_present[valid]
+  ridge_duty = float(vridge.mean()) if vridge.size else 0.0
+  ridge_period_m, ridge_ac_strength = _autocorr_period(
+    ridge_present, valid, cfg.min_period_m, cfg.max_period_m)
+  ridge_absent_runs = _run_lengths(~vridge) if vridge.size else []
+  ridge_max_gap_m = (max(ridge_absent_runs) * SAMPLE_STEP_M) if ridge_absent_runs else 0.0
+  ridge_gap_frac = float(np.mean(~vridge)) if vridge.size else 1.0
+  vstripe_snr = stripe_snr[valid]
+  ridge_med_snr = float(np.median(vstripe_snr)) if vstripe_snr.size else 0.0
+  # The stripe profile is deliberately conservative, but a paint-dominant
+  # faint dash can still leave only tiny stripe holes after sampling/repair.
+  # Its raw P90 contrast has much clearer multi-metre troughs. Require that
+  # this independent profile has no unrepaired low-contrast run before calling
+  # it a faint solid.
+  vcontrast = contrast[valid]
+  ridge_raw_floor = (cfg.ridge_relative_contrast_floor * float(np.median(vcontrast))
+                     if vcontrast.size else np.inf)
+  ridge_raw_gap_runs = _run_lengths(vcontrast < ridge_raw_floor)
+  ridge_raw_max_gap_m = (max(ridge_raw_gap_runs) * SAMPLE_STEP_M) if ridge_raw_gap_runs else 0.0
   ridge_solid = (
     valid_n >= 8 and
-    duty < cfg.broken_duty_hi and
-    ac_strength < cfg.min_autocorr and
+    duty <= cfg.ridge_max_raw_duty and
+    ridge_duty >= cfg.ridge_solid_min_duty and
+    ridge_ac_strength < cfg.min_autocorr and
     ridge_med_snr >= cfg.ridge_solid_min_snr and
-    ridge_gap_frac <= cfg.ridge_solid_max_gap_frac
+    ridge_gap_frac <= cfg.ridge_solid_max_gap_frac and
+    ridge_max_gap_m <= cfg.ridge_solid_max_gap_m and
+    ridge_raw_max_gap_m <= cfg.max_repair_gap_m
   )
   if ridge_solid:
     res.line_type = LaneLineType.SOLID
@@ -691,7 +756,24 @@ def classify_line(frame_y: np.ndarray, line_x, line_y, line_z,
     res.reason = "faint_ridge"
     return res
 
-  if duty < cfg.broken_duty_lo:
+  # A generic P90 peak can be a one-sided curb/edge. Any BROKEN result must
+  # therefore have an independently periodic two-sided stripe profile too.
+  # The default 6 m crossability floor is deliberately separate from the
+  # shorter analysis floor: a user can lower it for a verified local marking
+  # pattern, but weak short texture never opens the crossable gate by default.
+  crossable_min_period_m = max(cfg.min_period_m, cfg.min_crossable_period_m)
+  stripe_dash_shape = (
+    valid_n >= 8 and
+    cfg.broken_duty_lo <= ridge_duty <= cfg.ridge_broken_max_duty and
+    ridge_max_gap_m >= DASH_GAP_MIN_M and
+    ridge_period_m >= crossable_min_period_m
+  )
+  stripe_broken_supported = stripe_dash_shape and ridge_ac_strength >= cfg.min_autocorr
+  ridge_broken = (
+    cfg.ridge_broken_min_raw_duty <= duty <= cfg.ridge_max_raw_duty and
+    stripe_broken_supported
+  )
+  if duty < cfg.broken_duty_lo and not ridge_broken:
     # almost nothing there: worn line, wrong projection, or no marking
     res.line_type = LaneLineType.UNKNOWN
     res.confidence = 0.0
@@ -732,8 +814,15 @@ def classify_line(frame_y: np.ndarray, line_x, line_y, line_z,
     res.reason = "ok"
     return res
 
-  # mid-band duty: dashed if there's a plausible, strong period
-  if cfg.broken_duty_lo <= duty <= cfg.broken_duty_hi and ac_strength >= cfg.min_autocorr and period_m > 0:
+  # Mid-band duty: dashed only when the ordinary P90 profile and the
+  # independent two-sided stripe profile agree on the physical period. This
+  # suppresses a curb whose texture creates a generic rhythm unrelated to a
+  # painted stripe.
+  if (cfg.broken_duty_lo <= duty <= cfg.broken_duty_hi and
+      ac_strength >= cfg.min_autocorr and
+      period_m >= crossable_min_period_m and
+      stripe_broken_supported and
+      _periods_agree(period_m, ridge_period_m)):
     res.line_type = LaneLineType.BROKEN
     res.period_m = period_m
     res.confidence = float(np.clip(ac_strength, 0, 1))
@@ -749,12 +838,26 @@ def classify_line(frame_y: np.ndarray, line_x, line_y, line_z,
   if cfg.broken_duty_lo <= duty <= min(0.65, cfg.broken_duty_hi) and len(present_runs) >= 2 and len(absent_runs) >= 2:
     dash_m = float(np.median(present_runs)) * SAMPLE_STEP_M
     gap_m = float(np.median(absent_runs)) * SAMPLE_STEP_M
-    if DASH_RUN_MIN_M <= dash_m <= DASH_RUN_MAX_M and DASH_GAP_MIN_M <= gap_m <= DASH_GAP_MAX_M:
+    if (DASH_RUN_MIN_M <= dash_m <= DASH_RUN_MAX_M and
+        DASH_GAP_MIN_M <= gap_m <= DASH_GAP_MAX_M and
+        dash_m + gap_m >= crossable_min_period_m and
+        stripe_dash_shape):
       res.line_type = LaneLineType.BROKEN
       res.period_m = dash_m + gap_m
       res.confidence = float(np.clip(0.35 + 0.05 * min(len(present_runs), 6), 0, 0.65))
       res.reason = "ok"
       return res
+
+  # Let normal high-evidence dash detection win whenever it can. The stripe
+  # recovery is only for cases where the normal presence signal was too weak to
+  # establish a period (including collapsed-duty faint dashes).
+  if ridge_broken:
+    res.line_type = LaneLineType.BROKEN
+    res.confidence = float(np.clip(0.30 + 0.40 * ridge_ac_strength + 0.20 * ridge_duty, 0.35, 0.75))
+    res.period_m = ridge_period_m
+    res.periodicity = ridge_ac_strength
+    res.reason = "faint_stripe_dashes"
+    return res
 
   # gappy but neither periodic nor dash-shaped -> undecided, fail safe
   res.line_type = LaneLineType.UNKNOWN
@@ -796,8 +899,20 @@ class _TemporalLineFilter:
 
     if result.line_type == LaneLineType.UNKNOWN:
       self._unknown_run += 1
+      # Faint-ridge calls are intentionally capped below the generic 0.8
+      # confidence threshold: their appearance is weaker, not their continuity
+      # proof. Let a verified faint SOLID survive one bad image frame. This can
+      # only preserve a not-crossable decision; it never promotes UNKNOWN to
+      # BROKEN/crossable.
+      hold_faint_solid = (
+        last_known is not None and
+        last_known.line_type == LaneLineType.SOLID and
+        last_known.reason == "faint_ridge" and
+        last_known.confidence >= 0.45
+      )
       if (self._unknown_run <= self._hold_frames and last_known is not None and
-          last_known.confidence >= 0.8 and result.valid_frac >= 0.5 * max(last_known.valid_frac, 1e-6)):
+          (last_known.confidence >= 0.8 or hold_faint_solid) and
+          result.valid_frac >= 0.5 * max(last_known.valid_frac, 1e-6)):
         out = replace(last_known,
           confidence=last_known.confidence * 0.85,
           valid_frac=result.valid_frac,

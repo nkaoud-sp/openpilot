@@ -43,7 +43,7 @@ CALIBRATED = 1  # cereal LiveCalibrationData.Status.calibrated
 LOOP_HZ = 20.0        # camera drain rate; must keep up with camerad
 PUBLISH_HZ = 5.0      # classification/publish rate
 FRAME_CACHE = 8       # recent Y-planes kept for frameId matching (~0.4 s)
-FRAME_ID_SLOP = 2     # accept a cached frame within this many ids of the model's
+FRAME_ID_SLOP = 2     # accept an older cached frame within this many ids of the model's
 DEFAULT_CAMERA = ("tici", "ar0231")
 
 
@@ -64,6 +64,20 @@ def nv12_y_plane(buf) -> np.ndarray:
   flat = np.frombuffer(buf.data, dtype=np.uint8)
   y = flat[:stride * height].reshape(height, stride)
   return y[:, :width].copy()
+
+
+def _frame_for_model(frames: OrderedDict[int, np.ndarray], model_fid: int) -> np.ndarray | None:
+  """Return the exact camera frame, or the closest *prior* frame in tolerance.
+
+  A future camera frame is visually ahead of the model polyline. On a curve it
+  can move the scan corridor by metres, so prefer a slightly stale matching
+  frame over a newer one when exact pairing is unavailable.
+  """
+  exact = frames.get(model_fid)
+  if exact is not None:
+    return exact
+  prior = [fid for fid in frames if 0 <= model_fid - fid <= FRAME_ID_SLOP]
+  return frames[max(prior)] if prior else None
 
 
 class LaneLineClassifierD:
@@ -103,13 +117,14 @@ class LaneLineClassifierD:
       return
     self._cfg_t = now
     self._cfg = LaneLineClassifierConfig(
-      sample_x_max=float(self._get_int("LaneLineSampleMaxM", 60)),
+      sample_x_max=float(self._get_int("LaneLineSampleMaxM", 40)),
       min_contrast=float(self._get_int("LaneLineMinContrast", 18)),
       min_snr=self._get_int("LaneLineMinSnr", 30) / 10.0,
       solid_duty=self._get_int("LaneLineSolidDuty", 80) / 100.0,
       ridge_solid_min_snr=self._get_int("LaneLineRidgeMinSnr", 15) / 10.0,
       ridge_solid_max_gap_frac=self._get_int("LaneLineRidgeMaxGap", 20) / 100.0,
       min_period_m=float(self._get_int("LaneLineMinPeriodM", 3)),
+      min_crossable_period_m=float(self._get_int("LaneLineCrossableMinPeriodM", 6)),
       max_period_m=float(self._get_int("LaneLineMaxPeriodM", 30)),
       min_autocorr=self._get_int("LaneLineMinAutocorr", 30) / 100.0,
       contrast_method=int(np.clip(self._get_int("LaneLineContrastMethod", 0),
@@ -323,11 +338,7 @@ class LaneLineClassifierD:
 
       model = self.sm["modelV2"]
       model_fid = int(model.frameId)
-      frame_y = frames.get(model_fid)
-      if frame_y is None:
-        near = [fid for fid in frames if abs(fid - model_fid) <= FRAME_ID_SLOP]
-        if near:
-          frame_y = frames[max(near)]
+      frame_y = _frame_for_model(frames, model_fid)
       if frame_y is None:
         self._publish_throttled(None, newest_fid, "waiting_for_frame", False, 0.0)
         rk.keep_time()

@@ -110,8 +110,8 @@ class LaneLineVisualizerSettingsLayout(Widget):
     self._ridge_min_snr = option_item_sp(
       title=lambda: tr("Faint Solid Sensitivity"),
       description=lambda: tr("Recovers a dim but continuous solid line (night / worn paint) whose contrast "
-                            "falls below Min SNR everywhere, so its duty collapses. This is the median SNR "
-                            "the whole line must clear to count as a faint solid ridge. Lower it to catch "
+                            "falls below Min SNR everywhere, so its duty collapses. This is the median two-sided "
+                            "stripe SNR the whole line must clear to count as a faint solid ridge. Lower it to catch "
                             "fainter solids; raise it if textured pavement gets called solid."),
       # Stored in tenths (15 = 1.5) like Min SNR.
       param="LaneLineRidgeMinSnr", min_value=10, max_value=40,
@@ -127,8 +127,16 @@ class LaneLineVisualizerSettingsLayout(Widget):
     )
     self._min_period = option_item_sp(
       title=lambda: tr("Min Dash Period"),
-      description=lambda: tr("Shortest plausible dash cycle (paint + gap), in metres."),
+      description=lambda: tr("Shortest rhythm to analyse as a possible dash cycle (paint + gap), in metres."),
       param="LaneLineMinPeriodM", min_value=1, max_value=10,
+      label_callback=lambda v: f"{v} m", inline=False,
+    )
+    self._crossable_min_period = option_item_sp(
+      title=lambda: tr("Min Crossable Dash Period"),
+      description=lambda: tr("Shortest verified dash cycle allowed to report BROKEN (crossable). "
+                            "Keep this at 6 m unless local lane dividers are known to use shorter cycles; "
+                            "short weak rhythms are often curb or road texture."),
+      param="LaneLineCrossableMinPeriodM", min_value=3, max_value=15,
       label_callback=lambda v: f"{v} m", inline=False,
     )
     self._max_period = option_item_sp(
@@ -139,8 +147,9 @@ class LaneLineVisualizerSettingsLayout(Widget):
     )
     self._sample_max = option_item_sp(
       title=lambda: tr("Classify Distance"),
-      description=lambda: tr("How far ahead to classify, in metres. Lower it if the far field is noisy."),
-      param="LaneLineSampleMaxM", min_value=20, max_value=100, value_change_step=5,
+      description=lambda: tr("How far ahead to classify, in metres. 40 m is the efficient default; lower it "
+                            "if the far field is noisy."),
+      param="LaneLineSampleMaxM", min_value=20, max_value=60, value_change_step=5,
       label_callback=lambda v: f"{v} m", inline=False,
     )
     return [
@@ -156,6 +165,7 @@ class LaneLineVisualizerSettingsLayout(Widget):
       self._ridge_min_snr,
       self._ridge_max_gap,
       self._min_period,
+      self._crossable_min_period,
       self._max_period,
       self._sample_max,
     ]

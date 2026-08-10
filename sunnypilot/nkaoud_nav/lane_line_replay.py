@@ -33,16 +33,37 @@ import zipfile
 
 import numpy as np
 
-from openpilot.common.transformations.camera import view_frame_from_device_frame
-from openpilot.common.transformations.orientation import rot_from_euler
 from sunnypilot.selfdrive.controls.lib.lane_line_classifier import (
   classify_line, LaneLineClassifierConfig, LaneLineType,
 )
 
 
+# Keep the snapshot harness genuinely standalone. These are the two tiny
+# transformations used by the live daemon; importing them through
+# ``openpilot.common`` breaks this otherwise pure numpy/Pillow tool in Windows
+# checkouts where the repository symlinks are materialised as text files.
+_VIEW_FRAME_FROM_DEVICE_FRAME = np.array([
+  [0.0, 1.0, 0.0],
+  [0.0, 0.0, 1.0],
+  [1.0, 0.0, 0.0],
+])
+
+
+def _rot_from_euler(rpy) -> np.ndarray:
+  """Openpilot's Z-Y-X (yaw, pitch, roll) device-frame rotation."""
+  roll, pitch, yaw = np.asarray(rpy, dtype=np.float64)
+  cr, sr = np.cos(roll), np.sin(roll)
+  cp, sp = np.cos(pitch), np.sin(pitch)
+  cy, sy = np.cos(yaw), np.sin(yaw)
+  rx = np.array([[1.0, 0.0, 0.0], [0.0, cr, -sr], [0.0, sr, cr]])
+  ry = np.array([[cp, 0.0, sp], [0.0, 1.0, 0.0], [-sp, 0.0, cp]])
+  rz = np.array([[cy, -sy, 0.0], [sy, cy, 0.0], [0.0, 0.0, 1.0]])
+  return rz @ ry @ rx
+
+
 def build_transform(rpy_calib, intrinsics) -> np.ndarray:
   """device/calib frame -> image pixel 3x3, identical to lane_line_classifierd."""
-  view_from_calib = view_frame_from_device_frame @ rot_from_euler(np.asarray(rpy_calib, dtype=np.float64))
+  view_from_calib = _VIEW_FRAME_FROM_DEVICE_FRAME @ _rot_from_euler(rpy_calib)
   return np.asarray(intrinsics, dtype=np.float64) @ view_from_calib
 
 
