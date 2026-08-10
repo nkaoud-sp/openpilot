@@ -107,6 +107,8 @@ class LaneLineClassifierD:
       min_contrast=float(self._get_int("LaneLineMinContrast", 18)),
       min_snr=self._get_int("LaneLineMinSnr", 30) / 10.0,
       solid_duty=self._get_int("LaneLineSolidDuty", 80) / 100.0,
+      ridge_solid_min_snr=self._get_int("LaneLineRidgeMinSnr", 15) / 10.0,
+      ridge_solid_max_gap_frac=self._get_int("LaneLineRidgeMaxGap", 20) / 100.0,
       min_period_m=float(self._get_int("LaneLineMinPeriodM", 3)),
       max_period_m=float(self._get_int("LaneLineMaxPeriodM", 30)),
       min_autocorr=self._get_int("LaneLineMinAutocorr", 30) / 100.0,

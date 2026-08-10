@@ -107,6 +107,24 @@ class LaneLineVisualizerSettingsLayout(Widget):
       param="LaneLineMinAutocorr", min_value=10, max_value=90,
       label_callback=lambda v: f"{v}%", inline=False,
     )
+    self._ridge_min_snr = option_item_sp(
+      title=lambda: tr("Faint Solid Sensitivity"),
+      description=lambda: tr("Recovers a dim but continuous solid line (night / worn paint) whose contrast "
+                            "falls below Min SNR everywhere, so its duty collapses. This is the median SNR "
+                            "the whole line must clear to count as a faint solid ridge. Lower it to catch "
+                            "fainter solids; raise it if textured pavement gets called solid."),
+      # Stored in tenths (15 = 1.5) like Min SNR.
+      param="LaneLineRidgeMinSnr", min_value=10, max_value=40,
+      label_callback=lambda v: f"{v / 10:.1f}", inline=False,
+    )
+    self._ridge_max_gap = option_item_sp(
+      title=lambda: tr("Faint Solid Max Gaps"),
+      description=lambda: tr("How much of a faint solid line may read below the ridge floor before it is "
+                            "treated as dashed instead. Raise to tolerate more dropouts on a continuous "
+                            "line; lower it to keep dashed lines from being called solid."),
+      param="LaneLineRidgeMaxGap", min_value=5, max_value=50,
+      label_callback=lambda v: f"{v}%", inline=False,
+    )
     self._min_period = option_item_sp(
       title=lambda: tr("Min Dash Period"),
       description=lambda: tr("Shortest plausible dash cycle (paint + gap), in metres."),
@@ -135,6 +153,8 @@ class LaneLineVisualizerSettingsLayout(Widget):
       self._min_snr,
       self._solid_duty,
       self._min_autocorr,
+      self._ridge_min_snr,
+      self._ridge_max_gap,
       self._min_period,
       self._max_period,
       self._sample_max,

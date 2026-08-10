@@ -35,6 +35,11 @@ Key ideas
 * Marking presence is decided by contrast **and** signal-to-noise against the
   local road texture (robust MAD estimate), so thresholds hold up across
   day/night exposure and shadowed or washed-out frames.
+* A dim solid line at night can fall below the per-sample SNR presence gate at
+  every sample, collapsing its duty to ~0. It is still recovered as ``SOLID``
+  from the *shape* of its SNR profile - a continuous ridge sitting above the
+  road-texture floor with no dash-length gaps - which is what distinguishes a
+  faint continuous marking from bare road texture and from a dashed line.
 * Everything below the classification thresholds or with too little contrast is
   reported as ``UNKNOWN`` so the caller can fail safe (treat as not-crossable).
 
@@ -117,6 +122,24 @@ SOLID_MAX_GAP_FRAC = 0.18 # largest absent run allowed for continuity-biased SOL
 SOLID_TOP2_FRAC = 0.50    # combined coverage of the two largest present-runs
                           # (even a 9m/3m long-dash line only scores ~0.33 here,
                           # so this cleanly separates fragmented-solid from broken)
+# Faint-but-continuous solid recovery (night / worn paint). A dim solid line
+# can sit just above the road yet below the per-sample SNR *presence* gate, so
+# every sample reads "absent", its duty collapses, and it is reported
+# UNKNOWN/BROKEN even though it is unmistakably a *continuous* marking (the
+# on-road night logs are full of these). Such a line is separable from bare road
+# texture and from dashes by the shape of its per-sample SNR profile alone -
+# independent of the absolute presence thresholds the faint paint cannot clear:
+# a solid ridge stays elevated above the road-texture floor (~1.2) along its
+# whole length with no dash-length gaps, whereas texture never clears the
+# elevation and dashes punch periodic holes in it. This recovers the faint solid
+# without lowering the presence gate (which would let texture through). It is
+# deliberately confined to the collapsed/faint-duty regime with no clean dash
+# period, so bright, high-duty lines stay owned by the duty/continuity paths.
+RIDGE_SOLID_MIN_SNR = 1.5    # median per-sample SNR separating a faint paint
+                             # ridge from bare road texture (empirically ~1.2)
+RIDGE_SOLID_MAX_GAP_FRAC = 0.20  # max fraction of samples below the ridge floor;
+                                 # above this the line has real (dash) gaps
+RIDGE_LOW_SNR = 1.0          # a sample at/below this SNR is "off the ridge"
 # run-length fallback for dashes whose spacing is too irregular for autocorr
 DASH_RUN_MIN_M = 0.5      # plausible painted dash length range (m)
 DASH_RUN_MAX_M = 12.0
@@ -160,6 +183,8 @@ class LaneLineClassifierConfig:
   solid_contig_frac: float = SOLID_CONTIG_FRAC
   solid_max_gap_frac: float = SOLID_MAX_GAP_FRAC
   solid_top2_frac: float = SOLID_TOP2_FRAC
+  ridge_solid_min_snr: float = RIDGE_SOLID_MIN_SNR
+  ridge_solid_max_gap_frac: float = RIDGE_SOLID_MAX_GAP_FRAC
   scan_half_m: float = SCAN_HALF_M
   contrast_smooth_window: int = CONTRAST_SMOOTH_WINDOW
   max_repair_gap_m: float = MAX_REPAIR_GAP_M
@@ -639,6 +664,32 @@ def classify_line(frame_y: np.ndarray, line_x, line_y, line_z,
   longest_present_frac = (max(present_runs) / valid_n) if present_runs and valid_n else 0.0
   longest_absent_frac = (max(absent_runs) / valid_n) if absent_runs and valid_n else 0.0
   top2_present_frac = (sum(sorted(present_runs, reverse=True)[:2]) / valid_n) if present_runs and valid_n else 0.0
+
+  # Faint-but-continuous solid: a dim solid can fall below the per-sample SNR
+  # presence gate everywhere (collapsed duty) yet still be an unmistakable
+  # continuous ridge. Recover it from the *shape* of the SNR profile - elevated
+  # above the road-texture floor along its whole length with no dash-length gaps
+  # - which separates it from texture (never elevated) and from dashes (periodic
+  # holes, or a clean autocorr period). Confined to the collapsed/faint-duty,
+  # no-clean-period regime so bright high-duty lines stay with the duty and
+  # continuity paths below (and a dashed line, whose gaps drag the median down
+  # and raise the below-floor fraction, is rejected by both gates).
+  vsnr = snr[valid]
+  ridge_med_snr = float(np.median(vsnr)) if vsnr.size else 0.0
+  ridge_gap_frac = float(np.mean(vsnr < RIDGE_LOW_SNR)) if vsnr.size else 1.0
+  ridge_solid = (
+    valid_n >= 8 and
+    duty < cfg.broken_duty_hi and
+    ac_strength < cfg.min_autocorr and
+    ridge_med_snr >= cfg.ridge_solid_min_snr and
+    ridge_gap_frac <= cfg.ridge_solid_max_gap_frac
+  )
+  if ridge_solid:
+    res.line_type = LaneLineType.SOLID
+    res.confidence = float(np.clip(0.40 + 0.15 * (ridge_med_snr - cfg.ridge_solid_min_snr), 0.40, 0.75))
+    res.period_m = 0.0
+    res.reason = "faint_ridge"
+    return res
 
   if duty < cfg.broken_duty_lo:
     # almost nothing there: worn line, wrong projection, or no marking

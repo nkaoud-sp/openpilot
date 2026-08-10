@@ -229,6 +229,32 @@ def test_low_contrast_night_paint():
   assert res.line_type == LaneLineType.BROKEN, res
 
 
+def test_faint_continuous_solid_recovered_by_ridge():
+  # the dominant on-road night failure: a dim solid line sits just above the
+  # road but below the per-sample SNR presence gate, so every sample reads
+  # "absent" and the duty collapses to ~0 -> it was reported UNKNOWN even though
+  # it is an unmistakable continuous marking. The SNR-profile ridge test must
+  # recover it as SOLID from the shape alone, without any sample passing the gate.
+  frame, x, y, z = _render(solid=True, road=70, paint=88, noise=6, seed=5)
+  res = classify_line(frame, x, y, z, TRANSFORM)
+  assert res.line_type == LaneLineType.SOLID, res
+  assert res.duty < 0.5, res.duty          # recovered from shape, not from duty
+  assert res.reason == "faint_ridge", res.reason
+  # the faint-ridge recovery is a distinct, disableable path
+  off = LaneLineClassifierConfig(ridge_solid_min_snr=99.0)
+  assert classify_line(frame, x, y, z, TRANSFORM, cfg=off).line_type != LaneLineType.SOLID
+
+
+def test_faint_dashes_not_recovered_as_ridge_solid():
+  # the same dim paint laid down as dashes must NOT be rescued as SOLID: the
+  # periodic gaps drag the median SNR down and raise the below-floor fraction,
+  # so the ridge gates reject it (fail safe stays UNKNOWN/BROKEN, never SOLID).
+  for seed in range(4):
+    frame, x, y, z = _render(solid=False, paint_m=3.0, period_m=12.0, road=70, paint=88, noise=6, seed=seed)
+    res = classify_line(frame, x, y, z, TRANSFORM)
+    assert res.line_type != LaneLineType.SOLID, (seed, res)
+
+
 def test_heavy_road_texture_not_mistaken_for_paint():
   # noisy road surface produces contrast spikes; the SNR gate must reject them
   rng = np.random.default_rng(11)

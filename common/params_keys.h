@@ -202,6 +202,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LaneLineMinContrast", {PERSISTENT | BACKUP, INT, "18"}},        // marking-present luminance contrast threshold (2..60 counts)
     {"LaneLineMinSnr", {PERSISTENT | BACKUP, INT, "30"}},             // marking-present SNR threshold in tenths (10..60 = 1.0..6.0)
     {"LaneLineSolidDuty", {PERSISTENT | BACKUP, INT, "80"}},          // duty %% at/above which a line is SOLID (50..99)
+    {"LaneLineRidgeMinSnr", {PERSISTENT | BACKUP, INT, "15"}},        // faint-solid recovery: min median SNR in tenths (10..40 = 1.0..4.0)
+    {"LaneLineRidgeMaxGap", {PERSISTENT | BACKUP, INT, "20"}},        // faint-solid recovery: max %% of samples below the ridge floor (5..50)
     {"LaneLineMinAutocorr", {PERSISTENT | BACKUP, INT, "30"}},        // min periodicity strength %% to call BROKEN (10..90)
     {"LaneLineMinPeriodM", {PERSISTENT | BACKUP, INT, "3"}},          // min plausible dash period, metres (1..10)
     {"LaneLineMaxPeriodM", {PERSISTENT | BACKUP, INT, "30"}},         // max plausible dash period, metres (12..60)
