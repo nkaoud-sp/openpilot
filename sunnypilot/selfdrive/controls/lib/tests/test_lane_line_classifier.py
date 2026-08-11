@@ -453,3 +453,113 @@ def test_temporal_filter_holds_verified_faint_solid_for_one_bad_frame():
   gate = clf.update(blank, model, TRANSFORM)
   assert gate.left.line_type == LaneLineType.SOLID, gate.left
   assert gate.left.reason.startswith("temporal_hold:"), gate.left.reason
+
+
+def test_solid_persistence_holds_until_a_known_class_replaces_it():
+  frame_solid, x, y, z = _render(solid=True)
+  frame_broken, _, _, _ = _render(solid=False)
+  rng = np.random.default_rng(24)
+  blank = (ROAD_LUMA + rng.normal(0, 6, size=(FRAME_H, FRAME_W))).clip(0, 255).astype(np.uint8)
+  far = _FakeLine([0, 100], [6, 6], [CAM_Z, CAM_Z])
+  line = _FakeLine(x, y, z)
+  model = _FakeModel([far, line, far, far])
+  cfg = LaneLineClassifierConfig(solid_persistence=True)
+  clf = LaneLineClassifier()
+
+  gate = clf.update(frame_solid, model, TRANSFORM, cfg=cfg)
+  assert gate.left.line_type == LaneLineType.SOLID
+  for _ in range(3):
+    gate = clf.update(blank, model, TRANSFORM, cfg=cfg)
+    assert gate.left.line_type == LaneLineType.SOLID, gate.left
+    assert gate.left.reason.startswith("persistence_hold:"), gate.left.reason
+    assert not gate.left_crossable
+
+  # A directly observed opposite class always wins and clears the old source.
+  gate = clf.update(frame_broken, model, TRANSFORM, cfg=cfg)
+  assert gate.left.line_type == LaneLineType.BROKEN
+  gate = clf.update(blank, model, TRANSFORM, cfg=cfg)
+  assert gate.left.line_type == LaneLineType.UNKNOWN, gate.left
+
+
+def test_broken_persistence_never_creates_a_crossable_vote():
+  frame_broken, x, y, z = _render(solid=False)
+  frame_solid, _, _, _ = _render(solid=True)
+  rng = np.random.default_rng(25)
+  blank = (ROAD_LUMA + rng.normal(0, 6, size=(FRAME_H, FRAME_W))).clip(0, 255).astype(np.uint8)
+  far = _FakeLine([0, 100], [6, 6], [CAM_Z, CAM_Z])
+  line = _FakeLine(x, y, z)
+  model = _FakeModel([far, line, far, far])
+  cfg = LaneLineClassifierConfig(broken_persistence=True)
+  clf = LaneLineClassifier()
+
+  # One observed dash is not enough to open the debounced gate.
+  gate = clf.update(frame_broken, model, TRANSFORM, cfg=cfg)
+  assert gate.left.line_type == LaneLineType.BROKEN
+  assert not gate.left_crossable
+  for _ in range(3):
+    gate = clf.update(blank, model, TRANSFORM, cfg=cfg)
+    assert gate.left.line_type == LaneLineType.BROKEN, gate.left
+    assert gate.left.reason.startswith("persistence_hold:"), gate.left.reason
+    assert not gate.left_crossable
+
+  # Once real BROKEN observations have latched the gate, persistence may keep
+  # that existing state, but it still does not add new debounce votes.
+  for _ in range(3):
+    gate = clf.update(frame_broken, model, TRANSFORM, cfg=cfg)
+  assert gate.left_crossable
+  for _ in range(3):
+    gate = clf.update(blank, model, TRANSFORM, cfg=cfg)
+    assert gate.left.line_type == LaneLineType.BROKEN, gate.left
+    assert gate.left_crossable
+
+  # Broken persistence does not make SOLID persistent. A fresh SOLID wins,
+  # then the normal one-frame solid stabilizer expires as usual.
+  gate = clf.update(frame_solid, model, TRANSFORM, cfg=cfg)
+  assert gate.left.line_type == LaneLineType.SOLID
+  gate = clf.update(blank, model, TRANSFORM, cfg=cfg)
+  assert gate.left.line_type == LaneLineType.SOLID
+  gate = clf.update(blank, model, TRANSFORM, cfg=cfg)
+  assert gate.left.line_type == LaneLineType.UNKNOWN, gate.left
+
+
+def test_persistence_is_independent_and_requires_a_valid_current_scan():
+  frame_solid, x, y, z = _render(solid=True)
+  rng = np.random.default_rng(26)
+  blank = (ROAD_LUMA + rng.normal(0, 6, size=(FRAME_H, FRAME_W))).clip(0, 255).astype(np.uint8)
+  far = _FakeLine([0, 100], [6, 6], [CAM_Z, CAM_Z])
+  line = _FakeLine(x, y, z)
+  good_model = _FakeModel([far, line, far, far], probs=[0.0, 0.9, 0.0, 0.0])
+  lost_model = _FakeModel([far, line, far, far], probs=[0.0, 0.05, 0.0, 0.0])
+  cfg = LaneLineClassifierConfig(solid_persistence=True)
+  clf = LaneLineClassifier()
+
+  gate = clf.update(frame_solid, good_model, TRANSFORM, cfg=cfg)
+  assert gate.left.line_type == LaneLineType.SOLID
+  # A missing model line has no valid scan, so it must clear rather than revive
+  # a remembered class when the line later returns.
+  gate = clf.update(blank, lost_model, TRANSFORM, cfg=cfg)
+  assert gate.left.line_type == LaneLineType.UNKNOWN
+  gate = clf.update(blank, good_model, TRANSFORM, cfg=cfg)
+  assert gate.left.line_type == LaneLineType.UNKNOWN
+
+  # Turning persistence on while a class is still known adopts that current
+  # class on the next valid UNKNOWN frame.
+  clf = LaneLineClassifier()
+  off = LaneLineClassifierConfig()
+  gate = clf.update(frame_solid, good_model, TRANSFORM, cfg=off)
+  assert gate.left.line_type == LaneLineType.SOLID
+  gate = clf.update(blank, good_model, TRANSFORM, cfg=cfg)
+  assert gate.left.line_type == LaneLineType.SOLID
+  assert gate.left.reason.startswith("persistence_hold:"), gate.left.reason
+
+  # But enabling after an existing UNKNOWN run must not resurrect a stale
+  # pre-toggle classification.
+  clf = LaneLineClassifier()
+  gate = clf.update(frame_solid, good_model, TRANSFORM, cfg=off)
+  assert gate.left.line_type == LaneLineType.SOLID
+  gate = clf.update(blank, good_model, TRANSFORM, cfg=off)
+  assert gate.left.line_type == LaneLineType.SOLID  # bounded default hold
+  gate = clf.update(blank, good_model, TRANSFORM, cfg=off)
+  assert gate.left.line_type == LaneLineType.UNKNOWN
+  gate = clf.update(blank, good_model, TRANSFORM, cfg=cfg)
+  assert gate.left.line_type == LaneLineType.UNKNOWN

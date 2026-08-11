@@ -58,6 +58,19 @@ class LaneLineVisualizerSettingsLayout(Widget):
                             "Tweaks > Email & Logs, and deleted from the device after the send succeeds."),
       param="LaneLineVisualizerLogging",
     )
+    self._solid_persistence = toggle_item_sp(
+      title=lambda: tr("Solid Line Persistence"),
+      description=lambda: tr("When a valid scan becomes unknown, keep the last directly observed SOLID "
+                            "classification for that side until a new known class replaces it. Default off."),
+      param="LaneLineSolidPersistence",
+    )
+    self._broken_persistence = toggle_item_sp(
+      title=lambda: tr("Broken Line Persistence"),
+      description=lambda: tr("When a valid scan becomes unknown, keep the last directly observed BROKEN "
+                            "classification for that side until a new known class replaces it. A held result "
+                            "can preserve an already-confirmed crossable state, but cannot create one. Default off."),
+      param="LaneLineBrokenPersistence",
+    )
     self._contrast_method = multiple_button_item_sp(
       title=lambda: tr("Lateral Scan Method"),
       description=lambda: tr("Choose how the classifier converts the lateral scan into paint contrast. "
@@ -157,6 +170,8 @@ class LaneLineVisualizerSettingsLayout(Widget):
       self._overlay,
       self._scan_area,
       self._logging,
+      self._solid_persistence,
+      self._broken_persistence,
       self._contrast_method,
       self._min_contrast,
       self._min_snr,

@@ -50,7 +50,6 @@ per-side debounce for use against a live ``modelV2``.
 """
 from __future__ import annotations
 
-from collections import deque
 from dataclasses import dataclass, field, replace
 from enum import IntEnum
 
@@ -206,6 +205,10 @@ class LaneLineClassifierConfig:
   locate_enabled: bool = True          # recentre the scan on the marking
   locate_half_m: float = LOCATE_HALF_M  # locate search half-width (m)
   locate_track_smooth_m: float = LOCATE_TRACK_SMOOTH_M  # offset-track smoothing (m)
+  # Keep a directly observed class through subsequent UNKNOWN frames. These
+  # are deliberately opt-in: BROKEN persistence can retain a crossable state.
+  solid_persistence: bool = False
+  broken_persistence: bool = False
 
 
 DEFAULT_CONFIG = LaneLineClassifierConfig()
@@ -873,7 +876,14 @@ class _Debounce:
     self.counter = 0
     self.state = False
 
-  def update(self, vote: bool) -> bool:
+  def update(self, vote: bool, preserve_latched: bool = False) -> bool:
+    # A persisted BROKEN label may keep an already-confirmed lane-change
+    # decision visible, but it must never manufacture the missing votes needed
+    # to acquire one. Keep the latch untouched only when it was already on.
+    if preserve_latched:
+      if self.state:
+        return True
+      vote = False
     self.counter = min(COUNTER_MAX, self.counter + 1) if vote else max(0, self.counter - 1)
     if self.state:
       self.state = self.counter > COUNTER_OFF
@@ -885,49 +895,111 @@ class _Debounce:
 class _TemporalLineFilter:
   """Short history stabilizer for the displayed per-line classification.
 
-  It never turns UNKNOWN into crossable by itself; it only helps a confident
-  known class survive a single noisy frame so the UI/readout does not flicker.
+  SOLID receives a one-frame default hold to avoid visual flicker. Optional
+  class-specific persistence retains a directly observed class through valid
+  UNKNOWN frames until a new known class replaces it. BROKEN persistence is
+  kept separate from debounce voting by LaneLineClassifier.
   """
   def __init__(self, hold_frames: int = 1):
-    self._history: deque[LaneLineResult] = deque(maxlen=4)
     self._hold_frames = max(0, hold_frames)
     self._unknown_run = 0
+    self._last_observed: LaneLineResult | None = None
+    self._persisted_solid: LaneLineResult | None = None
+    self._persisted_broken: LaneLineResult | None = None
+    self._persisting_broken = False
 
-  def update(self, result: LaneLineResult) -> LaneLineResult:
-    last_known = next((r for r in reversed(self._history) if r.line_type != LaneLineType.UNKNOWN), None)
+  @property
+  def persisting_broken(self) -> bool:
+    return self._persisting_broken
+
+  def reset(self) -> None:
+    self._unknown_run = 0
+    self._last_observed = None
+    self._persisted_solid = None
+    self._persisted_broken = None
+    self._persisting_broken = False
+
+  @staticmethod
+  def _held_result(source: LaneLineResult, result: LaneLineResult, reason_prefix: str) -> LaneLineResult:
+    # Keep the source evidence immutable: otherwise repeated persistence would
+    # repeatedly decay confidence and turn a long hold into a stale history
+    # chain. Current-frame geometry/diagnostics still describe why it is held.
+    return replace(source,
+      confidence=source.confidence * 0.85,
+      valid_frac=result.valid_frac,
+      lateral_offset_m=result.lateral_offset_m,
+      lateral_track=result.lateral_track,
+      n_samples=result.n_samples,
+      reason=f"{reason_prefix}:{result.reason}",
+      n_valid=result.n_valid,
+      n_present=result.n_present,
+      n_low_contrast=result.n_low_contrast,
+      n_low_snr=result.n_low_snr,
+      periodicity=result.periodicity,
+      contrast=result.contrast,
+      present=result.present,
+    )
+
+  @staticmethod
+  def _has_comparable_geometry(source: LaneLineResult, result: LaneLineResult) -> bool:
+    # Do not revive a remembered label when the model no longer provides a
+    # usable projected line (for example model_low_confidence has valid_frac=0).
+    return result.valid_frac >= 0.5 * max(source.valid_frac, 1e-6)
+
+  def update(self, result: LaneLineResult, solid_persistence: bool = False,
+             broken_persistence: bool = False) -> LaneLineResult:
+    self._persisting_broken = False
+    # Turning a toggle off clears its source so re-enabling it cannot revive a
+    # classification from before the setting was enabled.
+    if not solid_persistence:
+      self._persisted_solid = None
+    if not broken_persistence:
+      self._persisted_broken = None
+
+    last_known = self._last_observed
     out = result
 
     if result.line_type == LaneLineType.UNKNOWN:
       self._unknown_run += 1
+      # A persistence source needs an in-frame, comparable scan. Losing the
+      # model line clears it rather than showing a label from a distant scene.
+      if last_known is not None and not self._has_comparable_geometry(last_known, result):
+        self._persisted_solid = None
+        self._persisted_broken = None
+      # If the user turns a toggle on while a class is currently known, adopt
+      # that class on the very next valid UNKNOWN. Do not do this after an
+      # existing UNKNOWN run, which would resurrect a stale pre-toggle label.
+      elif self._unknown_run == 1 and last_known is not None:
+        if solid_persistence and last_known.line_type == LaneLineType.SOLID:
+          self._persisted_solid = last_known
+        elif broken_persistence and last_known.line_type == LaneLineType.BROKEN:
+          self._persisted_broken = last_known
+
+      persistence_source = None
+      if solid_persistence and self._persisted_solid is not None:
+        persistence_source = self._persisted_solid
+      elif broken_persistence and self._persisted_broken is not None:
+        persistence_source = self._persisted_broken
+      if (persistence_source is not None and
+          self._has_comparable_geometry(persistence_source, result)):
+        self._persisting_broken = persistence_source.line_type == LaneLineType.BROKEN
+        out = self._held_result(persistence_source, result, "persistence_hold")
       # Faint-ridge calls are intentionally capped below the generic 0.8
       # confidence threshold: their appearance is weaker, not their continuity
-      # proof. Let a verified faint SOLID survive one bad image frame. This can
-      # only preserve a not-crossable decision; it never promotes UNKNOWN to
-      # BROKEN/crossable.
+      # proof. Let a verified faint SOLID survive one bad image frame. The
+      # short default hold intentionally excludes BROKEN; that class requires
+      # the explicit Broken Line Persistence toggle.
       hold_faint_solid = (
         last_known is not None and
         last_known.line_type == LaneLineType.SOLID and
         last_known.reason == "faint_ridge" and
         last_known.confidence >= 0.45
       )
-      if (self._unknown_run <= self._hold_frames and last_known is not None and
+      if (persistence_source is None and self._unknown_run <= self._hold_frames and
+          last_known is not None and last_known.line_type == LaneLineType.SOLID and
           (last_known.confidence >= 0.8 or hold_faint_solid) and
-          result.valid_frac >= 0.5 * max(last_known.valid_frac, 1e-6)):
-        out = replace(last_known,
-          confidence=last_known.confidence * 0.85,
-          valid_frac=result.valid_frac,
-          lateral_offset_m=result.lateral_offset_m,
-          lateral_track=result.lateral_track,
-          n_samples=result.n_samples,
-          reason=f"temporal_hold:{result.reason}",
-          n_valid=result.n_valid,
-          n_present=result.n_present,
-          n_low_contrast=result.n_low_contrast,
-          n_low_snr=result.n_low_snr,
-          periodicity=result.periodicity,
-          contrast=result.contrast,
-          present=result.present,
-        )
+          self._has_comparable_geometry(last_known, result)):
+        out = self._held_result(last_known, result, "temporal_hold")
     else:
       self._unknown_run = 0
       if last_known is not None and last_known.line_type == result.line_type:
@@ -936,8 +1008,21 @@ class _TemporalLineFilter:
           duty=float(0.4 * last_known.duty + 0.6 * result.duty),
           period_m=float(0.4 * last_known.period_m + 0.6 * result.period_m),
         )
+      self._last_observed = out
+      # A fresh known class always replaces any opposite remembered state.
+      # DOUBLE intentionally has no persistence toggle of its own.
+      if out.line_type == LaneLineType.SOLID:
+        self._persisted_broken = None
+        if solid_persistence:
+          self._persisted_solid = out
+      elif out.line_type == LaneLineType.BROKEN:
+        self._persisted_solid = None
+        if broken_persistence:
+          self._persisted_broken = out
+      else:
+        self._persisted_solid = None
+        self._persisted_broken = None
 
-    self._history.append(out)
     return out
 
 
@@ -971,20 +1056,25 @@ class LaneLineClassifier:
 
   def update(self, frame_y: np.ndarray, modelV2, transform: np.ndarray,
              camera_offset: float = 0.0, cfg: LaneLineClassifierConfig | None = None) -> LaneChangeGate:
+    active_cfg = cfg or DEFAULT_CONFIG
     lines = list(modelV2.laneLines)
     gate = LaneChangeGate()
     if len(lines) > LEFT_EGO_LINE:
       ll = lines[LEFT_EGO_LINE]
       # when the model itself doesn't see a line, don't classify road texture
-      res = (classify_line(frame_y, ll.x, ll.y, ll.z, transform, camera_offset, cfg)
+      res = (classify_line(frame_y, ll.x, ll.y, ll.z, transform, camera_offset, active_cfg)
              if self._line_prob(modelV2, LEFT_EGO_LINE) >= MIN_LINE_PROB else LaneLineResult(reason="model_low_confidence"))
-      gate.left = self._left_filter.update(res)
+      gate.left = self._left_filter.update(res, active_cfg.solid_persistence, active_cfg.broken_persistence)
+    else:
+      self._left_filter.reset()
     if len(lines) > RIGHT_EGO_LINE:
       rl = lines[RIGHT_EGO_LINE]
-      res = (classify_line(frame_y, rl.x, rl.y, rl.z, transform, camera_offset, cfg)
+      res = (classify_line(frame_y, rl.x, rl.y, rl.z, transform, camera_offset, active_cfg)
              if self._line_prob(modelV2, RIGHT_EGO_LINE) >= MIN_LINE_PROB else LaneLineResult(reason="model_low_confidence"))
-      gate.right = self._right_filter.update(res)
+      gate.right = self._right_filter.update(res, active_cfg.solid_persistence, active_cfg.broken_persistence)
+    else:
+      self._right_filter.reset()
 
-    gate.left_crossable = self._left.update(gate.left.crossable)
-    gate.right_crossable = self._right.update(gate.right.crossable)
+    gate.left_crossable = self._left.update(gate.left.crossable, self._left_filter.persisting_broken)
+    gate.right_crossable = self._right.update(gate.right.crossable, self._right_filter.persisting_broken)
     return gate

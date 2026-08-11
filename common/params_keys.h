@@ -197,6 +197,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LaneLineVisualizerScanArea", {PERSISTENT | BACKUP, BOOL, "0"}}, // amber border outlining the corridor the classifier samples
     {"LaneLineVisualizerLogging", {PERSISTENT | BACKUP, BOOL, "0"}},  // enable the LANE capture button + emailed troubleshooting bundles
     {"LaneLineVisualizerLogActive", {CLEAR_ON_MANAGER_START, BOOL}},   // onroad LANE button state: capture in progress
+    {"LaneLineSolidPersistence", {PERSISTENT | BACKUP, BOOL, "0"}},   // retain the last confirmed solid classification through valid UNKNOWN frames
+    {"LaneLineBrokenPersistence", {PERSISTENT | BACKUP, BOOL, "0"}},  // retain the last confirmed broken classification through valid UNKNOWN frames
     {"ExperimentalLongitudinalLogging", {PERSISTENT | BACKUP, BOOL, "0"}}, // email E2E longitudinal diagnostics after each drive
     {"LaneLineContrastMethod", {PERSISTENT | BACKUP, INT, "0"}},       // lateral evidence: 0=P90 1=P95 2=Top3 3=Max
     {"LaneLineMinContrast", {PERSISTENT | BACKUP, INT, "18"}},        // marking-present luminance contrast threshold (2..60 counts)
@@ -206,8 +208,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LaneLineRidgeMaxGap", {PERSISTENT | BACKUP, INT, "20"}},        // faint-solid recovery: max %% of samples below the ridge floor (5..50)
     {"LaneLineMinAutocorr", {PERSISTENT | BACKUP, INT, "30"}},        // min periodicity strength %% to call BROKEN (10..90)
     {"LaneLineMinPeriodM", {PERSISTENT | BACKUP, INT, "3"}},          // min plausible dash period, metres (1..10)
+    {"LaneLineCrossableMinPeriodM", {PERSISTENT | BACKUP, INT, "6"}}, // min dash period allowed to report crossable BROKEN (3..15)
     {"LaneLineMaxPeriodM", {PERSISTENT | BACKUP, INT, "30"}},         // max plausible dash period, metres (12..60)
-    {"LaneLineSampleMaxM", {PERSISTENT | BACKUP, INT, "60"}},         // far end of the classified window, metres (20..100)
+    {"LaneLineSampleMaxM", {PERSISTENT | BACKUP, INT, "40"}},         // far end of the classified window, metres (20..60)
     {"VisualVehicleDetector", {PERSISTENT | BACKUP, BOOL, "0"}},       // standalone visual detector process for UI/debug validation
     {"VisualVehicleDetectorReadout", {PERSISTENT | BACKUP, BOOL, "0"}}, // large on-road readout for detector status/debug
     {"VisualVehicleDetectorCarWidget", {PERSISTENT | BACKUP, BOOL, "0"}}, // replace the readout panels with a top-down car widget

@@ -109,6 +109,12 @@ class LaneLineClassifierD:
     except Exception:
       return default
 
+  def _get_bool(self, key: str, default: bool = False) -> bool:
+    try:
+      return bool(self.params.get_bool(key))
+    except Exception:
+      return default
+
   def _refresh_config(self):
     # Cheap to read, but only refresh ~1 Hz so tuning applies live without
     # hammering the params store every frame.
@@ -129,6 +135,8 @@ class LaneLineClassifierD:
       min_autocorr=self._get_int("LaneLineMinAutocorr", 30) / 100.0,
       contrast_method=int(np.clip(self._get_int("LaneLineContrastMethod", 0),
                                  0, CONTRAST_METHOD_COUNT - 1)),
+      solid_persistence=self._get_bool("LaneLineSolidPersistence"),
+      broken_persistence=self._get_bool("LaneLineBrokenPersistence"),
     )
     try:
       self._log_enabled = self.params.get_bool("LaneLineVisualizerLogging")

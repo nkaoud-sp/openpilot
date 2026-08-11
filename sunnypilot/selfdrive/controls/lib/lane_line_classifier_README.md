@@ -125,12 +125,19 @@ param.
 
 ## Tunables (in `lane_line_classifier.py`)
 Menu-exposed (via params): `LaneLineContrastMethod`, `MIN_CONTRAST`, `SOLID_DUTY`, `MIN_PERIOD_M`,
-`LaneLineCrossableMinPeriodM`, `MAX_PERIOD_M`, `MIN_AUTOCORR`, `LaneLineSampleMaxM`.
+`LaneLineCrossableMinPeriodM`, `MAX_PERIOD_M`, `MIN_AUTOCORR`, `LaneLineSampleMaxM`,
+`LaneLineSolidPersistence`, and `LaneLineBrokenPersistence`.
 Config-only: `MIN_SNR`, `SCAN_HALF_M`, duty bands, continuity-bias and
-run-length-fallback shape limits. `UNKNOWN` always fails safe to
-not-crossable. Note that raising `MIN_AUTOCORR` no longer forces irregular
+run-length-fallback shape limits. With both persistence toggles off,
+`UNKNOWN` fails safe to not-crossable. Note that raising `MIN_AUTOCORR` no longer forces irregular
 dashes to `UNKNOWN` — the run-length fallback can still call them broken (at
 capped confidence ≤ 0.65).
+
+The persistence toggles are off by default. They retain only the last directly
+observed class for a still-valid scan; a fresh SOLID/BROKEN result replaces it
+immediately, and losing the projected line clears it. Broken persistence can
+keep an already-debounced crossable flag alive, but held frames never create
+the votes required to open that flag.
 
 ## Wiring into lane-change gating (next step, not done here)
 `lane_position.py` already blocks edge lanes with geometric votes. Add
