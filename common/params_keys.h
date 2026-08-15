@@ -171,7 +171,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"JerkFactorDecel", {PERSISTENT | BACKUP, INT, "100"}},       // jerk-cost multiplier x100 while braking
     {"JerkReadout", {PERSISTENT | BACKUP, BOOL, "0"}},            // on-screen accel/decel jerk-smoothness readout
     {"LaunchAssist", {PERSISTENT | BACKUP, BOOL, "0"}},           // launch sooner when a stopped lead pulls away
-    {"LaunchEagerness", {PERSISTENT | BACKUP, INT, "5"}},         // 1..10; higher launches with less lead movement
+    {"LaunchEagerness", {PERSISTENT | BACKUP, INT, "10"}},        // 1..10; higher launches with less lead movement
     {"LaunchReadout", {PERSISTENT | BACKUP, BOOL, "0"}},          // on-screen launch-assist readout
     {"ExperimentalSpeedAssistMode", {PERSISTENT | BACKUP, INT, "0"}}, // 0=off, 1=readout only, 2=active accel nudge
     {"ExperimentalSpeedAssistStrength", {PERSISTENT | BACKUP, INT, "1"}}, // 0=low, 1=medium, 2=high
