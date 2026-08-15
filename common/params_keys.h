@@ -161,8 +161,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
 
     // Dynamic follow - speed-based follow distance, overrides the personality gap. Times in centiseconds.
     {"DynamicFollow", {PERSISTENT | BACKUP, BOOL, "0"}},
-    {"DynamicFollowMinTime", {PERSISTENT | BACKUP, INT, "40"}},   // follow time at 0 km/h (0.40 s)
-    {"DynamicFollowMaxTime", {PERSISTENT | BACKUP, INT, "120"}},  // follow time at 130 km/h (1.20 s)
+    {"DynamicFollowMinTime", {PERSISTENT | BACKUP, INT, "50"}},   // follow time at 0 km/h (0.50 s)
+    {"DynamicFollowMaxTime", {PERSISTENT | BACKUP, INT, "110"}},  // follow time at 130 km/h (1.10 s)
     {"DynamicFollowCurve", {PERSISTENT | BACKUP, INT, "100"}},    // curve shape exponent x100 (100 = linear)
     {"FollowReadout", {PERSISTENT | BACKUP, BOOL, "0"}},          // on-screen desired-vs-actual follow readout
     {"ModelFrameDropsReadout", {PERSISTENT | BACKUP, BOOL, "0"}}, // on-screen modelV2/drivingModelData dropped-frame percentages

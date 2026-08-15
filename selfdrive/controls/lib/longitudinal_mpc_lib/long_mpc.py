@@ -64,8 +64,8 @@ MIN_X_LEAD_FACTOR = 0.5
 # personality-based gap. The speed range is fixed (0 km/h .. 130 km/h); the
 # follow-time endpoints and the curve shape are user-configurable (Tweaks menu).
 DYNAMIC_T_FOLLOW_SPEED_BP = [0.0, 130.0 * CV.KPH_TO_MS]
-DYNAMIC_T_FOLLOW_MIN = 0.4    # default follow time (s) at 0 km/h
-DYNAMIC_T_FOLLOW_MAX = 1.2    # default follow time (s) at 130 km/h
+DYNAMIC_T_FOLLOW_MIN = 0.5    # default follow time (s) at 0 km/h
+DYNAMIC_T_FOLLOW_MAX = 1.1    # default follow time (s) at 130 km/h
 DYNAMIC_T_FOLLOW_CURVE = 1.0  # shape exponent: 1.0 = linear, <1 opens up early, >1 stays tight longer
 
 # Lead park assist: allow a closer standstill gap than STOP_DISTANCE by nudging
