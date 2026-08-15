@@ -154,7 +154,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
 
     // Secure-on-exit (doorlockd) params - Toyota/Lexus only
     {"AutoLockEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},   // master on/off for secure-on-exit
-    {"LockDoorsTimer", {PERSISTENT | BACKUP, INT, "30"}},  // seconds with no driver before securing
+    {"LockDoorsTimer", {PERSISTENT | BACKUP, INT, "2"}},  // seconds with no driver before securing
     {"FoldMirrors", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"CloseWindows", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"DoorLockDBC", {PERSISTENT | BACKUP, STRING, "toyota_nodsu_pt_generated"}},
