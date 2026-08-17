@@ -417,8 +417,13 @@ def main(demo=False):
       # steering indefinitely.
       nav_ok = sm.alive['nkaoudNavigationSP'] and sm.valid['nkaoudNavigationSP']
       nav_desire = sm['nkaoudNavigationSP'].recommendedDesire if nav_ok else "none"
+      nav_provider = sm['nkaoudNavigationSP'].routingProvider if nav_ok else -1
+      starpilot_instruction_state = sm['nkaoudNavigationSP'].starpilotInstructionState if nav_ok else ""
       DH.update(sm['carState'], sm['carControl'].latActive, lane_change_prob,
                 nav_desire=nav_desire,
+                nav_provider=nav_provider,
+                starpilot_instruction_state=starpilot_instruction_state,
+                model_data=modelv2_send.modelV2,
                 visual_vehicle_state=sm['visualVehicleDetectorStateSP'])
       modelv2_send.modelV2.meta.laneChangeState = DH.lane_change_state
       modelv2_send.modelV2.meta.laneChangeDirection = DH.lane_change_direction

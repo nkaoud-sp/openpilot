@@ -1,4 +1,7 @@
+import json
 import time
+
+import numpy as np
 
 from cereal import log, custom
 from openpilot.common.constants import CV
@@ -46,7 +49,18 @@ VISUAL_STALE_TIME = 1.0              # s; detector state older than this counts 
 # move.
 NAV_KEEP_EPISODE_MAX_S = 10.0
 NAV_KEEP_COOLDOWN_S = 4.0
-NAV_PARAM_READ_FRAMES = 50           # re-read NkaoudNavControlSteer every ~2.5 s
+NAV_PARAM_READ_FRAMES = 50           # native visual detector threshold refresh
+
+# StarPilot navigation policy constants. These mirror the upstream source
+# policy; only the setting transport is target-native.
+STARPILOT_NAV_TURN_DISTANCE_SPEED_BREAKPOINTS = (0.0, 5.0, 10.0)
+STARPILOT_NAV_TURN_DISTANCE_BREAKPOINTS = (20.0, 25.0, 30.0)
+STARPILOT_NAV_KEEP_DISTANCE_SPEED_BREAKPOINTS = (0.0, 15.0, 30.0)
+STARPILOT_NAV_KEEP_DISTANCE_BREAKPOINTS = (25.0, 90.0, 160.0)
+STARPILOT_NAV_KEEP_AMBIGUOUS_SPLIT_DISTANCE_SCALE = 0.6
+STARPILOT_NAV_KEEP_SMALL_SPLIT_MAX_OTHER_LANES = 2
+STARPILOT_LANE_WIDTH_UPDATE_FRAMES = 4
+STARPILOT_MIN_LANE_CHANGE_SPEED_DEFAULT_MPH = 20.0
 
 
 def visual_conf_block_threshold(params: Params) -> float:
@@ -101,22 +115,251 @@ class DesireHelper:
     # nkaoud_nav gating state
     self.params = Params()
     self.nav_steer_enabled = False
+    self.nav_starpilot_provider = False
+    self.nav_starpilot_lane_positioning = False
+    self.nav_starpilot_lane_detection_width = 0.0
+    self.nav_starpilot_min_lane_change_speed = STARPILOT_MIN_LANE_CHANGE_SPEED_DEFAULT_MPH * CV.MPH_TO_MS
+    self.nav_provider_matches = False
     self.visual_conf_block_threshold = VISUAL_CONF_BLOCK_THRESHOLD_DEFAULT
     self.nav_param_counter = 0
     self.nav_keep_timer = 0.0        # continuous keep* emission time
     self.nav_cooldown_timer = 0.0    # counts down after any lane change ends
     self.prev_lane_change_state = LaneChangeState.off
     self.prev_nav_keep = ""
+    self.starpilot_lane_width_left = 0.0
+    self.starpilot_lane_width_right = 0.0
+    self.starpilot_lane_width_counter = 0
 
   @staticmethod
   def get_lane_change_direction(CS):
     return LaneChangeDirection.left if CS.leftBlinker else LaneChangeDirection.right
 
   def _update_nav_params(self) -> None:
+    # Re-read the control master every model frame. The provider tag is checked
+    # on the same frame, so disabling or switching can never leave an old route
+    # desire active during the native/StarPilot handoff.
+    self.nav_steer_enabled = self.params.get_bool("NkaoudNavControlSteer")
     if self.nav_param_counter % NAV_PARAM_READ_FRAMES == 0:
-      self.nav_steer_enabled = self.params.get_bool("NkaoudNavControlSteer")
       self.visual_conf_block_threshold = visual_conf_block_threshold(self.params)
+    # Provider selection changes which lateral policy is permissible. Read the
+    # StarPilot settings every frame so an active route can't cross a stale
+    # configuration cache window.
+    try:
+      self.nav_starpilot_provider = int(self.params.get("NkaoudNavRoutingProvider", return_default=True)) == 1
+    except (TypeError, ValueError):
+      self.nav_starpilot_provider = False
+    self.nav_starpilot_lane_positioning = self.params.get_bool("NkaoudNavStarPilotLanePositioning")
+    try:
+      self.nav_starpilot_lane_detection_width = max(
+        0.0, float(self.params.get("NkaoudNavStarPilotLaneDetectionWidth", return_default=True)),
+      )
+    except (TypeError, ValueError):
+      self.nav_starpilot_lane_detection_width = 0.0
+    try:
+      speed_mph = max(0.0, float(self.params.get("NkaoudNavStarPilotMinimumLaneChangeSpeed", return_default=True)))
+    except (TypeError, ValueError):
+      speed_mph = STARPILOT_MIN_LANE_CHANGE_SPEED_DEFAULT_MPH
+    self.nav_starpilot_min_lane_change_speed = speed_mph * CV.MPH_TO_MS
     self.nav_param_counter += 1
+
+  @staticmethod
+  def _starpilot_lane_width(lane, current_lane, road_edge) -> float:
+    """Source-equivalent adjacent lane width from model geometry.
+
+    StarPilot treats a road edge closer than the candidate lane line as an
+    unavailable adjacent lane. Invalid/incomplete model geometry fails closed
+    to zero width.
+    """
+    try:
+      current_x = np.asarray(current_lane.x, dtype=float)
+      current_y = np.asarray(current_lane.y, dtype=float)
+      lane_x = np.asarray(lane.x, dtype=float)
+      lane_y = np.asarray(lane.y, dtype=float)
+      if current_x.size == 0 or current_y.size == 0 or lane_x.size == 0 or lane_y.size == 0:
+        return 0.0
+      lane_y_interp = np.interp(current_x, lane_x, lane_y)
+      distance_to_lane = float(np.mean(np.abs(current_y - lane_y_interp)))
+      if not np.isfinite(distance_to_lane):
+        return 0.0
+
+      if road_edge is None:
+        return distance_to_lane
+      edge_x = np.asarray(road_edge.x, dtype=float)
+      edge_y = np.asarray(road_edge.y, dtype=float)
+      if edge_x.size == 0 or edge_y.size == 0:
+        return distance_to_lane
+      edge_y_interp = np.interp(current_x, edge_x, edge_y)
+      distance_to_edge = float(np.mean(np.abs(current_y - edge_y_interp)))
+      if not np.isfinite(distance_to_edge) or distance_to_edge < distance_to_lane:
+        return 0.0
+      return distance_to_lane
+    except (AttributeError, TypeError, ValueError):
+      return 0.0
+
+  def _update_starpilot_lane_widths(self, model_data, v_ego: float) -> None:
+    """Refresh the StarPilot lane-width inputs every fourth model result.
+
+    This matches StarPilot's planner cadence and deliberately does not use this
+    fork's lane-count/edge estimator or its confidence value.
+    """
+    if model_data is None or v_ego < self.nav_starpilot_min_lane_change_speed:
+      self.starpilot_lane_width_counter = 0
+      self.starpilot_lane_width_left = 0.0
+      self.starpilot_lane_width_right = 0.0
+      return
+
+    self.starpilot_lane_width_counter += 1
+    if self.starpilot_lane_width_counter % STARPILOT_LANE_WIDTH_UPDATE_FRAMES:
+      return
+    try:
+      lane_lines = model_data.laneLines
+      road_edges = model_data.roadEdges
+      self.starpilot_lane_width_left = self._starpilot_lane_width(lane_lines[0], lane_lines[1], road_edges[0])
+      self.starpilot_lane_width_right = self._starpilot_lane_width(lane_lines[3], lane_lines[2], road_edges[1])
+    except (IndexError, TypeError):
+      self.starpilot_lane_width_left = 0.0
+      self.starpilot_lane_width_right = 0.0
+
+  @staticmethod
+  def _parse_starpilot_instruction_state(raw_state) -> dict:
+    if isinstance(raw_state, dict):
+      return raw_state
+    if not raw_state:
+      return {}
+    try:
+      parsed = json.loads(str(raw_state))
+    except (TypeError, ValueError):
+      return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+  @staticmethod
+  def _starpilot_nav_keep_direction_is_clear(carstate, direction) -> bool:
+    return not (
+      (direction == LaneChangeDirection.left and carstate.leftBlindspot)
+      or (direction == LaneChangeDirection.right and carstate.rightBlindspot)
+    )
+
+  @staticmethod
+  def _starpilot_nav_torque_applied(carstate, direction) -> bool:
+    return carstate.steeringPressed and (
+      (direction == LaneChangeDirection.left and carstate.steeringTorque > 0)
+      or (direction == LaneChangeDirection.right and carstate.steeringTorque < 0)
+    )
+
+  @staticmethod
+  def _starpilot_nav_turn_is_imminent(v_ego: float, maneuver_distance) -> bool:
+    try:
+      distance = float(maneuver_distance)
+    except (TypeError, ValueError):
+      return False
+    threshold = np.interp(
+      v_ego, STARPILOT_NAV_TURN_DISTANCE_SPEED_BREAKPOINTS, STARPILOT_NAV_TURN_DISTANCE_BREAKPOINTS,
+    )
+    return distance <= float(threshold)
+
+  @staticmethod
+  def _starpilot_nav_int(value, default=0) -> int:
+    try:
+      return int(value or 0)
+    except (TypeError, ValueError):
+      return default
+
+  @staticmethod
+  def _starpilot_nav_should_delay_ambiguous_split(maneuver_type="", same_side_lane_count=0, lane_count=0) -> bool:
+    maneuver_type = str(maneuver_type or "")
+    same_side_lane_count = DesireHelper._starpilot_nav_int(same_side_lane_count)
+    if maneuver_type not in ("off ramp", "fork") or same_side_lane_count <= 1:
+      return False
+    total_lanes = DesireHelper._starpilot_nav_int(lane_count)
+    if total_lanes <= 0:
+      return True
+    return max(total_lanes - same_side_lane_count, 0) <= STARPILOT_NAV_KEEP_SMALL_SPLIT_MAX_OTHER_LANES
+
+  @staticmethod
+  def _starpilot_nav_keep_is_imminent(v_ego: float, maneuver_distance, maneuver_type="", same_side_lane_count=0, lane_count=0) -> bool:
+    try:
+      distance = float(maneuver_distance)
+    except (TypeError, ValueError):
+      return False
+    threshold = np.interp(
+      v_ego, STARPILOT_NAV_KEEP_DISTANCE_SPEED_BREAKPOINTS, STARPILOT_NAV_KEEP_DISTANCE_BREAKPOINTS,
+    )
+    if DesireHelper._starpilot_nav_should_delay_ambiguous_split(maneuver_type, same_side_lane_count, lane_count):
+      threshold *= STARPILOT_NAV_KEEP_AMBIGUOUS_SPLIT_DISTANCE_SCALE
+    return distance <= float(threshold)
+
+  @staticmethod
+  def _starpilot_nav_should_suppress_edge_lane_keep(state: dict) -> bool:
+    maneuver_type = str(state.get("maneuverType", ""))
+    if maneuver_type not in ("off ramp", "fork"):
+      return False
+    active_direction = str(state.get("activeLaneDirection", ""))
+    if active_direction not in ("slightLeft", "left", "sharpLeft", "slightRight", "right", "sharpRight"):
+      return False
+    same_side_count = DesireHelper._starpilot_nav_int(state.get("sameSideLaneCount", 0))
+    lane_count = DesireHelper._starpilot_nav_int(state.get("laneCount", 0))
+    return (
+      DesireHelper._starpilot_nav_should_delay_ambiguous_split(maneuver_type, same_side_count, lane_count)
+      and bool(state.get("activeLaneAtRoadEdge", False))
+      and bool(state.get("hasSharedSameSideLane", False))
+    )
+
+  @staticmethod
+  def _starpilot_nav_effective_modifier(state: dict, v_ego: float, maneuver_distance) -> str:
+    modifier = str(state.get("maneuverModifier", ""))
+    maneuver_type = str(state.get("maneuverType", ""))
+    same_side_count = DesireHelper._starpilot_nav_int(state.get("sameSideLaneCount", 0))
+    lane_count = DesireHelper._starpilot_nav_int(state.get("laneCount", 0))
+    if maneuver_type in ("off ramp", "fork") and modifier in (
+        "slightLeft", "left", "sharpLeft", "slightRight", "right", "sharpRight"):
+      if not DesireHelper._starpilot_nav_keep_is_imminent(
+          v_ego, maneuver_distance, maneuver_type, same_side_count, lane_count):
+        return ""
+      if DesireHelper._starpilot_nav_should_suppress_edge_lane_keep(state):
+        return ""
+      active_direction = str(state.get("activeLaneDirection", ""))
+      if active_direction in ("slightLeft", "left"):
+        return "slightLeft"
+      if active_direction in ("slightRight", "right"):
+        return "slightRight"
+      return ""
+    return modifier
+
+  def _starpilot_navigation_desire(self, carstate, lateral_active, state: dict):
+    """Exact StarPilot navigation overlay: a model desire, never a direct
+    lane-change-state transition or a curvature command."""
+    if not self.nav_steer_enabled or not lateral_active or not bool(state.get("valid", False)):
+      return log.Desire.none
+
+    maneuver_distance = state.get("maneuverDistance", 0.0)
+    modifier = self._starpilot_nav_effective_modifier(state, carstate.vEgo, maneuver_distance)
+    if modifier == "slightLeft":
+      if not self.nav_starpilot_lane_positioning:
+        return log.Desire.none
+      direction = LaneChangeDirection.left
+      if not carstate.rightBlinker and self._starpilot_nav_keep_direction_is_clear(carstate, direction):
+        if (self.starpilot_lane_width_left >= self.nav_starpilot_lane_detection_width
+            and self._starpilot_nav_torque_applied(carstate, direction)):
+          return log.Desire.keepLeft
+    elif modifier == "slightRight":
+      if not self.nav_starpilot_lane_positioning:
+        return log.Desire.none
+      direction = LaneChangeDirection.right
+      if not carstate.leftBlinker and self._starpilot_nav_keep_direction_is_clear(carstate, direction):
+        if (self.starpilot_lane_width_right >= self.nav_starpilot_lane_detection_width
+            and self._starpilot_nav_torque_applied(carstate, direction)):
+          return log.Desire.keepRight
+    elif modifier in ("left", "sharpLeft"):
+      allowed = not carstate.rightBlinker and not carstate.leftBlindspot
+      allowed &= carstate.vEgo < self.nav_starpilot_min_lane_change_speed and not carstate.standstill
+      if allowed and self._starpilot_nav_turn_is_imminent(carstate.vEgo, maneuver_distance):
+        return log.Desire.turnLeft
+    elif modifier in ("right", "sharpRight"):
+      allowed = not carstate.leftBlinker and not carstate.rightBlindspot
+      allowed &= carstate.vEgo < self.nav_starpilot_min_lane_change_speed and not carstate.standstill
+      if allowed and self._starpilot_nav_turn_is_imminent(carstate.vEgo, maneuver_distance):
+        return log.Desire.turnRight
+    return log.Desire.none
 
   def _update_nav_cooldown(self) -> None:
     """Arm the nav keep* cooldown when ANY lane change finishes (driver or
@@ -150,7 +393,8 @@ class DesireHelper:
       return True  # no per-side probability -> fall back to BSM only
     return worst < self.visual_conf_block_threshold
 
-  def update(self, carstate, lateral_active, lane_change_prob, nav_desire="none", visual_vehicle_state=None):
+  def update(self, carstate, lateral_active, lane_change_prob, nav_desire="none", nav_provider=0,
+             starpilot_instruction_state="", model_data=None, visual_vehicle_state=None):
     self.alc.update_params()
     self.lane_turn_controller.update_params()
     self._update_nav_params()
@@ -230,39 +474,51 @@ class DesireHelper:
     else:
       self.desire = DESIRES[self.lane_change_direction][self.lane_change_state]
 
-    # nkaoud_nav: apply the route's lateral intent. navd publishes what the
-    # route WANTS; every gate lives here. Nothing is applied unless the user
-    # enabled NkaoudNavControlSteer, lateral is active, and the lane-change
-    # state machine is idle (an in-flight driver maneuver always wins).
-    self._update_nav_cooldown()
-    nav_name = str(nav_desire)
-    nav_keep = nav_name in ("keepLeft", "keepRight")
-    # Track continuous keep* emission; reset whenever the intent stops or
-    # flips sides so each new episode gets a fresh budget.
-    if not nav_keep or nav_name != self.prev_nav_keep:
-      self.nav_keep_timer = 0.0
-    self.prev_nav_keep = nav_name if nav_keep else ""
+    # The nav message carries its source. A provider setting change reaches
+    # this 20 Hz loop faster than navd's next 5 Hz publish, so do not apply a
+    # retained old-provider output during that handoff.
+    expected_nav_provider = 1 if self.nav_starpilot_provider else 0
+    try:
+      self.nav_provider_matches = int(nav_provider) == expected_nav_provider
+    except (TypeError, ValueError):
+      self.nav_provider_matches = False
 
-    if (self.nav_steer_enabled and lateral_active
-        and self.lane_change_state == LaneChangeState.off and nav_name != "none"):
-      if nav_keep:
-        # keep* is a cautious, open-loop lane-change bias. Gates: driver not
-        # signaling, AutoLaneChange enabled, out of the post-change cooldown,
-        # target-side BSM clear, visual detector below threshold, and the
-        # episode budget not exhausted (a stuck "wrong lane" estimate must
-        # not bias steering forever).
-        keep_dir = LaneChangeDirection.left if nav_name == "keepLeft" else LaneChangeDirection.right
-        keep_bsm = carstate.leftBlindspot if keep_dir == LaneChangeDirection.left else carstate.rightBlindspot
-        if (not one_blinker
+    if self.nav_starpilot_provider:
+      # These are native-only route-positioning state variables. Do not let a
+      # mode switch import their visual detector, cooldown, or time-budget
+      # semantics into the StarPilot path.
+      self.nav_keep_timer = 0.0
+      self.nav_cooldown_timer = 0.0
+      self.prev_nav_keep = ""
+      self.prev_lane_change_state = self.lane_change_state
+    else:
+      # Native nkaoud_nav policy remains unchanged. It consumes navd's compact
+      # recommendedDesire and keeps its own visual/cooldown protections.
+      self._update_nav_cooldown()
+      nav_name = str(nav_desire) if self.nav_provider_matches else "none"
+      nav_keep = nav_name in ("keepLeft", "keepRight")
+      if not nav_keep or nav_name != self.prev_nav_keep:
+        self.nav_keep_timer = 0.0
+      self.prev_nav_keep = nav_name if nav_keep else ""
+
+      if (self.nav_steer_enabled and lateral_active
+          and self.lane_change_state == LaneChangeState.off and nav_name != "none"):
+        if nav_keep:
+          keep_dir = LaneChangeDirection.left if nav_name == "keepLeft" else LaneChangeDirection.right
+          keep_bsm = carstate.leftBlindspot if keep_dir == LaneChangeDirection.left else carstate.rightBlindspot
+          native_keep_allowed = (
+            not one_blinker
             and self.alc.lane_change_set_timer != AutoLaneChangeMode.OFF
-            and self.nav_cooldown_timer <= 0.0
-            and self.nav_keep_timer < NAV_KEEP_EPISODE_MAX_S
-            and not keep_bsm
-            and self._visual_side_clear(keep_dir, visual_vehicle_state)):
+          )
+          if (native_keep_allowed
+              and self.nav_cooldown_timer <= 0.0
+              and self.nav_keep_timer < NAV_KEEP_EPISODE_MAX_S
+              and not keep_bsm
+              and self._visual_side_clear(keep_dir, visual_vehicle_state)):
+            self.desire = NAV_DESIRE_MAP[nav_name]
+            self.nav_keep_timer += DT_MDL
+        elif nav_name in ("turnLeft", "turnRight"):
           self.desire = NAV_DESIRE_MAP[nav_name]
-          self.nav_keep_timer += DT_MDL
-      elif nav_name in ("turnLeft", "turnRight"):
-        self.desire = NAV_DESIRE_MAP[nav_name]
 
     # Send keep pulse once per second during LaneChangeStart.preLaneChange
     if self.lane_change_state in (LaneChangeState.off, LaneChangeState.laneChangeStarting):
@@ -273,5 +529,18 @@ class DesireHelper:
         self.keep_pulse_timer = 0.0
       elif self.desire in (log.Desire.keepLeft, log.Desire.keepRight):
         self.desire = log.Desire.none
+
+    # In StarPilot mode the raw NavInstructionState is evaluated here, after
+    # the regular lane-change and keep-pulse logic, exactly where StarPilot
+    # overlays navigation on its DesireHelper. This path intentionally does
+    # not consult the target visual detector, lane-count estimator, cooldown,
+    # or keep-episode timer.
+    if self.nav_starpilot_provider:
+      self._update_starpilot_lane_widths(model_data, v_ego)
+      if self.nav_provider_matches:
+        state = self._parse_starpilot_instruction_state(starpilot_instruction_state)
+        starpilot_desire = self._starpilot_navigation_desire(carstate, lateral_active, state)
+        if starpilot_desire != log.Desire.none and self.lane_change_state == LaneChangeState.off:
+          self.desire = starpilot_desire
 
     self.alc.update_state()

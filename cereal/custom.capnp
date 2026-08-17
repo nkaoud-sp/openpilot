@@ -482,8 +482,10 @@ struct NkaoudNavigationSP @0xcb9fd56c7057593a {
   maneuverType @7 :Text;                 # e.g. "turn", "fork"
   maneuverModifier @8 :Text;             # e.g. "left", "right", "uturn"
 
-  # Lateral (steering) influence -- phase 7. Gated at navd by NkaoudNavControlSteer
-  # so this is `none` unless the toggle is on and we have a useful recommendation.
+  # Native-provider lateral (steering) influence -- phase 7. Gated at navd by
+  # NkaoudNavControlSteer so this is `none` unless the toggle is on and we
+  # have a useful recommendation. The StarPilot provider instead sends raw
+  # state in `starpilotInstructionState` and derives desire in DesireHelper.
   recommendedDesire @9 :NavDesire;
 
   # Phase 8 lane-guidance + road-class awareness.
@@ -509,6 +511,16 @@ struct NkaoudNavigationSP @0xcb9fd56c7057593a {
   # upcoming turn. Drives the turn-assist feedforward magnitude so the nudge is
   # consistent with how sharp the turn is.
   maneuverTurnAngle @18 :Float32;
+
+  # Identifies the route/policy producer. Consumers use this to reject a
+  # retained message while the user switches providers, rather than applying
+  # a StarPilot hint under native rules (or the reverse).
+  routingProvider @19 :UInt8;  # 0 = native nkaoud_nav, 1 = StarPilot test
+
+  # Source-equivalent StarPilot NavInstructionState, serialized as JSON and
+  # bound to routingProvider. This keeps the route's full lane guidance and
+  # current/next maneuver state atomic with the provider tag.
+  starpilotInstructionState @20 :Text;
 
   enum NavDesire {
     none @0;

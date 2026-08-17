@@ -50,7 +50,16 @@ class NkaoudNavSpeedController:
       return
 
     nav = sm['nkaoudNavigationSP']
-    if not nav.active:
+    # SubMaster retains the last message if navd dies. A stale maneuver cap
+    # must never survive the provider or daemon that produced it. Provider
+    # source is checked every cycle so a setting switch drops an old cap
+    # before navd's next 5 Hz publish.
+    nav_fresh = sm.alive['nkaoudNavigationSP'] and sm.valid['nkaoudNavigationSP']
+    try:
+      expected_provider = 1 if int(self.params.get("NkaoudNavRoutingProvider", return_default=True)) == 1 else 0
+    except (TypeError, ValueError):
+      expected_provider = 0
+    if not nav_fresh or int(nav.routingProvider) != expected_provider or not nav.active:
       self.target_speed_ms = 0.0
       return
 

@@ -67,6 +67,16 @@ class NavSettingsLayout(Widget):
                             "view."),
       param="NkaoudNavShowBanner",
     )
+    self._routing_provider = multiple_button_item_sp(
+      title=lambda: tr("Routing Provider"),
+      description=lambda: tr("Choose the route-progress and maneuver-policy implementation. StarPilot Test keeps " +
+                            "this fork's destination picker, Mapbox token, and output topics, but uses StarPilot's " +
+                            "route state, navigation desires, lane-width logic, and route-turn speed rules. It does not " +
+                            "enable steering or speed control by itself."),
+      buttons=[lambda: tr("Native"), lambda: tr("StarPilot Test")],
+      param="NkaoudNavRoutingProvider",
+      button_width=220,
+    )
     self._control_speed = toggle_item_sp(
       title=lambda: tr("Slow For Upcoming Turns"),
       description=lambda: tr("Allow navigation to slow the car when approaching a turn on the route. Requires " +
@@ -75,27 +85,54 @@ class NavSettingsLayout(Widget):
     )
     self._control_steer = toggle_item_sp(
       title=lambda: tr("Steer / Lane-Change With The Route"),
-      description=lambda: tr("Lets the route bias steering: turnLeft / turnRight near a turn, a cautious " +
-                            "keepLeft / keepRight lane-change bias ahead of highway exits, forks and merges " +
-                            "when you're not in the right lane, and toward your Highway Lane Preference while " +
-                            "cruising. The bias requires an AutoLaneChange timer set in your steering settings " +
-                            "(anything other than \"Off\") and only applies while the blind-spot monitor and " +
-                            "camera see the target side clear. Experimental."),
+      description=lambda: tr("Enable route model desires. Native uses this fork's route lane-positioning policy. " +
+                            "StarPilot Test uses StarPilot turn and lane-guidance rules: current maneuver state, " +
+                            "blind-spot status, driver torque for slight exit/fork positioning, and modeled lane width. " +
+                            "Experimental."),
       param="NkaoudNavControlSteer",
+    )
+    self._starpilot_lane_positioning = toggle_item_sp(
+      title=lambda: tr("StarPilot Driver-Nudged Lane Positioning"),
+      description=lambda: tr("With Routing Provider set to StarPilot Test, allow slight left/right route hints for " +
+                            "exits and forks. StarPilot requires a matching steering-wheel nudge, target-side " +
+                            "blind-spot clearance, and sufficient modeled lane width. Off by default."),
+      param="NkaoudNavStarPilotLanePositioning",
+    )
+    self._starpilot_lane_detection_width = option_item_sp(
+      title=lambda: tr("StarPilot Minimum Lane Width"),
+      description=lambda: tr("Minimum modeled adjacent-lane width required for StarPilot slight exit/fork positioning. " +
+                            "0.0 m matches StarPilot's default and disables the width threshold."),
+      param="NkaoudNavStarPilotLaneDetectionWidth",
+      min_value=0,
+      max_value=600,
+      value_change_step=10,
+      label_callback=lambda value: f"{value / 100.0:.1f} m",
+      use_float_scaling=True,
+    )
+    self._starpilot_minimum_lane_change_speed = option_item_sp(
+      title=lambda: tr("StarPilot Minimum Lane-Change Speed"),
+      description=lambda: tr("StarPilot turn-desire threshold and the speed below which its modeled lane widths reset. " +
+                            "The upstream default is 20 mph."),
+      param="NkaoudNavStarPilotMinimumLaneChangeSpeed",
+      min_value=0,
+      max_value=80,
+      value_change_step=1,
+      label_callback=lambda value: f"{value} mph",
     )
     self._turn_assist = toggle_item_sp(
       title=lambda: tr("Assist Turns With Curvature Nudge"),
       description=lambda: tr("On top of the route's turn steering, add a small feedforward curvature nudge in the " +
                             "turn direction to help the driving model follow through, scaled by how sharp the turn " +
                             "is (gentler for slight turns, firmer for sharp ones; u-turns excluded). Requires " +
-                            "\"Steer / Lane-Change With The Route\". The nudge is capped and clears the instant " +
-                            "steering disengages. Experimental."),
+                            "\"Steer / Lane-Change With The Route\". Native provider only; it is hard-disabled " +
+                            "in StarPilot Test. The nudge is capped and clears the instant steering disengages. " +
+                            "Experimental."),
       param="NkaoudNavTurnAssist",
     )
     self._visual_block_threshold = option_item_sp(
       title=lambda: tr("Camera Block Threshold"),
-      description=lambda: tr("For route-requested lane changes, block the move when the visual vehicle detector's " +
-                            "target-side car probability reaches this value. Lower is more conservative."),
+      description=lambda: tr("Native provider only. For route-requested lane changes, block the move when the visual " +
+                            "vehicle detector's target-side car probability reaches this value. Lower is more conservative."),
       param="NkaoudNavVisualBlockThreshold",
       min_value=50,
       max_value=95,
@@ -105,7 +142,7 @@ class NavSettingsLayout(Widget):
     )
     self._highway_lane_pref = multiple_button_item_sp(
       title=lambda: tr("Highway Lane Preference"),
-      description=lambda: tr("Which lane to prefer while cruising a highway / main road with no upcoming " +
+      description=lambda: tr("Native provider only. Which lane to prefer while cruising a highway / main road with no upcoming " +
                             "maneuver. \"None\" turns off cruise-lane positioning entirely (exit / fork / merge " +
                             "lane positioning still applies). Otherwise requires \"Steer / Lane-Change With The " +
                             "Route\", an AutoLaneChange timer and a confident lane fix; the flashing arrow then " +
@@ -123,8 +160,12 @@ class NavSettingsLayout(Widget):
       self._show_polyline,
       self._polyline_style,
       self._show_banner,
+      self._routing_provider,
       self._control_speed,
       self._control_steer,
+      self._starpilot_lane_positioning,
+      self._starpilot_lane_detection_width,
+      self._starpilot_minimum_lane_change_speed,
       self._turn_assist,
       self._visual_block_threshold,
       self._highway_lane_pref,

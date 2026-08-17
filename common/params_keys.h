@@ -229,6 +229,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"NkaoudNavDestination", {CLEAR_ON_MANAGER_START, JSON}},         // active destination for this boot only
     {"NkaoudNavShowPolyline", {PERSISTENT | BACKUP, BOOL, "1"}},      // overlay route polyline on driving view
     {"NkaoudNavShowBanner", {PERSISTENT | BACKUP, BOOL, "1"}},        // show maneuver banner widget
+    {"NkaoudNavRoutingProvider", {PERSISTENT | BACKUP, INT, "0"}},   // 0 = native nkaoud_nav, 1 = StarPilot route/policy test
+    {"NkaoudNavStarPilotLanePositioning", {PERSISTENT | BACKUP, BOOL, "0"}}, // enable StarPilot-style driver-nudged slight-maneuver hints
+    {"NkaoudNavStarPilotLaneDetectionWidth", {PERSISTENT | BACKUP, FLOAT, "0.0"}}, // minimum modeled adjacent-lane width (m) for StarPilot keep* desires; 0 disables the width gate
+    {"NkaoudNavStarPilotMinimumLaneChangeSpeed", {PERSISTENT | BACKUP, FLOAT, "20.0"}}, // StarPilot turn/width threshold (mph)
     {"NkaoudNavControlSpeed", {PERSISTENT | BACKUP, BOOL, "0"}},      // allow nav to influence longitudinal target speed
     {"NkaoudNavControlSteer", {PERSISTENT | BACKUP, BOOL, "0"}},      // allow nav to influence steering (desire flag injection)
     {"NkaoudNavTurnAssist", {PERSISTENT | BACKUP, BOOL, "0"}},        // feedforward curvature nudge through route turns, scaled by turn angle (opt-in assist on top of the turn desire)

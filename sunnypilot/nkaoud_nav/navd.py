@@ -17,6 +17,7 @@ maneuverTargetSpeed is still 0.0 here -- phase 6 fills that in.
 from __future__ import annotations
 
 import csv
+import json
 import math
 import os
 import threading
@@ -27,6 +28,7 @@ from cereal import custom
 from openpilot.common.params import Params
 from openpilot.common.realtime import Ratekeeper
 from openpilot.common.swaglog import cloudlog
+from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
 from openpilot.sunnypilot.nkaoud_nav.geometry import (
   Coordinate, closest_segment_index, distance_along_geometry, route_bearing_at, total_geometry_length,
 )
@@ -35,6 +37,10 @@ from openpilot.sunnypilot.nkaoud_nav.route_client import (
 )
 from openpilot.sunnypilot.nkaoud_nav.share_client import (
   ShareFetchError, fetch_share_destination,
+)
+from openpilot.sunnypilot.nkaoud_nav.starpilot_navigation import (
+  StarPilotNavigationProvider, StarPilotNavigationState, StarPilotRouteFetchError,
+  fetch_starpilot_route,
 )
 from openpilot.sunnypilot.selfdrive.controls.lib.lane_position import FILTER_MODE_NONE, LanePositionEstimator
 
@@ -49,6 +55,12 @@ BEARING_MISALIGN_COUNTER_MIN = 3
 ARRIVAL_DISTANCE_M = 25.0          # consider the destination reached within this
 MIN_REROUTE_INTERVAL_S = 8.0       # back off so reroutes don't spam the API
 PARAM_REFRESH_S = 0.5              # throttle for per-tick param reads
+
+# The sole canonical nav daemon can select one provider at a time.  The
+# StarPilot value is deliberately opt-in and keeps the existing destination
+# flow, output topics, and final control gates intact.
+ROUTING_PROVIDER_NATIVE = 0
+ROUTING_PROVIDER_STARPILOT = 1
 
 # Navigation maneuver logging. When NkaoudNavDriveLogging is on, navd appends a
 # CSV row every NAV_LOG_INTERVAL seconds to a per-drive file for later analysis.
@@ -276,6 +288,14 @@ class ThreadedFetcher:
   def in_flight(self) -> bool:
     return self._thread is not None and self._thread.is_alive()
 
+  def invalidate(self) -> None:
+    """Discard a result from an old destination/provider without joining its
+    network thread. The worker checks this generation before it stores output."""
+    with self._lock:
+      self._request_id += 1
+      self._result = None
+      self._error = None
+
   def submit(self, *args) -> int:
     with self._lock:
       self._request_id += 1
@@ -310,11 +330,14 @@ class ThreadedFetcher:
 class NkaoudNavd:
   def __init__(self) -> None:
     self.params = Params()
-    self.sm = messaging.SubMaster(['liveLocationKalman', 'modelV2'])
+    self.sm = messaging.SubMaster(['liveLocationKalman', 'modelV2', 'carState', 'carParams'])
     self.pm = messaging.PubMaster(['nkaoudNavigationSP', 'navRoute', 'navInstruction'])
     self.rk = Ratekeeper(5.0)
 
     self.fetcher = ThreadedFetcher(fetch_route, RouteFetchError, "nkaoud_navd_fetch")
+    self.starpilot_fetcher = ThreadedFetcher(fetch_starpilot_route, StarPilotRouteFetchError, "nkaoud_navd_starpilot_fetch")
+    self.starpilot_provider = StarPilotNavigationProvider()
+    self._starpilot_pending_request = None
     self.share_fetcher = ThreadedFetcher(fetch_share_destination, ShareFetchError, "nkaoud_navd_share_fetch")
     self._last_share_trigger: str | None = None
     self._share_next_retry_t: float = 0.0
@@ -336,7 +359,10 @@ class NkaoudNavd:
     self.lane_conf: str = "unknown"
     self.cross_track_m: float = 0.0
     self.cross_track_counter: int = 0
+    self._llk_fresh: bool = False
     self._enabled: bool = False
+    self._routing_provider: int = ROUTING_PROVIDER_NATIVE
+    self._last_routing_provider: int = ROUTING_PROVIDER_NATIVE
     self._highway_pref: int = HIGHWAY_LANE_PREF_CENTER
     self._lane_edge_filter_mode: int = FILTER_MODE_NONE
     self._next_param_t: float = 0.0
@@ -354,36 +380,55 @@ class NkaoudNavd:
 
     _maybe_import_token_file(self.params)
 
-    pos, bearing, v_ego = _location_from_llk(self.sm['liveLocationKalman'])
+    self._llk_fresh = self.sm.alive['liveLocationKalman'] and self.sm.valid['liveLocationKalman']
+    pos, bearing, v_ego = _location_from_llk(self.sm['liveLocationKalman']) if self._llk_fresh else (None, None, 0.0)
     if pos is not None:
       self.last_pos = pos
     if bearing is not None:
       self.last_bearing = bearing
     self.last_v_ego = v_ego
 
-    if self.sm.updated['modelV2']:
-      self.lane_current, self.lane_total, self.lane_conf = self.lane_position_est.update(
-        self.sm['modelV2'], filter_mode=self._lane_edge_filter_mode,
-      )
-
     now = time.monotonic()
     if now >= self._next_param_t:
       self._next_param_t = now + PARAM_REFRESH_S
       self._enabled = self.params.get_bool("NkaoudNavEnabled")
       try:
-        self._highway_pref = int(self.params.get("NkaoudNavHighwayLanePref", return_default=True))
+        self._routing_provider = int(self.params.get("NkaoudNavRoutingProvider", return_default=True))
       except (TypeError, ValueError):
-        self._highway_pref = HIGHWAY_LANE_PREF_CENTER
-      try:
-        self._lane_edge_filter_mode = int(self.params.get("LaneEdgeFilterMode", return_default=True))
-      except (TypeError, ValueError):
-        self._lane_edge_filter_mode = FILTER_MODE_NONE
+        self._routing_provider = ROUTING_PROVIDER_NATIVE
+      if self._routing_provider not in (ROUTING_PROVIDER_NATIVE, ROUTING_PROVIDER_STARPILOT):
+        self._routing_provider = ROUTING_PROVIDER_NATIVE
+      if self._routing_provider == ROUTING_PROVIDER_NATIVE:
+        try:
+          self._highway_pref = int(self.params.get("NkaoudNavHighwayLanePref", return_default=True))
+        except (TypeError, ValueError):
+          self._highway_pref = HIGHWAY_LANE_PREF_CENTER
+        try:
+          self._lane_edge_filter_mode = int(self.params.get("LaneEdgeFilterMode", return_default=True))
+        except (TypeError, ValueError):
+          self._lane_edge_filter_mode = FILTER_MODE_NONE
       self._drive_logging = self.params.get_bool("NkaoudNavDriveLogging")
 
-    self._maybe_drain_fetcher()
     self._handle_share_trigger()
 
     new_dest = _read_destination(self.params)
+    self._handle_routing_provider_switch()
+    if self._routing_provider == ROUTING_PROVIDER_STARPILOT:
+      # The StarPilot provider must not inherit this fork's lane-count / edge
+      # estimator. Its navigation desires use source-equivalent per-side model
+      # lane widths inside DesireHelper instead.
+      self.lane_current = 0
+      self.lane_total = 0
+      self.lane_conf = "unknown"
+      self._step_starpilot(new_dest, pos, bearing, self._starpilot_v_ego(v_ego))
+      return
+
+    if self.sm.updated['modelV2']:
+      self.lane_current, self.lane_total, self.lane_conf = self.lane_position_est.update(
+        self.sm['modelV2'], filter_mode=self._lane_edge_filter_mode,
+      )
+
+    self._maybe_drain_fetcher()
     if not self._same_destination(new_dest):
       self.destination = new_dest
       self.route = None
@@ -402,6 +447,188 @@ class NkaoudNavd:
       self.rk.keep_time()
 
   # ---- helpers ----
+  def _handle_routing_provider_switch(self) -> None:
+    if self._routing_provider == self._last_routing_provider:
+      return
+
+    previous = self._last_routing_provider
+    self._last_routing_provider = self._routing_provider
+    cloudlog.warning(f"nkaoud_navd: switching routing provider {previous} -> {self._routing_provider}")
+
+    # A worker can outlive a mode change. Invalidate it before clearing state
+    # so it cannot resurrect a route from the other provider.
+    self.fetcher.invalidate()
+    self.starpilot_fetcher.invalidate()
+    self._starpilot_pending_request = None
+    self.starpilot_provider.clear()
+
+    self.route = None
+    self.destination = None
+    self.step_idx = 0
+    self.rerouting = False
+    self.arrived = False
+    self.last_distance_along = 0.0
+    self.cross_track_m = 0.0
+    self.cross_track_counter = 0
+    self.bearing_misalign_counter = 0
+
+  def _starpilot_v_cruise(self) -> float:
+    try:
+      return max(0.0, min(float(self.sm['carState'].vCruise), V_CRUISE_MAX) / 3.6)
+    except (AttributeError, TypeError, ValueError):
+      return 0.0
+
+  def _starpilot_v_ego(self, fallback: float) -> float:
+    """Use the car-state speed StarPilot policy sees, with LLK only as a
+    fallback while carState is coming up."""
+    try:
+      return max(0.0, float(self.sm['carState'].vEgo))
+    except (AttributeError, TypeError, ValueError):
+      return max(0.0, fallback)
+
+  def _starpilot_min_steer_speed(self) -> float:
+    try:
+      return max(0.0, float(self.sm['carParams'].minSteerSpeed))
+    except (AttributeError, TypeError, ValueError):
+      return 0.0
+
+  def _maybe_drain_starpilot_fetcher(self) -> None:
+    if self.starpilot_fetcher.in_flight():
+      return
+    result, error = self.starpilot_fetcher.take_result()
+    if result is not None:
+      request_key, route = result
+      if self.starpilot_provider.accept_fetch(request_key, route):
+        cloudlog.info(f"nkaoud_navd: StarPilot route received ({route.total_distance:.0f} m, {len(route.steps)} steps)")
+      else:
+        cloudlog.info("nkaoud_navd: discarded stale StarPilot route result")
+      self._starpilot_pending_request = None
+    elif error is not None:
+      request_key = self._starpilot_pending_request.key if self._starpilot_pending_request is not None else None
+      self.starpilot_provider.reject_fetch(request_key, error)
+      self._starpilot_pending_request = None
+      cloudlog.warning(f"nkaoud_navd: StarPilot route fetch failed: {error}")
+
+  def _step_starpilot(self, destination: Coordinate | None, position: Coordinate | None,
+                      bearing: float | None, v_ego: float) -> None:
+    # This provider consumes the existing destination; it never uses
+    # StarPilot's destination params or destination-store machinery.
+    self.starpilot_provider.set_destination(destination)
+    self._maybe_drain_starpilot_fetcher()
+    now = time.monotonic()
+    state = self.starpilot_provider.update(
+      position,
+      bearing,
+      v_ego,
+      self._starpilot_v_cruise(),
+      now,
+      self._starpilot_min_steer_speed(),
+    )
+    if state.arrived:
+      # Match the target provider's arrival lifecycle. The provider itself is
+      # destination-agnostic; only the existing nav daemon owns this param.
+      self.params.remove("NkaoudNavDestination")
+
+    request = self.starpilot_provider.next_fetch_request(
+      position, bearing, _read_token(self.params), now, self.starpilot_fetcher.in_flight(),
+    )
+    if request is not None:
+      self._starpilot_pending_request = request
+      self.starpilot_fetcher.submit(request)
+      cloudlog.info(f"nkaoud_navd: fetching StarPilot route to {request.destination.latitude:.5f},{request.destination.longitude:.5f}")
+
+    self._publish_starpilot(state, self.starpilot_fetcher.in_flight())
+
+  def _publish_starpilot(self, state: StarPilotNavigationState, fetch_in_flight: bool) -> None:
+    msg = messaging.new_message('nkaoudNavigationSP')
+    msg.valid = state.valid
+    nav = msg.nkaoudNavigationSP
+    nav.routingProvider = ROUTING_PROVIDER_STARPILOT
+    nav.enabled = self._enabled
+    nav.active = state.active
+    nav.onRoute = state.on_route
+    nav.routeId = state.route.route_id if state.route is not None else ""
+    nav.rerouting = state.rerouting or fetch_in_flight
+    nav.maneuverTargetSpeed = float(state.maneuver_target_speed)
+    nav.distanceToManeuver = float(state.instruction.get("maneuverDistance") or 0.0)
+    nav.maneuverType = str(state.instruction.get("maneuverType") or "")
+    nav.maneuverModifier = str(state.instruction.get("maneuverModifier") or "")
+    # StarPilot's navigation daemon publishes route state only. Its
+    # DesireHelper derives turn*/keep* at model cadence using this raw state,
+    # fresh car state, and model lane widths. Do not leak native targets here.
+    nav.recommendedDesire = NavDesire.none
+    nav.recommendedLaneSide = "none"
+    nav.laneKeepDistance = 0.0
+    nav.advisoryLaneChange = "none"
+    nav.advisoryLaneChangeBlockReason = ""
+    nav.currentRoadClasses = ""
+    nav.upcomingRoadClasses = ""
+    nav.crossTrackDistance = float(state.progress.distance_from_route) if state.progress is not None else 0.0
+    # The target fork's turn-assist curvature nudge is intentionally not part
+    # of a StarPilot comparison. StarPilot only supplies a model desire.
+    nav.maneuverTurnAngle = 0.0
+    try:
+      nav.starpilotInstructionState = json.dumps(
+        state.instruction_state, separators=(",", ":"), allow_nan=False,
+      ) if state.valid else ""
+    except (TypeError, ValueError):
+      cloudlog.warning("nkaoud_navd: could not serialize StarPilot instruction state")
+      nav.starpilotInstructionState = ""
+
+    modifier = nav.maneuverModifier
+    if modifier != self._last_logged_modifier:
+      cloudlog.info(f"nkaoud_navd: StarPilot modifier={modifier!r} dist={nav.distanceToManeuver:.1f}m")
+      self._last_logged_modifier = modifier
+
+    self.pm.send('nkaoudNavigationSP', msg)
+    self._publish_starpilot_nav_route(state)
+    self._publish_starpilot_nav_instruction(state)
+
+  def _publish_starpilot_nav_route(self, state: StarPilotNavigationState) -> None:
+    msg = messaging.new_message('navRoute')
+    msg.valid = state.route is not None
+    if state.route is not None:
+      coordinates = msg.navRoute.init('coordinates', len(state.route.geometry))
+      for index, coordinate in enumerate(state.route.geometry):
+        coordinates[index].latitude = coordinate.latitude
+        coordinates[index].longitude = coordinate.longitude
+    self.pm.send('navRoute', msg)
+
+  def _publish_starpilot_nav_instruction(self, state: StarPilotNavigationState) -> None:
+    msg = messaging.new_message('navInstruction')
+    msg.valid = state.valid
+    if state.valid:
+      instruction = msg.navInstruction
+      payload = state.instruction
+      instruction.maneuverPrimaryText = str(payload.get("maneuverPrimaryText") or "")
+      instruction.maneuverSecondaryText = str(payload.get("maneuverSecondaryText") or "")
+      instruction.maneuverDistance = float(payload.get("maneuverDistance") or 0.0)
+      instruction.maneuverType = str(payload.get("maneuverType") or "")
+      instruction.maneuverModifier = str(payload.get("maneuverModifier") or "")
+      instruction.distanceRemaining = float(payload.get("distanceRemaining") or 0.0)
+      instruction.timeRemaining = float(payload.get("timeRemaining") or 0.0)
+      instruction.timeRemainingTypical = float(payload.get("timeRemainingTypical") or 0.0)
+      lanes_payload = payload.get("lanes") or []
+      lanes = instruction.init('lanes', len(lanes_payload))
+      for lane_index, lane_payload in enumerate(lanes_payload):
+        lane = lanes[lane_index]
+        directions_payload = lane_payload.get("directions") or []
+        directions = lane.init('directions', len(directions_payload))
+        for direction_index, direction in enumerate(directions_payload):
+          directions[direction_index] = str(direction)
+        lane.active = bool(lane_payload.get("active", False))
+        lane.activeDirection = str(lane_payload.get("activeDirection") or "none")
+      instruction.showFull = bool(payload.get("showFull", True))
+      instruction.speedLimit = float(payload.get("speedLimit") or 0.0)
+      maneuvers_payload = payload.get("allManeuvers") or []
+      maneuvers = instruction.init('allManeuvers', len(maneuvers_payload))
+      for maneuver_index, maneuver_payload in enumerate(maneuvers_payload):
+        maneuver = maneuvers[maneuver_index]
+        maneuver.distance = float(maneuver_payload.get("distance") or 0.0)
+        maneuver.type = str(maneuver_payload.get("type") or "")
+        maneuver.modifier = str(maneuver_payload.get("modifier") or "")
+    self.pm.send('navInstruction', msg)
+
   def _same_destination(self, d: Coordinate | None) -> bool:
     if d is None and self.destination is None:
       return True
@@ -441,9 +668,11 @@ class NkaoudNavd:
         cloudlog.info("nkaoud_navd: share fetch completed but trigger was cleared, discarding")
       return
     if result is not None:
-      cloudlog.info(f"nkaoud_navd: share fetch OK -> {result.get('place_name')!r} "
-                    f"lat={result.get('latitude'):.5f} lon={result.get('longitude'):.5f}; "
-                    f"writing NkaoudNavDestination")
+      cloudlog.info(
+        f"nkaoud_navd: share fetch OK -> {result.get('place_name')!r} "
+        + f"lat={result.get('latitude'):.5f} lon={result.get('longitude'):.5f}; "
+        + "writing NkaoudNavDestination"
+      )
       self.params.put("NkaoudNavDestination", result)
       # Mark this trigger as fully handled so we don't re-submit on every
       # subsequent tick (which would overwrite a user-initiated "Clear
@@ -580,8 +809,10 @@ class NkaoudNavd:
 
   def _publish_sp(self) -> None:
     msg = messaging.new_message('nkaoudNavigationSP')
-    msg.valid = bool(self.sm['liveLocationKalman'].gpsOK)
+    msg.valid = self._llk_fresh and bool(self.sm['liveLocationKalman'].gpsOK)
     nav = msg.nkaoudNavigationSP
+    nav.routingProvider = ROUTING_PROVIDER_NATIVE
+    nav.starpilotInstructionState = ""
     nav.enabled = self._enabled
     nav.active = self.route is not None and self.destination is not None
     nav.onRoute = nav.active and not self.rerouting
@@ -628,9 +859,11 @@ class NkaoudNavd:
       self._last_logged_modifier = mod_str
     desire_str = str(nav.recommendedDesire)
     if desire_str != self._last_logged_desire:
-      cloudlog.info(f"nkaoud_navd: recommendedDesire={desire_str} "
-                    f"(dist={nav.distanceToManeuver:.1f}m, lane={self.lane_current}/{self.lane_total} "
-                    f"conf={self.lane_conf})")
+      cloudlog.info(
+        f"nkaoud_navd: recommendedDesire={desire_str} "
+        + f"(dist={nav.distanceToManeuver:.1f}m, lane={self.lane_current}/{self.lane_total} "
+        + f"conf={self.lane_conf})"
+      )
       self._last_logged_desire = desire_str
     advisory_str = str(nav.advisoryLaneChange)
     if advisory_str != self._last_logged_advisory:

@@ -102,6 +102,14 @@ class NavTurnAssist:
     self._bias = float(np.clip(target, self._bias - BIAS_SLEW, self._bias + BIAS_SLEW))
     return self._bias
 
+  def reset(self) -> None:
+    """Hard-clear state when a navigation provider that does not own this
+    target-specific curvature assist becomes active."""
+    self._bias = 0.0
+    self.active = False
+    self.reason = "provider"
+    self.turn_angle = 0.0
+
   def update(self, desire, turn_angle_deg: float, v_ego: float, lat_active: bool) -> float:
     """Return a feedforward curvature bias (1/m) to add to desiredCurvature for
     a route-commanded turn. 0 unless enabled, lateral is active, a turn desire

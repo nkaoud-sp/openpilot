@@ -368,8 +368,19 @@ def main(demo=False):
       l_lane_change_prob = desire_state[log.Desire.laneChangeLeft]
       r_lane_change_prob = desire_state[log.Desire.laneChangeRight]
       lane_change_prob = l_lane_change_prob + r_lane_change_prob
+      # A stopped nav daemon leaves the last message in SubMaster. Never
+      # retain an old route desire or turn-assist input after that publisher
+      # becomes invalid; this matters especially when switching providers.
+      nav_ok = sm.alive['nkaoudNavigationSP'] and sm.valid['nkaoudNavigationSP']
+      nav_desire = sm['nkaoudNavigationSP'].recommendedDesire if nav_ok else "none"
+      nav_provider = sm['nkaoudNavigationSP'].routingProvider if nav_ok else -1
+      starpilot_instruction_state = sm['nkaoudNavigationSP'].starpilotInstructionState if nav_ok else ""
+      nav_turn_angle = sm['nkaoudNavigationSP'].maneuverTurnAngle if nav_ok else 0.0
       DH.update(sm['carState'], sm['carControl'].latActive, lane_change_prob,
-                nav_desire=sm['nkaoudNavigationSP'].recommendedDesire,
+                nav_desire=nav_desire,
+                nav_provider=nav_provider,
+                starpilot_instruction_state=starpilot_instruction_state,
+                model_data=modelv2_send.modelV2,
                 visual_vehicle_state=sm['visualVehicleDetectorStateSP'])
       modelv2_send.modelV2.meta.laneChangeState = DH.lane_change_state
       modelv2_send.modelV2.meta.laneChangeDirection = DH.lane_change_direction
@@ -378,9 +389,15 @@ def main(demo=False):
       # Nav turn assist: feedforward curvature nudge through a route-commanded
       # turn, scaled by the route's turn angle. Direction comes from the applied
       # desire (post-gating), never from the model output. controlsd adds it.
-      mdv2sp_send.modelDataV2SP.navTurnAssistCurvature = nav_turn_assist.update(
-        DH.desire, sm['nkaoudNavigationSP'].maneuverTurnAngle,
-        sm['carState'].vEgo, sm['carControl'].latActive)
+      if DH.nav_provider_matches and not DH.nav_starpilot_provider:
+        mdv2sp_send.modelDataV2SP.navTurnAssistCurvature = nav_turn_assist.update(
+          DH.desire, nav_turn_angle, sm['carState'].vEgo, sm['carControl'].latActive)
+      else:
+        # StarPilot navigation only supplies model desires. Hard-reset this
+        # fork's native curvature nudge on a provider handoff rather than
+        # letting its slew limiter leak one more frame into the comparison.
+        nav_turn_assist.reset()
+        mdv2sp_send.modelDataV2SP.navTurnAssistCurvature = 0.0
       drivingdata_send.drivingModelData.meta.laneChangeState = DH.lane_change_state
       drivingdata_send.drivingModelData.meta.laneChangeDirection = DH.lane_change_direction
 

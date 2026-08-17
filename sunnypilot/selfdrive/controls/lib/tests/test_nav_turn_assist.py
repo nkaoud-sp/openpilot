@@ -68,6 +68,16 @@ def test_lat_inactive_zeroes_immediately():
   assert a._bias == 0.0                         # not merely slewing -- hard zero
 
 
+def test_provider_reset_zeroes_immediately():
+  a = _make()
+  _settle(a, Desire.turnLeft, -90.0, 12.0)
+  assert a._bias != 0.0
+  a.reset()
+  assert a._bias == 0.0
+  assert not a.active
+  assert a.reason == "provider"
+
+
 def test_shallow_turn_returns_zero():
   a = _make()
   assert _settle(a, Desire.turnLeft, -10.0, 12.0) == 0.0
