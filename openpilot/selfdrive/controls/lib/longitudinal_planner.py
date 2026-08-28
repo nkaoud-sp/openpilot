@@ -27,6 +27,15 @@ CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 ALLOW_THROTTLE_THRESHOLD = 0.4
 MIN_ALLOW_THROTTLE_SPEED = 2.5
 
+# Lead-departure launch assist: when stopped behind a lead that pulls away,
+# defer to the radar-based MPC so the car launches sooner. The MPC still owns
+# the safe gap and the assist never overrides brake or gas.
+LAUNCH_MAX_EGO_SPEED = 0.5
+LAUNCH_MIN_DREL = 2.0
+LAUNCH_VLEAD_BP = [1, 10]
+LAUNCH_VLEAD_V = [1.5, 0.2]
+LAUNCH_READY, LAUNCH_LAUNCHING, LAUNCH_DONE = 0, 1, 2
+
 # Lookup table for turns
 _A_TOTAL_MAX_V = [1.7, 3.2]
 _A_TOTAL_MAX_BP = [20., 40.]
@@ -72,6 +81,11 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.output_should_stop = False
     self.params = Params()
     self.param_read_frame = 0
+    self.launch_assist = False
+    self.launch_eagerness = 10
+    self.launch_assist_active = False
+    self.launch_assist_latched = False
+    self.launch_state = LAUNCH_READY
     self.park_assist = False
     self.park_distance = STOP_DISTANCE
     self.park_mode = 0
@@ -80,12 +94,41 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.a_desired_trajectory = np.zeros(CONTROL_N)
     self.j_desired_trajectory = np.zeros(CONTROL_N)
 
-  def read_halt_assist_params(self):
+  def read_tweaks_params(self):
     if self.param_read_frame % int(1. / self.dt) == 0:
+      self.launch_assist = self.params.get_bool("LaunchAssist")
+      self.launch_eagerness = self.params.get("LaunchEagerness", return_default=True)
       self.park_assist = self.params.get_bool("ParkAssist")
       self.park_distance = self.params.get("ParkDistance", return_default=True) / 100.0
       self.park_mode = self.params.get("ParkAssistMode", return_default=True)
     self.param_read_frame += 1
+
+  def launch_assist_ready(self, sm) -> bool:
+    if not self.launch_assist:
+      self.launch_state = LAUNCH_READY
+      return False
+
+    CS = sm['carState']
+    lead = sm['radarState'].leadOne
+    stopped = CS.vEgo <= LAUNCH_MAX_EGO_SPEED
+    v_thresh = float(np.interp(self.launch_eagerness, LAUNCH_VLEAD_BP, LAUNCH_VLEAD_V))
+    lead_departing = lead.present and lead.vLead >= v_thresh
+
+    if self.launch_state == LAUNCH_DONE and stopped and not lead_departing:
+      self.launch_state = LAUNCH_READY
+
+    can_fire = (self.launch_state in (LAUNCH_READY, LAUNCH_LAUNCHING) and
+                lead.present and stopped and not CS.brakePressed and not CS.gasPressed and
+                lead.dRel >= LAUNCH_MIN_DREL and lead_departing)
+
+    if can_fire:
+      self.launch_state = LAUNCH_LAUNCHING
+      return True
+
+    if self.launch_state == LAUNCH_LAUNCHING:
+      self.launch_state = LAUNCH_DONE if not stopped else LAUNCH_READY
+
+    return False
 
   def update(self, sm):
     LongitudinalPlannerSP.update(self, sm)
@@ -131,7 +174,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.output_a_target)
-    self.read_halt_assist_params()
+    self.read_tweaks_params()
     self.mpc.update(sm['radarState'], personality=sm['selfdriveState'].personality,
                     park_assist=self.park_assist, park_distance=self.park_distance, park_mode=self.park_mode)
 
@@ -168,6 +211,12 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     output_a_target, self.mpc.source, _ = min(candidates, key=lambda c: c[0])
     self.output_should_stop = any(should_stop for _, _, should_stop in candidates)
+
+    self.launch_assist_active = self.launch_assist_ready(sm)
+    self.launch_assist_latched = self.launch_state == LAUNCH_DONE
+    if self.launch_assist_active:
+      output_a_target = output_a_target_mpc
+      self.output_should_stop = output_should_stop_mpc
 
     if self.mpc.park_assist_active and sm['carState'].vEgo <= 0.5:
       output_a_target = output_a_target_mpc
