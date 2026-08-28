@@ -1,0 +1,67 @@
+"""
+Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
+
+This file is part of sunnypilot and is licensed under the MIT License.
+See the LICENSE.md file in the root directory for more details.
+"""
+from enum import IntEnum
+
+from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.park_assist_settings import ParkAssistSettingsLayout
+from openpilot.system.ui.lib.multilang import tr
+from openpilot.system.ui.sunnypilot.widgets.list_view import simple_button_item_sp, toggle_item_sp
+from openpilot.system.ui.widgets import Widget
+from openpilot.system.ui.widgets.scroller_tici import Scroller
+
+
+class PanelType(IntEnum):
+  TWEAKS = 0
+  PARK = 1
+
+
+class TweaksLayout(Widget):
+  def __init__(self):
+    super().__init__()
+
+    self._current_panel = PanelType.TWEAKS
+    self._park_layout = ParkAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
+
+    items = self._initialize_items()
+    self._scroller = Scroller(items, line_separator=True, spacing=0)
+
+  def _initialize_items(self):
+    self._park_assist = toggle_item_sp(
+      title=lambda: tr("Lead Halt Assist"),
+      description=lambda: tr("When stopped behind a stopped lead, settle at a closer gap than the default. The " +
+                            "gap smoothly returns to normal once the lead moves. Only acts near a standstill. " +
+                            "Requires openpilot longitudinal control."),
+      param="ParkAssist",
+    )
+    self._park_assist_button = simple_button_item_sp(
+      button_text=lambda: tr("Manage Halt Assist Settings"),
+      button_width=800,
+      callback=lambda: self._set_current_panel(PanelType.PARK),
+    )
+
+    return [
+      self._park_assist,
+      self._park_assist_button,
+    ]
+
+  def _render(self, rect):
+    if self._current_panel == PanelType.PARK:
+      self._park_layout.render(rect)
+    else:
+      self._scroller.render(rect)
+
+  def show_event(self):
+    self._set_current_panel(PanelType.TWEAKS)
+    self._scroller.show_event()
+
+  def _set_current_panel(self, panel: PanelType):
+    self._current_panel = panel
+    if panel == PanelType.PARK:
+      self._park_layout.show_event()
+
+  def _update_state(self):
+    super()._update_state()
+    self._park_assist_button.action_item.set_enabled(self._park_assist.action_item.get_state())

@@ -6,10 +6,12 @@ import openpilot.cereal.messaging as messaging
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from openpilot.common.constants import CV
 from openpilot.common.filter_simple import FirstOrderFilter
+from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import STOP_DISTANCE
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan, should_stop
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
@@ -68,10 +70,22 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.a_cruise = init_a
     self.output_a_target = init_a
     self.output_should_stop = False
+    self.params = Params()
+    self.param_read_frame = 0
+    self.park_assist = False
+    self.park_distance = STOP_DISTANCE
+    self.park_mode = 0
 
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
     self.j_desired_trajectory = np.zeros(CONTROL_N)
+
+  def read_halt_assist_params(self):
+    if self.param_read_frame % int(1. / self.dt) == 0:
+      self.park_assist = self.params.get_bool("ParkAssist")
+      self.park_distance = self.params.get("ParkDistance", return_default=True) / 100.0
+      self.park_mode = self.params.get("ParkAssistMode", return_default=True)
+    self.param_read_frame += 1
 
   def update(self, sm):
     LongitudinalPlannerSP.update(self, sm)
@@ -117,7 +131,9 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.output_a_target)
-    self.mpc.update(sm['radarState'], personality=sm['selfdriveState'].personality)
+    self.read_halt_assist_params()
+    self.mpc.update(sm['radarState'], personality=sm['selfdriveState'].personality,
+                    park_assist=self.park_assist, park_distance=self.park_distance, park_mode=self.park_mode)
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
     self.a_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.a_solution)
@@ -152,6 +168,11 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     output_a_target, self.mpc.source, _ = min(candidates, key=lambda c: c[0])
     self.output_should_stop = any(should_stop for _, _, should_stop in candidates)
+
+    if self.mpc.park_assist_active and sm['carState'].vEgo <= 0.5:
+      output_a_target = output_a_target_mpc
+      self.output_should_stop = output_should_stop_mpc
+
     self.output_a_target = np.clip(output_a_target, ACCEL_MIN, ACCEL_MAX)
 
     self.v_desired_filter.x = self.v_desired_filter.x + self.dt * (self.output_a_target + a_prev) / 2.0

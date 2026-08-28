@@ -57,6 +57,15 @@ COMFORT_BRAKE = 2.5
 STOP_DISTANCE = 6.0
 MIN_X_LEAD_FACTOR = 0.5
 
+# Lead Halt Assist: allow a closer standstill gap than STOP_DISTANCE by nudging
+# the lead obstacle forward at runtime. The offset fades with ego speed so the
+# normal gap returns smoothly after launch.
+PARK_VEGO_FADE = [2.0, 4.0]
+PARK_ENGAGE_EGO = 0.5
+PARK_ENGAGE_VLEAD = 0.5
+PARK_MODE_DEAD_STOP = 0
+PARK_MODE_ALL_LOW_SPEED = 1
+
 def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
   if personality==log.LongitudinalPersonality.relaxed:
     return 1.0
@@ -227,6 +236,9 @@ class LongitudinalMpc:
     self.a_solution = np.zeros(N+1)
     self.j_solution = np.zeros(N)
     self.a_prev = np.array(self.a_solution)
+    self.park_assist_active = False
+    self.park_engaged = False
+    self.stop_distance = STOP_DISTANCE
     self.yref = np.zeros((N+1, COST_DIM))
 
     for i in range(N):
@@ -307,8 +319,10 @@ class LongitudinalMpc:
     lead_xv = self.extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau)
     return lead_xv
 
-  def update(self, radarstate, personality=log.LongitudinalPersonality.standard):
+  def update(self, radarstate, personality=log.LongitudinalPersonality.standard,
+             park_assist=False, park_distance=STOP_DISTANCE, park_mode=PARK_MODE_DEAD_STOP):
     t_follow = get_T_FOLLOW(personality)
+    v_ego = self.x0[1]
 
     lead_xv_0 = self.process_lead(radarstate.leadOne)
     lead_xv_1 = self.process_lead(radarstate.leadTwo)
@@ -318,6 +332,31 @@ class LongitudinalMpc:
     # and then treat that as a stopped car/obstacle at this new distance.
     lead_0_obstacle = lead_xv_0[:,0] + get_stopped_equivalence_factor(lead_xv_0[:,1])
     lead_1_obstacle = lead_xv_1[:,0] + get_stopped_equivalence_factor(lead_xv_1[:,1])
+
+    self.park_assist_active = False
+    park_off = 0.0
+    lead = radarstate.leadOne
+    if park_assist and park_distance < STOP_DISTANCE and v_ego < PARK_VEGO_FADE[1]:
+      if park_mode == PARK_MODE_ALL_LOW_SPEED:
+        engaged = lead.present
+      else:
+        if lead.present and v_ego <= PARK_ENGAGE_EGO and lead.vLead <= PARK_ENGAGE_VLEAD:
+          self.park_engaged = True
+        engaged = self.park_engaged and lead.present
+
+      if engaged:
+        park_off = (STOP_DISTANCE - park_distance) * float(np.interp(v_ego, PARK_VEGO_FADE, [1.0, 0.0]))
+
+      self.park_assist_active = park_off > 0.05
+    else:
+      self.park_engaged = False
+
+    if park_off > 0.0:
+      lead_0_obstacle = lead_0_obstacle + park_off
+      if radarstate.leadTwo.present:
+        lead_1_obstacle = lead_1_obstacle + park_off
+
+    self.stop_distance = STOP_DISTANCE - park_off
 
     x_obstacles = np.column_stack([lead_0_obstacle, lead_1_obstacle])
     self.source = MPC_SOURCES[np.argmin(x_obstacles[0])]
