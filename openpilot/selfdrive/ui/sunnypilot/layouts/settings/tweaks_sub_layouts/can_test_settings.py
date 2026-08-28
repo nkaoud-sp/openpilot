@@ -23,6 +23,8 @@ DOOR_DBC = "toyota_nodsu_pt_generated"
 DOOR_MSG = "BODY_CONTROL_STATE"
 DOOR_BUS = 0
 DOOR_SIGNALS = ("DOOR_OPEN_FL", "DOOR_OPEN_FR", "DOOR_OPEN_RL", "DOOR_OPEN_RR")
+# Same BODY_CONTROL_STATE message carries the driver seatbelt (the only seat signal in this DBC).
+SEATBELT_SIGNAL = "SEATBELT_DRIVER_UNLATCHED"
 # Consider the CAN reading stale if we haven't seen the message in this long (seconds).
 DOOR_STALE_S = 2.0
 
@@ -43,6 +45,7 @@ class CanTestSettingsLayout(Widget):
     self._can_sock = None
     self._door_parser = None
     self._door_open = False
+    self._seatbelt_unlatched = False
     self._door_last_seen = 0.0
 
     self._back_button = NavButton(tr("Back"))
@@ -91,6 +94,12 @@ class CanTestSettingsLayout(Widget):
         description=lambda: tr("Decodes BODY_CONTROL_STATE off the raw CAN stream, so it works offroad as long " +
                               "as the powertrain bus is awake. Toyota-specific (toyota_nodsu_pt_generated)."),
       ),
+      text_item(
+        title=lambda: tr("Driver Seatbelt"),
+        value=self._seatbelt_status,
+        description=lambda: tr("Driver seatbelt latched state from BODY_CONTROL_STATE (same offroad CAN decode). " +
+                              "This DBC exposes no seat-occupancy signal, so only the driver belt is available."),
+      ),
     ]
 
   def _ignition_status(self) -> str:
@@ -123,6 +132,7 @@ class CanTestSettingsLayout(Widget):
     updated = self._door_parser.update(can_capnp_to_list(raw))
     msg = self._door_parser.vl[DOOR_MSG]
     self._door_open = any(msg[s] for s in DOOR_SIGNALS)
+    self._seatbelt_unlatched = bool(msg[SEATBELT_SIGNAL])
     if updated:
       self._door_last_seen = time.monotonic()
 
@@ -133,6 +143,15 @@ class CanTestSettingsLayout(Widget):
       return tr("Waiting for CAN...")
     stale = (time.monotonic() - self._door_last_seen) > DOOR_STALE_S
     state = tr("Open") if self._door_open else tr("Closed")
+    return f"{state} ({tr('stale')})" if stale else state
+
+  def _seatbelt_status(self) -> str:
+    if self._door_parser is None:
+      return tr("Unavailable (no DBC)")
+    if self._door_last_seen == 0.0:
+      return tr("Waiting for CAN...")
+    stale = (time.monotonic() - self._door_last_seen) > DOOR_STALE_S
+    state = tr("Unlatched") if self._seatbelt_unlatched else tr("Latched")
     return f"{state} ({tr('stale')})" if stale else state
 
   def _on_send(self):
