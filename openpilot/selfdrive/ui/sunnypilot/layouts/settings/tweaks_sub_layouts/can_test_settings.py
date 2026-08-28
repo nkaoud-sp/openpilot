@@ -60,7 +60,28 @@ class CanTestSettingsLayout(Widget):
                               "camera takes a few seconds to warm up. Stop the check to shut the camera back off."),
       ),
       self._driver_button,
+      text_item(
+        title=lambda: tr("Ignition"),
+        value=self._ignition_status,
+        description=lambda: tr("Live ignition state from pandaStates (ignitionLine / ignitionCan). Works offroad " +
+                              "since pandad always runs."),
+      ),
+      text_item(
+        title=lambda: tr("Door Open"),
+        value=self._door_status,
+        description=lambda: tr("Live door state from carState.doorOpen. Only available onroad, since the car " +
+                              "interface that decodes it (card) does not run offroad."),
+      ),
     ]
+
+  def _ignition_status(self) -> str:
+    return tr("On") if ui_state.ignition else tr("Off")
+
+  def _door_status(self) -> str:
+    sm = ui_state.sm
+    if not sm.alive["carState"] or not sm.valid["carState"]:
+      return tr("N/A (car offroad?)")
+    return tr("Open") if sm["carState"].doorOpen else tr("Closed")
 
   def _on_send(self):
     # pandad reads this trigger in its health loop, sends the frame offroad, and clears it.
