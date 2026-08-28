@@ -6,6 +6,7 @@ See the LICENSE.md file in the root directory for more details.
 """
 from enum import IntEnum
 
+from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.can_test_settings import CanTestSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.dynamic_follow_settings import DynamicFollowSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.launch_assist_settings import LaunchAssistSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.park_assist_settings import ParkAssistSettingsLayout
@@ -22,6 +23,7 @@ class PanelType(IntEnum):
   LAUNCH = 2
   DYNAMIC_FOLLOW = 3
   SPEED_ASSIST = 4
+  CAN_TEST = 5
 
 
 class TweaksLayout(Widget):
@@ -33,6 +35,7 @@ class TweaksLayout(Widget):
     self._launch_layout = LaunchAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._park_layout = ParkAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._speed_assist_layout = SpeedAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
+    self._can_test_layout = CanTestSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
 
     items = self._initialize_items()
     self._scroller = Scroller(items, line_separator=True, spacing=0)
@@ -90,6 +93,12 @@ class TweaksLayout(Widget):
       callback=lambda: self._set_current_panel(PanelType.SPEED_ASSIST),
     )
 
+    self._can_test_button = simple_button_item_sp(
+      button_text=lambda: tr("CAN Test"),
+      button_width=800,
+      callback=lambda: self._set_current_panel(PanelType.CAN_TEST),
+    )
+
     return [
       self._remember_experimental_mode,
       self._dynamic_follow,
@@ -99,6 +108,7 @@ class TweaksLayout(Widget):
       self._park_assist,
       self._park_assist_button,
       self._speed_assist_button,
+      self._can_test_button,
     ]
 
   def _render(self, rect):
@@ -110,6 +120,8 @@ class TweaksLayout(Widget):
       self._park_layout.render(rect)
     elif self._current_panel == PanelType.SPEED_ASSIST:
       self._speed_assist_layout.render(rect)
+    elif self._current_panel == PanelType.CAN_TEST:
+      self._can_test_layout.render(rect)
     else:
       self._scroller.render(rect)
 
@@ -127,6 +139,8 @@ class TweaksLayout(Widget):
       self._park_layout.show_event()
     elif panel == PanelType.SPEED_ASSIST:
       self._speed_assist_layout.show_event()
+    elif panel == PanelType.CAN_TEST:
+      self._can_test_layout.show_event()
 
   def _update_state(self):
     super()._update_state()
