@@ -56,8 +56,8 @@ class CanTestSettingsLayout(Widget):
         title=lambda: tr("Driver Monitoring"),
         value=self._driver_status,
         description=lambda: tr("Starts the driver camera and DM model (via IsDriverViewEnabled) so it works " +
-                              "offroad, then reports whether a driver's face is detected. The camera takes a few " +
-                              "seconds to warm up. Stop the check to shut the camera back off."),
+                              "offroad, then reports face detection for both seats (driver = wheel side). The " +
+                              "camera takes a few seconds to warm up. Stop the check to shut the camera back off."),
       ),
       self._driver_button,
     ]
@@ -85,10 +85,17 @@ class CanTestSettingsLayout(Widget):
       return tr("Starting driver camera...")
 
     ds = sm["driverStateV2"]
-    driver = ds.rightDriverData if ds.wheelOnRightProb > 0.5 else ds.leftDriverData
-    prob = driver.faceProb
-    state = tr("Driver present") if prob > FACE_THRESHOLD else tr("No driver detected")
-    return f"{state} ({prob * 100:.0f}%)"
+    # The DM model reports a face probability for both seats; the wheel side is the driver.
+    if ds.wheelOnRightProb > 0.5:
+      driver_prob, passenger_prob = ds.rightDriverData.faceProb, ds.leftDriverData.faceProb
+    else:
+      driver_prob, passenger_prob = ds.leftDriverData.faceProb, ds.rightDriverData.faceProb
+
+    def label(name: str, prob: float) -> str:
+      seen = tr("yes") if prob > FACE_THRESHOLD else tr("no")
+      return f"{name}: {seen} ({prob * 100:.0f}%)"
+
+    return f"{label(tr('Driver'), driver_prob)}   {label(tr('Passenger'), passenger_prob)}"
 
   def _on_back(self):
     # tweaks.py doesn't call hide_event when navigating away, so shut the camera off here too.
