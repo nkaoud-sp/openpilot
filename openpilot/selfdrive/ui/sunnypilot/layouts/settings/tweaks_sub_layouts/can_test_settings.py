@@ -1,8 +1,11 @@
 """Developer test panel: fire a hardcoded CAN frame and probe driver monitoring on demand."""
+import time
 from collections.abc import Callable
 
 import pyray as rl
+import openpilot.cereal.messaging as messaging
 from openpilot.common.params import Params
+from openpilot.selfdrive.pandad import can_capnp_to_list
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.sunnypilot.widgets.list_view import simple_button_item_sp
@@ -13,6 +16,15 @@ from openpilot.system.ui.widgets.scroller_tici import Scroller
 
 # Face probability threshold used by the DM policy (selfdrive/monitoring/policy.py:_FACE_THRESHOLD).
 FACE_THRESHOLD = 0.7
+
+# Door status is decoded straight off the raw CAN stream so it works offroad (pandad always
+# publishes 'can'). BODY_CONTROL_STATE (addr 1568) on the powertrain bus carries the door signals.
+DOOR_DBC = "toyota_nodsu_pt_generated"
+DOOR_MSG = "BODY_CONTROL_STATE"
+DOOR_BUS = 0
+DOOR_SIGNALS = ("DOOR_OPEN_FL", "DOOR_OPEN_FR", "DOOR_OPEN_RL", "DOOR_OPEN_RR")
+# Consider the CAN reading stale if we haven't seen the message in this long (seconds).
+DOOR_STALE_S = 2.0
 
 
 def dmonitoringd_running(sm) -> bool:
@@ -26,6 +38,13 @@ class CanTestSettingsLayout(Widget):
     self._params = Params()
     self._back_btn_callback = back_btn_callback
     self._driver_check_active = False
+
+    # Door decoding off the raw CAN stream (lazily set up while the panel is visible).
+    self._can_sock = None
+    self._door_parser = None
+    self._door_open = False
+    self._door_last_seen = 0.0
+
     self._back_button = NavButton(tr("Back"))
     self._back_button.set_click_callback(self._on_back)
 
@@ -69,19 +88,52 @@ class CanTestSettingsLayout(Widget):
       text_item(
         title=lambda: tr("Door Open"),
         value=self._door_status,
-        description=lambda: tr("Live door state from carState.doorOpen. Only available onroad, since the car " +
-                              "interface that decodes it (card) does not run offroad."),
+        description=lambda: tr("Decodes BODY_CONTROL_STATE off the raw CAN stream, so it works offroad as long " +
+                              "as the powertrain bus is awake. Toyota-specific (toyota_nodsu_pt_generated)."),
       ),
     ]
 
   def _ignition_status(self) -> str:
     return tr("On") if ui_state.ignition else tr("Off")
 
+  def _start_door_parser(self):
+    if self._can_sock is not None:
+      return
+    try:
+      from opendbc.can import CANParser
+      self._door_parser = CANParser(DOOR_DBC, [(DOOR_MSG, 0)], DOOR_BUS)
+      self._can_sock = messaging.sub_sock("can", conflate=False, timeout=0)
+    except Exception:
+      self._can_sock = None
+      self._door_parser = None
+    self._door_open = False
+    self._door_last_seen = 0.0
+
+  def _stop_door_parser(self):
+    self._can_sock = None
+    self._door_parser = None
+
+  def _update_door_state(self):
+    if self._can_sock is None or self._door_parser is None:
+      return
+    raw = messaging.drain_sock_raw(self._can_sock)
+    if not raw:
+      return
+    # The parser tracks only BODY_CONTROL_STATE, so any updated address means we saw it this cycle.
+    updated = self._door_parser.update(can_capnp_to_list(raw))
+    msg = self._door_parser.vl[DOOR_MSG]
+    self._door_open = any(msg[s] for s in DOOR_SIGNALS)
+    if updated:
+      self._door_last_seen = time.monotonic()
+
   def _door_status(self) -> str:
-    sm = ui_state.sm
-    if not sm.alive["carState"] or not sm.valid["carState"]:
-      return tr("N/A (car offroad?)")
-    return tr("Open") if sm["carState"].doorOpen else tr("Closed")
+    if self._door_parser is None:
+      return tr("Unavailable (no DBC)")
+    if self._door_last_seen == 0.0:
+      return tr("Waiting for CAN...")
+    stale = (time.monotonic() - self._door_last_seen) > DOOR_STALE_S
+    state = tr("Open") if self._door_open else tr("Closed")
+    return f"{state} ({tr('stale')})" if stale else state
 
   def _on_send(self):
     # pandad reads this trigger in its health loop, sends the frame offroad, and clears it.
@@ -119,9 +171,14 @@ class CanTestSettingsLayout(Widget):
     return f"{label(tr('Driver'), driver_prob)}   {label(tr('Passenger'), passenger_prob)}"
 
   def _on_back(self):
-    # tweaks.py doesn't call hide_event when navigating away, so shut the camera off here too.
+    # tweaks.py doesn't call hide_event when navigating away, so clean up here too.
     self._set_driver_check(False)
+    self._stop_door_parser()
     self._back_btn_callback()
+
+  def _update_state(self):
+    super()._update_state()
+    self._update_door_state()
 
   def _render(self, rect):
     self._back_button.set_position(self._rect.x, self._rect.y + 20)
@@ -132,8 +189,10 @@ class CanTestSettingsLayout(Widget):
     self._scroller.render(content_rect)
 
   def show_event(self):
+    self._start_door_parser()
     self._scroller.show_event()
 
   def hide_event(self):
     self._set_driver_check(False)
+    self._stop_door_parser()
     self._scroller.hide_event()
