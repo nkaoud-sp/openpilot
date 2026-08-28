@@ -9,6 +9,7 @@ from enum import IntEnum
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.dynamic_follow_settings import DynamicFollowSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.launch_assist_settings import LaunchAssistSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.park_assist_settings import ParkAssistSettingsLayout
+from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.speed_assist_settings import SpeedAssistSettingsLayout
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.sunnypilot.widgets.list_view import simple_button_item_sp, toggle_item_sp
 from openpilot.system.ui.widgets import Widget
@@ -20,6 +21,7 @@ class PanelType(IntEnum):
   PARK = 1
   LAUNCH = 2
   DYNAMIC_FOLLOW = 3
+  SPEED_ASSIST = 4
 
 
 class TweaksLayout(Widget):
@@ -30,6 +32,7 @@ class TweaksLayout(Widget):
     self._dynamic_follow_layout = DynamicFollowSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._launch_layout = LaunchAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._park_layout = ParkAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
+    self._speed_assist_layout = SpeedAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
 
     items = self._initialize_items()
     self._scroller = Scroller(items, line_separator=True, spacing=0)
@@ -81,6 +84,12 @@ class TweaksLayout(Widget):
       callback=lambda: self._set_current_panel(PanelType.PARK),
     )
 
+    self._speed_assist_button = simple_button_item_sp(
+      button_text=lambda: tr("Experimental Speed Assist"),
+      button_width=800,
+      callback=lambda: self._set_current_panel(PanelType.SPEED_ASSIST),
+    )
+
     return [
       self._remember_experimental_mode,
       self._dynamic_follow,
@@ -89,6 +98,7 @@ class TweaksLayout(Widget):
       self._launch_assist_button,
       self._park_assist,
       self._park_assist_button,
+      self._speed_assist_button,
     ]
 
   def _render(self, rect):
@@ -98,6 +108,8 @@ class TweaksLayout(Widget):
       self._launch_layout.render(rect)
     elif self._current_panel == PanelType.PARK:
       self._park_layout.render(rect)
+    elif self._current_panel == PanelType.SPEED_ASSIST:
+      self._speed_assist_layout.render(rect)
     else:
       self._scroller.render(rect)
 
@@ -113,6 +125,8 @@ class TweaksLayout(Widget):
       self._launch_layout.show_event()
     elif panel == PanelType.PARK:
       self._park_layout.show_event()
+    elif panel == PanelType.SPEED_ASSIST:
+      self._speed_assist_layout.show_event()
 
   def _update_state(self):
     super()._update_state()
