@@ -1,8 +1,9 @@
-"""Developer CAN test panel: fire a single hardcoded CAN frame on demand."""
+"""Developer test panel: fire a hardcoded CAN frame and probe driver monitoring on demand."""
 from collections.abc import Callable
 
 import pyray as rl
 from openpilot.common.params import Params
+from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.sunnypilot.widgets.list_view import simple_button_item_sp
 from openpilot.system.ui.widgets.list_view import text_item
@@ -16,6 +17,7 @@ class CanTestSettingsLayout(Widget):
     super().__init__()
 
     self._params = Params()
+    self._driver_status = tr("Press to check")
     self._back_button = NavButton(tr("Back"))
     self._back_button.set_click_callback(back_btn_callback)
 
@@ -28,6 +30,11 @@ class CanTestSettingsLayout(Widget):
       button_width=800,
       callback=self._on_send,
     )
+    self._driver_button = simple_button_item_sp(
+      button_text=lambda: tr("Check Driver Present"),
+      button_width=800,
+      callback=self._on_check_driver,
+    )
     return [
       text_item(
         title=lambda: tr("CAN Frame"),
@@ -37,11 +44,37 @@ class CanTestSettingsLayout(Widget):
                               "frame, then reverts. Requires a panda connected to a live CAN bus."),
       ),
       self._send_button,
+      text_item(
+        title=lambda: tr("Driver Monitoring"),
+        value=lambda: self._driver_status,
+        description=lambda: tr("Reads driverMonitoringState and reports whether the driver-monitoring model " +
+                              "currently sees a driver's face. The DM model only runs onroad, so this needs the " +
+                              "car started and the driver camera streaming."),
+      ),
+      self._driver_button,
     ]
 
   def _on_send(self):
-    # card.py reads this trigger each control cycle, injects the frame, and clears it.
+    # pandad reads this trigger in its health loop, sends the frame offroad, and clears it.
     self._params.put_bool("CanTestTrigger", True)
+
+  def _on_check_driver(self):
+    sm = ui_state.sm
+    if not sm.alive["driverMonitoringState"] or not sm.valid["driverMonitoringState"]:
+      self._driver_status = tr("DM not running (car offroad?)")
+      return
+
+    dm = sm["driverMonitoringState"]
+    face_detected = dm.visionPolicyState.faceDetected
+
+    prob = 0.0
+    if sm.alive["driverStateV2"]:
+      ds = sm["driverStateV2"]
+      driver = ds.rightDriverData if ds.wheelOnRightProb > 0.5 else ds.leftDriverData
+      prob = driver.faceProb
+
+    state = tr("Driver present") if face_detected else tr("No driver detected")
+    self._driver_status = f"{state} ({prob * 100:.0f}%)"
 
   def _render(self, rect):
     self._back_button.set_position(self._rect.x, self._rect.y + 20)
