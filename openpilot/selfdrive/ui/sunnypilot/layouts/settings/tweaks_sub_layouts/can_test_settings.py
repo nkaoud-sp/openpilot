@@ -11,15 +11,23 @@ from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.network import NavButton
 from openpilot.system.ui.widgets.scroller_tici import Scroller
 
+# Face probability threshold used by the DM policy (selfdrive/monitoring/policy.py:_FACE_THRESHOLD).
+FACE_THRESHOLD = 0.7
+
+
+def dmonitoringd_running(sm) -> bool:
+  return any(proc.name == "dmonitoringd" and proc.running for proc in sm["managerState"].processes)
+
 
 class CanTestSettingsLayout(Widget):
   def __init__(self, back_btn_callback: Callable):
     super().__init__()
 
     self._params = Params()
-    self._driver_status = tr("Press to check")
+    self._back_btn_callback = back_btn_callback
+    self._driver_check_active = False
     self._back_button = NavButton(tr("Back"))
-    self._back_button.set_click_callback(back_btn_callback)
+    self._back_button.set_click_callback(self._on_back)
 
     items = self._initialize_items()
     self._scroller = Scroller(items, line_separator=True, spacing=0)
@@ -31,9 +39,9 @@ class CanTestSettingsLayout(Widget):
       callback=self._on_send,
     )
     self._driver_button = simple_button_item_sp(
-      button_text=lambda: tr("Check Driver Present"),
+      button_text=lambda: tr("Stop Driver Check") if self._driver_check_active else tr("Start Driver Check"),
       button_width=800,
-      callback=self._on_check_driver,
+      callback=self._on_toggle_driver_check,
     )
     return [
       text_item(
@@ -46,10 +54,10 @@ class CanTestSettingsLayout(Widget):
       self._send_button,
       text_item(
         title=lambda: tr("Driver Monitoring"),
-        value=lambda: self._driver_status,
-        description=lambda: tr("Reads driverMonitoringState and reports whether the driver-monitoring model " +
-                              "currently sees a driver's face. The DM model only runs onroad, so this needs the " +
-                              "car started and the driver camera streaming."),
+        value=self._driver_status,
+        description=lambda: tr("Starts the driver camera and DM model (via IsDriverViewEnabled) so it works " +
+                              "offroad, then reports whether a driver's face is detected. The camera takes a few " +
+                              "seconds to warm up. Stop the check to shut the camera back off."),
       ),
       self._driver_button,
     ]
@@ -58,23 +66,34 @@ class CanTestSettingsLayout(Widget):
     # pandad reads this trigger in its health loop, sends the frame offroad, and clears it.
     self._params.put_bool("CanTestTrigger", True)
 
-  def _on_check_driver(self):
-    sm = ui_state.sm
-    if not sm.alive["driverMonitoringState"] or not sm.valid["driverMonitoringState"]:
-      self._driver_status = tr("DM not running (car offroad?)")
+  def _on_toggle_driver_check(self):
+    self._set_driver_check(not self._driver_check_active)
+
+  def _set_driver_check(self, active: bool):
+    if active == self._driver_check_active:
       return
+    self._driver_check_active = active
+    # IsDriverViewEnabled makes camerad + dmonitoringmodeld + dmonitoringd run offroad (process_config.py).
+    self._params.put_bool("IsDriverViewEnabled", active, block=True)
 
-    dm = sm["driverMonitoringState"]
-    face_detected = dm.visionPolicyState.faceDetected
+  def _driver_status(self) -> str:
+    if not self._driver_check_active:
+      return tr("Press start to check")
 
-    prob = 0.0
-    if sm.alive["driverStateV2"]:
-      ds = sm["driverStateV2"]
-      driver = ds.rightDriverData if ds.wheelOnRightProb > 0.5 else ds.leftDriverData
-      prob = driver.faceProb
+    sm = ui_state.sm
+    if not dmonitoringd_running(sm) or not sm.alive["driverStateV2"]:
+      return tr("Starting driver camera...")
 
-    state = tr("Driver present") if face_detected else tr("No driver detected")
-    self._driver_status = f"{state} ({prob * 100:.0f}%)"
+    ds = sm["driverStateV2"]
+    driver = ds.rightDriverData if ds.wheelOnRightProb > 0.5 else ds.leftDriverData
+    prob = driver.faceProb
+    state = tr("Driver present") if prob > FACE_THRESHOLD else tr("No driver detected")
+    return f"{state} ({prob * 100:.0f}%)"
+
+  def _on_back(self):
+    # tweaks.py doesn't call hide_event when navigating away, so shut the camera off here too.
+    self._set_driver_check(False)
+    self._back_btn_callback()
 
   def _render(self, rect):
     self._back_button.set_position(self._rect.x, self._rect.y + 20)
@@ -88,4 +107,5 @@ class CanTestSettingsLayout(Widget):
     self._scroller.show_event()
 
   def hide_event(self):
+    self._set_driver_check(False)
     self._scroller.hide_event()
