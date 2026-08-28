@@ -99,6 +99,15 @@ class TweaksLayout(Widget):
       callback=lambda: self._set_current_panel(PanelType.CAN_TEST),
     )
 
+    self._auto_door_lock = toggle_item_sp(
+      title=lambda: tr("Auto Door Lock"),
+      description=lambda: tr("After the car is switched off and openpilot is offroad, wait for the driver to get " +
+                            "out, confirm the cabin is empty with the driver camera, then send a door-lock CAN " +
+                            "command. Re-checks after each door open/close and only locks once nobody is inside. " +
+                            "Toyota-specific and offroad only."),
+      param="AutoDoorLock",
+    )
+
     return [
       self._remember_experimental_mode,
       self._dynamic_follow,
@@ -109,6 +118,7 @@ class TweaksLayout(Widget):
       self._park_assist_button,
       self._speed_assist_button,
       self._can_test_button,
+      self._auto_door_lock,
     ]
 
   def _render(self, rect):
