@@ -11,6 +11,7 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import DYNAMIC_T_FOLLOW_MIN, DYNAMIC_T_FOLLOW_MAX, DYNAMIC_T_FOLLOW_CURVE
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import PARK_MODE_ALL_LOW_SPEED, STOP_DISTANCE
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan, should_stop
@@ -86,6 +87,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.launch_assist_active = False
     self.launch_assist_latched = False
     self.launch_state = LAUNCH_READY
+    self.dynamic_follow = False
+    self.dynamic_follow_min = DYNAMIC_T_FOLLOW_MIN
+    self.dynamic_follow_max = DYNAMIC_T_FOLLOW_MAX
+    self.dynamic_follow_curve = DYNAMIC_T_FOLLOW_CURVE
     self.park_assist = False
     self.park_distance = STOP_DISTANCE
 
@@ -97,6 +102,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     if self.param_read_frame % int(1. / self.dt) == 0:
       self.launch_assist = self.params.get_bool("LaunchAssist")
       self.launch_eagerness = self.params.get("LaunchEagerness", return_default=True)
+      self.dynamic_follow = self.params.get_bool("DynamicFollow")
+      self.dynamic_follow_min = self.params.get("DynamicFollowMinTime", return_default=True) / 100.0
+      self.dynamic_follow_max = self.params.get("DynamicFollowMaxTime", return_default=True) / 100.0
+      self.dynamic_follow_curve = self.params.get("DynamicFollowCurve", return_default=True) / 100.0
       self.park_assist = self.params.get_bool("ParkAssist")
       self.park_distance = self.params.get("ParkDistance", return_default=True) / 100.0
     self.param_read_frame += 1
@@ -174,6 +183,9 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.mpc.set_cur_state(self.v_desired_filter.x, self.output_a_target)
     self.read_tweaks_params()
     self.mpc.update(sm['radarState'], personality=sm['selfdriveState'].personality,
+                    dynamic_follow=self.dynamic_follow,
+                    t_follow_min=self.dynamic_follow_min, t_follow_max=self.dynamic_follow_max,
+                    t_follow_curve=self.dynamic_follow_curve,
                     park_assist=self.park_assist, park_distance=self.park_distance,
                     park_mode=PARK_MODE_ALL_LOW_SPEED)
 

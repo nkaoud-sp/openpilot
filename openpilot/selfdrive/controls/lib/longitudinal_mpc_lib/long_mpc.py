@@ -4,6 +4,7 @@ import time
 import numpy as np
 from openpilot.cereal import log
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
+from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_MDL
 from openpilot.common.swaglog import cloudlog
 # WARNING: imports outside of constants will not trigger a rebuild
@@ -57,6 +58,12 @@ COMFORT_BRAKE = 2.5
 STOP_DISTANCE = 6.0
 MIN_X_LEAD_FACTOR = 0.5
 
+# Dynamic Follow: speed-based follow time overriding the fixed personality gap.
+DYNAMIC_T_FOLLOW_SPEED_BP = [0.0, 130.0 * CV.KPH_TO_MS]
+DYNAMIC_T_FOLLOW_MIN = 0.5
+DYNAMIC_T_FOLLOW_MAX = 1.1
+DYNAMIC_T_FOLLOW_CURVE = 1.0
+
 # Lead Halt Assist: allow a closer standstill gap than STOP_DISTANCE by nudging
 # the lead obstacle forward at runtime. The offset fades with ego speed so the
 # normal gap returns smoothly after launch.
@@ -85,6 +92,11 @@ def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard):
     return 1.25
   else:
     raise NotImplementedError("Longitudinal personality not supported")
+
+def get_dynamic_T_FOLLOW(v_ego, t_follow_min=DYNAMIC_T_FOLLOW_MIN, t_follow_max=DYNAMIC_T_FOLLOW_MAX,
+                         curve=DYNAMIC_T_FOLLOW_CURVE):
+  v_norm = np.clip(v_ego / DYNAMIC_T_FOLLOW_SPEED_BP[1], 0.0, 1.0)
+  return float(t_follow_min + (t_follow_max - t_follow_min) * (v_norm ** curve))
 
 def get_stopped_equivalence_factor(v_lead):
   return (v_lead**2) / (2 * COMFORT_BRAKE)
@@ -319,9 +331,11 @@ class LongitudinalMpc:
     return lead_xv
 
   def update(self, radarstate, personality=log.LongitudinalPersonality.standard,
-             park_assist=False, park_distance=STOP_DISTANCE, park_mode=PARK_MODE_ALL_LOW_SPEED):
-    t_follow = get_T_FOLLOW(personality)
+             dynamic_follow=False, t_follow_min=DYNAMIC_T_FOLLOW_MIN, t_follow_max=DYNAMIC_T_FOLLOW_MAX,
+             t_follow_curve=DYNAMIC_T_FOLLOW_CURVE, park_assist=False, park_distance=STOP_DISTANCE,
+             park_mode=PARK_MODE_ALL_LOW_SPEED):
     v_ego = self.x0[1]
+    t_follow = get_dynamic_T_FOLLOW(v_ego, t_follow_min, t_follow_max, t_follow_curve) if dynamic_follow else get_T_FOLLOW(personality)
 
     lead_xv_0 = self.process_lead(radarstate.leadOne)
     lead_xv_1 = self.process_lead(radarstate.leadTwo)

@@ -6,6 +6,7 @@ See the LICENSE.md file in the root directory for more details.
 """
 from enum import IntEnum
 
+from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.dynamic_follow_settings import DynamicFollowSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.launch_assist_settings import LaunchAssistSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.park_assist_settings import ParkAssistSettingsLayout
 from openpilot.system.ui.lib.multilang import tr
@@ -18,6 +19,7 @@ class PanelType(IntEnum):
   TWEAKS = 0
   PARK = 1
   LAUNCH = 2
+  DYNAMIC_FOLLOW = 3
 
 
 class TweaksLayout(Widget):
@@ -25,6 +27,7 @@ class TweaksLayout(Widget):
     super().__init__()
 
     self._current_panel = PanelType.TWEAKS
+    self._dynamic_follow_layout = DynamicFollowSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._launch_layout = LaunchAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._park_layout = ParkAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
 
@@ -37,6 +40,18 @@ class TweaksLayout(Widget):
       description=lambda: tr("Keep Experimental Mode set the way you left it after rebooting. Cars without " +
                             "openpilot longitudinal control will still force Experimental Mode off."),
       param="RememberExperimentalModeStatus",
+    )
+
+    self._dynamic_follow = toggle_item_sp(
+      title=lambda: tr("Dynamic Follow Distance"),
+      description=lambda: tr("Vary the follow distance with vehicle speed instead of using the fixed driving " +
+                            "personality gap. Requires openpilot longitudinal control."),
+      param="DynamicFollow",
+    )
+    self._dynamic_follow_button = simple_button_item_sp(
+      button_text=lambda: tr("Manage Dynamic Follow Settings"),
+      button_width=800,
+      callback=lambda: self._set_current_panel(PanelType.DYNAMIC_FOLLOW),
     )
 
     self._launch_assist = toggle_item_sp(
@@ -68,6 +83,8 @@ class TweaksLayout(Widget):
 
     return [
       self._remember_experimental_mode,
+      self._dynamic_follow,
+      self._dynamic_follow_button,
       self._launch_assist,
       self._launch_assist_button,
       self._park_assist,
@@ -75,7 +92,9 @@ class TweaksLayout(Widget):
     ]
 
   def _render(self, rect):
-    if self._current_panel == PanelType.LAUNCH:
+    if self._current_panel == PanelType.DYNAMIC_FOLLOW:
+      self._dynamic_follow_layout.render(rect)
+    elif self._current_panel == PanelType.LAUNCH:
       self._launch_layout.render(rect)
     elif self._current_panel == PanelType.PARK:
       self._park_layout.render(rect)
@@ -88,12 +107,15 @@ class TweaksLayout(Widget):
 
   def _set_current_panel(self, panel: PanelType):
     self._current_panel = panel
-    if panel == PanelType.LAUNCH:
+    if panel == PanelType.DYNAMIC_FOLLOW:
+      self._dynamic_follow_layout.show_event()
+    elif panel == PanelType.LAUNCH:
       self._launch_layout.show_event()
     elif panel == PanelType.PARK:
       self._park_layout.show_event()
 
   def _update_state(self):
     super()._update_state()
+    self._dynamic_follow_button.action_item.set_enabled(self._dynamic_follow.action_item.get_state())
     self._launch_assist_button.action_item.set_enabled(self._launch_assist.action_item.get_state())
     self._park_assist_button.action_item.set_enabled(self._park_assist.action_item.get_state())
