@@ -32,8 +32,9 @@ class CanTestSettingsLayout(Widget):
       text_item(
         title=lambda: tr("CAN Frame"),
         value=lambda: "0x750 · bus 0",
-        description=lambda: tr("Sends 40 05 30 11 00 80 00 00 to address 0x750 on bus 0 once per press. The " +
-                              "panda safety model may drop this frame unless it allows that address."),
+        description=lambda: tr("Sends 40 05 30 11 00 80 00 00 to address 0x750 on bus 0 once per press. Works " +
+                              "offroad: pandad briefly switches the panda to ELM327 diagnostic mode, sends the " +
+                              "frame, then reverts. Requires a panda connected to a live CAN bus."),
       ),
       self._send_button,
     ]

@@ -21,6 +21,10 @@ public:
   void configureSafetyMode(bool is_onroad);
   bool getOffroadMode();
 
+  // Developer-only: fire a single hardcoded diagnostic CAN frame while offroad, on request
+  // from the tweaks UI (CanTestTrigger param). No-op onroad, where the real safety mode is active.
+  void maybeSendCanTest(bool is_onroad);
+
 private:
   void updateMultiplexingMode();
   std::vector<std::string> fetchCarParams();

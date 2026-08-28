@@ -283,13 +283,6 @@ class Car:
       self.last_actuators_output, can_sends = self.CI.apply(CC, convert_carControlSP(CC_SP), now_nanos)
       self.pm.send('sendcan', can_list_to_can_capnp(can_sends, msgtype='sendcan', valid=CS.canValid))
 
-      # Developer CAN test: fire a single hardcoded frame when the tweaks UI sets the trigger.
-      # Note: the panda safety model may drop this unless the active safety mode allows the address.
-      if self.params.get_bool("CanTestTrigger"):
-        self.params.remove("CanTestTrigger")
-        test_msg = CanData(0x750, b"\x40\x05\x30\x11\x00\x80\x00\x00", 0)
-        self.pm.send('sendcan', can_list_to_can_capnp([test_msg], msgtype='sendcan', valid=CS.canValid))
-
       self.CC_prev = CC
 
   def step(self):

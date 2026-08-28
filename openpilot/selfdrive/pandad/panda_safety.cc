@@ -82,3 +82,35 @@ bool PandaSafety::getOffroadMode() {
   auto offroad_mode = params_.getBool("OffroadMode");
   return offroad_mode;
 }
+
+void PandaSafety::maybeSendCanTest(bool is_onroad) {
+  // Only ever touch the safety model offroad. Onroad the car-specific safety mode is active and
+  // must not be disturbed, so the trigger is intentionally ignored there.
+  if (is_onroad) {
+    return;
+  }
+
+  if (!params_.getBool("CanTestTrigger")) {
+    return;
+  }
+  // One-shot: clear immediately so a stuck param can't keep spamming the bus.
+  params_.remove("CanTestTrigger");
+
+  // 0x750 is a UDS diagnostic address; ELM327 (no OBD multiplexing) is the least-privilege mode
+  // that allows transmitting it. The offroad health loop re-asserts NO_OUTPUT afterwards.
+  panda_->set_safety_model(cereal::CarParams::SafetyModel::ELM327, 1U);
+
+  static const uint8_t payload[] = {0x40, 0x05, 0x30, 0x11, 0x00, 0x80, 0x00, 0x00};
+  MessageBuilder msg;
+  auto evt = msg.initEvent();
+  auto sendcan = evt.initSendcan(1);
+  sendcan[0].setAddress(0x750);
+  sendcan[0].setDat(kj::arrayPtr(payload, sizeof(payload)));
+  sendcan[0].setSrc(0);  // bus 0
+  panda_->can_send(sendcan.asReader());
+
+  LOGW("CanTest: sent 0x750 diagnostic frame on bus 0 via ELM327");
+
+  // Revert immediately; don't leave the panda in an output-capable mode.
+  panda_->set_safety_model(cereal::CarParams::SafetyModel::NO_OUTPUT);
+}
