@@ -220,7 +220,8 @@ class UIStateSP:
 
     # No longitudinal control: no experimental mode or DEC
     if not has_long:
-      self.params.remove("ExperimentalMode")
+      if CP is not None or not self.params.get_bool("RememberExperimentalModeStatus"):
+        self.params.remove("ExperimentalMode")
       self.params.remove("DynamicExperimentalControl")
 
     # ICBM: clear if not available or if full longitudinal control is active

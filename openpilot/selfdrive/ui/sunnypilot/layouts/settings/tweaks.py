@@ -32,6 +32,13 @@ class TweaksLayout(Widget):
     self._scroller = Scroller(items, line_separator=True, spacing=0)
 
   def _initialize_items(self):
+    self._remember_experimental_mode = toggle_item_sp(
+      title=lambda: tr("Remember Experimental Mode Status"),
+      description=lambda: tr("Keep Experimental Mode set the way you left it after rebooting. Cars without " +
+                            "openpilot longitudinal control will still force Experimental Mode off."),
+      param="RememberExperimentalModeStatus",
+    )
+
     self._launch_assist = toggle_item_sp(
       title=lambda: tr("Lead Launch Assist"),
       description=lambda: tr("When stopped behind a lead that pulls away, launch sooner instead of waiting for " +
@@ -60,6 +67,7 @@ class TweaksLayout(Widget):
     )
 
     return [
+      self._remember_experimental_mode,
       self._launch_assist,
       self._launch_assist_button,
       self._park_assist,

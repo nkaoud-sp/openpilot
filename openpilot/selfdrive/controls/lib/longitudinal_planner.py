@@ -217,7 +217,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       output_a_target = output_a_target_mpc
       self.output_should_stop = output_should_stop_mpc
 
-    if self.mpc.park_assist_active and sm['carState'].vEgo <= 0.5:
+    if self.mpc.park_assist_active and sm['carState'].vEgo <= LAUNCH_MAX_EGO_SPEED:
       output_a_target = output_a_target_mpc
       self.output_should_stop = output_should_stop_mpc
 
