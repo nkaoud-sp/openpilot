@@ -8,7 +8,7 @@ from collections.abc import Callable
 
 import pyray as rl
 from openpilot.system.ui.lib.multilang import tr
-from openpilot.system.ui.sunnypilot.widgets.list_view import multiple_button_item_sp, option_item_sp
+from openpilot.system.ui.sunnypilot.widgets.list_view import option_item_sp
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.network import NavButton
 from openpilot.system.ui.widgets.scroller_tici import Scroller
@@ -37,19 +37,8 @@ class ParkAssistSettingsLayout(Widget):
       inline=True,
     )
 
-    self._park_mode = multiple_button_item_sp(
-      title=lambda: tr("Engage When"),
-      description=lambda: tr("From Full Stop: only after you stop behind a stopped lead, then holds through launch. " +
-                            "Any Low Speed: also applies the closer gap while following at low speed."),
-      buttons=[lambda: tr("From Full Stop"), lambda: tr("Any Low Speed")],
-      param="ParkAssistMode",
-      button_width=420,
-      inline=False,
-    )
-
     return [
       self._park_distance,
-      self._park_mode,
     ]
 
   def _render(self, rect):

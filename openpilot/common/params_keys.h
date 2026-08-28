@@ -178,7 +178,6 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LaunchAssist", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"LaunchEagerness", {PERSISTENT | BACKUP, INT, "10"}},
     {"ParkAssist", {PERSISTENT | BACKUP, BOOL, "0"}},
-    {"ParkAssistMode", {PERSISTENT | BACKUP, INT, "1"}},
     {"ParkDistance", {PERSISTENT | BACKUP, INT, "250"}},
     {"QuickBootToggle", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"QuietMode", {PERSISTENT | BACKUP, BOOL, "0"}},

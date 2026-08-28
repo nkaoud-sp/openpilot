@@ -11,7 +11,7 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import STOP_DISTANCE
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import PARK_MODE_ALL_LOW_SPEED, STOP_DISTANCE
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan, should_stop
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
@@ -88,7 +88,6 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.launch_state = LAUNCH_READY
     self.park_assist = False
     self.park_distance = STOP_DISTANCE
-    self.park_mode = 0
 
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
@@ -100,7 +99,6 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       self.launch_eagerness = self.params.get("LaunchEagerness", return_default=True)
       self.park_assist = self.params.get_bool("ParkAssist")
       self.park_distance = self.params.get("ParkDistance", return_default=True) / 100.0
-      self.park_mode = self.params.get("ParkAssistMode", return_default=True)
     self.param_read_frame += 1
 
   def launch_assist_ready(self, sm) -> bool:
@@ -176,7 +174,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.mpc.set_cur_state(self.v_desired_filter.x, self.output_a_target)
     self.read_tweaks_params()
     self.mpc.update(sm['radarState'], personality=sm['selfdriveState'].personality,
-                    park_assist=self.park_assist, park_distance=self.park_distance, park_mode=self.park_mode)
+                    park_assist=self.park_assist, park_distance=self.park_distance,
+                    park_mode=PARK_MODE_ALL_LOW_SPEED)
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
     self.a_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.a_solution)

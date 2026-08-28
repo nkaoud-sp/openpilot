@@ -63,7 +63,6 @@ MIN_X_LEAD_FACTOR = 0.5
 PARK_VEGO_FADE = [2.0, 4.0]
 PARK_ENGAGE_EGO = 0.5
 PARK_ENGAGE_VLEAD = 0.5
-PARK_MODE_DEAD_STOP = 0
 PARK_MODE_ALL_LOW_SPEED = 1
 
 def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
@@ -320,7 +319,7 @@ class LongitudinalMpc:
     return lead_xv
 
   def update(self, radarstate, personality=log.LongitudinalPersonality.standard,
-             park_assist=False, park_distance=STOP_DISTANCE, park_mode=PARK_MODE_DEAD_STOP):
+             park_assist=False, park_distance=STOP_DISTANCE, park_mode=PARK_MODE_ALL_LOW_SPEED):
     t_follow = get_T_FOLLOW(personality)
     v_ego = self.x0[1]
 
