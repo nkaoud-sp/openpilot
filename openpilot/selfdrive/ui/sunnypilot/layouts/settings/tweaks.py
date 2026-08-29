@@ -6,6 +6,7 @@ See the LICENSE.md file in the root directory for more details.
 """
 from enum import IntEnum
 
+from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.auto_lock_settings import AutoLockSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.can_test_settings import CanTestSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.dynamic_follow_settings import DynamicFollowSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.launch_assist_settings import LaunchAssistSettingsLayout
@@ -24,6 +25,7 @@ class PanelType(IntEnum):
   DYNAMIC_FOLLOW = 3
   SPEED_ASSIST = 4
   CAN_TEST = 5
+  AUTO_LOCK = 6
 
 
 class TweaksLayout(Widget):
@@ -36,6 +38,7 @@ class TweaksLayout(Widget):
     self._park_layout = ParkAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._speed_assist_layout = SpeedAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._can_test_layout = CanTestSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
+    self._auto_lock_layout = AutoLockSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
 
     items = self._initialize_items()
     self._scroller = Scroller(items, line_separator=True, spacing=0)
@@ -99,23 +102,10 @@ class TweaksLayout(Widget):
       callback=lambda: self._set_current_panel(PanelType.CAN_TEST),
     )
 
-    self._auto_door_lock = toggle_item_sp(
-      title=lambda: tr("Auto Door Lock"),
-      description=lambda: tr("After the car is switched off and openpilot is offroad, wait for the driver to get " +
-                            "out, confirm the cabin is empty with the driver camera, then send a door-lock CAN " +
-                            "command. Re-checks after each door open/close and only locks once nobody is inside. " +
-                            "Toyota-specific and offroad only."),
-      param="AutoDoorLock",
-    )
-    self._auto_close_windows = toggle_item_sp(
-      title=lambda: tr("Auto Close Windows"),
-      description=lambda: tr("With Auto Door Lock, also close all windows before locking."),
-      param="AutoDoorLockCloseWindows",
-    )
-    self._auto_fold_mirrors = toggle_item_sp(
-      title=lambda: tr("Auto Fold Mirrors"),
-      description=lambda: tr("With Auto Door Lock, also fold the side mirrors before locking."),
-      param="AutoDoorLockFoldMirrors",
+    self._auto_lock_button = simple_button_item_sp(
+      button_text=lambda: tr("Auto Door Lock"),
+      button_width=800,
+      callback=lambda: self._set_current_panel(PanelType.AUTO_LOCK),
     )
 
     return [
@@ -128,9 +118,7 @@ class TweaksLayout(Widget):
       self._park_assist_button,
       self._speed_assist_button,
       self._can_test_button,
-      self._auto_door_lock,
-      self._auto_close_windows,
-      self._auto_fold_mirrors,
+      self._auto_lock_button,
     ]
 
   def _render(self, rect):
@@ -144,6 +132,8 @@ class TweaksLayout(Widget):
       self._speed_assist_layout.render(rect)
     elif self._current_panel == PanelType.CAN_TEST:
       self._can_test_layout.render(rect)
+    elif self._current_panel == PanelType.AUTO_LOCK:
+      self._auto_lock_layout.render(rect)
     else:
       self._scroller.render(rect)
 
@@ -163,12 +153,11 @@ class TweaksLayout(Widget):
       self._speed_assist_layout.show_event()
     elif panel == PanelType.CAN_TEST:
       self._can_test_layout.show_event()
+    elif panel == PanelType.AUTO_LOCK:
+      self._auto_lock_layout.show_event()
 
   def _update_state(self):
     super()._update_state()
     self._dynamic_follow_button.action_item.set_enabled(self._dynamic_follow.action_item.get_state())
     self._launch_assist_button.action_item.set_enabled(self._launch_assist.action_item.get_state())
     self._park_assist_button.action_item.set_enabled(self._park_assist.action_item.get_state())
-    auto_lock_on = self._auto_door_lock.action_item.get_state()
-    self._auto_close_windows.action_item.set_enabled(auto_lock_on)
-    self._auto_fold_mirrors.action_item.set_enabled(auto_lock_on)
