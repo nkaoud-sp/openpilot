@@ -37,8 +37,8 @@ DRIVER_DOOR = "DOOR_OPEN_FL"  # left-hand-drive: driver = front-left
 DOOR_FRESH_S = 2.0
 
 FACE_THRESHOLD = 0.6          # a face over this in either seat means the cabin is occupied
-DM_SETTLE_S = 1.0             # let the camera/model settle after it comes alive before sampling
-DM_SAMPLE_S = 1.0             # sample the face probabilities over this window, take the max
+DM_SETTLE_S = 2.0             # min time the model must be live before we trust it (from go-live)
+DM_SAMPLE_S = 2.0             # sample the face probabilities over this window, take the max
 DM_TIMEOUT_S = 20.0          # give up (and do NOT lock) if the camera never comes up
 
 
@@ -65,7 +65,8 @@ class AutoDoorLock:
 
     self.state = State.IDLE
     self.state_t = time.monotonic()
-    self.dm_alive_t = 0.0
+    self.cam_on = False
+    self.dm_live_since = 0.0    # when the DM model first came alive with the camera on (0 = not live)
     self.sample_end_t = 0.0
     self.max_face_prob = 0.0
 
@@ -117,6 +118,7 @@ class AutoDoorLock:
     return max(ds.leftDriverData.faceProb, ds.rightDriverData.faceProb)
 
   def _set_driver_cam(self, on: bool):
+    self.cam_on = on
     self.params.put_bool("IsDriverViewEnabled", on)
 
   def _set_state(self, state: State):
@@ -129,6 +131,15 @@ class AutoDoorLock:
   def update(self):
     self.sm.update(0)
     self._update_doors()
+
+    # Track when the DM model first came alive (while the camera is on). Anchoring the settle
+    # window here, rather than at door-close, lets a camera pre-warmed during the exit skip
+    # the settle entirely by the time the doors are shut.
+    if self.cam_on and self._dm_ready:
+      if self.dm_live_since == 0.0:
+        self.dm_live_since = time.monotonic()
+    else:
+      self.dm_live_since = 0.0
 
     enabled = self.params.get_bool("AutoDoorLock")
 
@@ -159,17 +170,15 @@ class AutoDoorLock:
     elif self.state == State.WAIT_ALL_CLOSED:
       if self._doors_fresh and self._all_doors_closed():
         self._set_driver_cam(True)
-        self.dm_alive_t = 0.0
         self._set_state(State.DM_START)
 
     elif self.state == State.DM_START:
-      if self._dm_ready:
-        if self.dm_alive_t == 0.0:
-          self.dm_alive_t = time.monotonic()
-        if (time.monotonic() - self.dm_alive_t) > DM_SETTLE_S:
-          self.max_face_prob = 0.0
-          self.sample_end_t = time.monotonic() + DM_SAMPLE_S
-          self._set_state(State.DM_SAMPLE)
+      # Sample once the model has been live at least DM_SETTLE_S. If it was pre-warmed during
+      # the exit it will usually already satisfy this and sample immediately.
+      if self._dm_ready and self.dm_live_since != 0.0 and (time.monotonic() - self.dm_live_since) > DM_SETTLE_S:
+        self.max_face_prob = 0.0
+        self.sample_end_t = time.monotonic() + DM_SAMPLE_S
+        self._set_state(State.DM_SAMPLE)
       elif (time.monotonic() - self.state_t) > DM_TIMEOUT_S:
         # Camera never came up: fail safe, do not lock.
         cloudlog.error("autolockd: driver camera did not start; aborting without locking")
