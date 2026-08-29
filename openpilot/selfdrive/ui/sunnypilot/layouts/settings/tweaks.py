@@ -107,6 +107,16 @@ class TweaksLayout(Widget):
                             "Toyota-specific and offroad only."),
       param="AutoDoorLock",
     )
+    self._auto_close_windows = toggle_item_sp(
+      title=lambda: tr("Auto Close Windows"),
+      description=lambda: tr("With Auto Door Lock, also close all windows before locking."),
+      param="AutoDoorLockCloseWindows",
+    )
+    self._auto_fold_mirrors = toggle_item_sp(
+      title=lambda: tr("Auto Fold Mirrors"),
+      description=lambda: tr("With Auto Door Lock, also fold the side mirrors before locking."),
+      param="AutoDoorLockFoldMirrors",
+    )
 
     return [
       self._remember_experimental_mode,
@@ -119,6 +129,8 @@ class TweaksLayout(Widget):
       self._speed_assist_button,
       self._can_test_button,
       self._auto_door_lock,
+      self._auto_close_windows,
+      self._auto_fold_mirrors,
     ]
 
   def _render(self, rect):
@@ -157,3 +169,6 @@ class TweaksLayout(Widget):
     self._dynamic_follow_button.action_item.set_enabled(self._dynamic_follow.action_item.get_state())
     self._launch_assist_button.action_item.set_enabled(self._launch_assist.action_item.get_state())
     self._park_assist_button.action_item.set_enabled(self._park_assist.action_item.get_state())
+    auto_lock_on = self._auto_door_lock.action_item.get_state()
+    self._auto_close_windows.action_item.set_enabled(auto_lock_on)
+    self._auto_fold_mirrors.action_item.set_enabled(auto_lock_on)

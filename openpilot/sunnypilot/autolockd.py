@@ -41,6 +41,22 @@ DM_SETTLE_S = 2.0             # min time the model must be live before we trust 
 DM_SAMPLE_S = 2.0             # sample the face probabilities over this window, take the max
 DM_TIMEOUT_S = 20.0          # give up (and do NOT lock) if the camera never comes up
 
+# Body-ECU diagnostic commands, all sent to address 0x750 on bus 0 (same as the lock).
+CMD_ADDR = 0x750
+CMD_BUS = 0
+LOCK_CMD = b"\x40\x05\x30\x11\x00\x80\x00\x00"
+MIRR_FOLD_R = b"\xA5\x04\x30\x21\x00\x08\x00\x00"
+MIRR_FOLD_L = b"\xA6\x04\x30\x21\x00\x08\x00\x00"
+WINDOW_CLOSE_FR = b"\x91\x04\x30\x01\x05\x20\x00\x00"
+WINDOW_CLOSE_FL = b"\x90\x04\x30\x01\x05\x20\x00\x00"
+WINDOW_CLOSE_RR = b"\x92\x04\x30\x01\x05\x20\x00\x00"
+WINDOW_CLOSE_RL = b"\x93\x04\x30\x01\x05\x20\x00\x00"
+
+
+def _frame_record(data: bytes, addr: int = CMD_ADDR, bus: int = CMD_BUS) -> bytes:
+  # pandad OffroadCanQueue record: [addr_hi, addr_lo, bus, dlc, data[8]].
+  return bytes([(addr >> 8) & 0xFF, addr & 0xFF, bus, len(data)]) + data.ljust(8, b"\x00")[:8]
+
 
 class State(Enum):
   IDLE = 0                   # disarmed: waiting for offroad + ignition off
@@ -206,9 +222,18 @@ class AutoDoorLock:
         self._set_state(State.WAIT_ALL_CLOSED)
 
     elif self.state == State.SEND_LOCK:
-      # pandad fires the hardcoded 0x750 lock frame offroad when it sees this trigger.
-      self.params.put_bool("CanTestTrigger", True)
-      cloudlog.warning("autolockd: cabin empty, sent door lock")
+      # Build the command sequence: close windows first, fold mirrors, then lock. pandad drains
+      # this queue offroad and sends every frame via ELM327.
+      queue = b""
+      if self.params.get_bool("AutoDoorLockCloseWindows"):
+        for cmd in (WINDOW_CLOSE_FR, WINDOW_CLOSE_FL, WINDOW_CLOSE_RR, WINDOW_CLOSE_RL):
+          queue += _frame_record(cmd)
+      if self.params.get_bool("AutoDoorLockFoldMirrors"):
+        queue += _frame_record(MIRR_FOLD_L) + _frame_record(MIRR_FOLD_R)
+      queue += _frame_record(LOCK_CMD)
+
+      self.params.put("OffroadCanQueue", queue)
+      cloudlog.warning(f"autolockd: cabin empty, sent {len(queue) // 12} command(s) (lock/windows/mirrors)")
       self._set_state(State.DONE)
 
     elif self.state == State.DONE:

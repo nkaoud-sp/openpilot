@@ -1,3 +1,8 @@
+#include <algorithm>
+#include <string>
+#include <tuple>
+#include <vector>
+
 #include "selfdrive/pandad/pandad.h"
 #include "openpilot/cereal/messaging/messaging.h"
 #include "common/swaglog.h"
@@ -85,31 +90,53 @@ bool PandaSafety::getOffroadMode() {
 
 void PandaSafety::maybeSendCanTest(bool is_onroad) {
   // Only ever touch the safety model offroad. Onroad the car-specific safety mode is active and
-  // must not be disturbed, so the trigger is intentionally ignored there.
+  // must not be disturbed, so these triggers are intentionally ignored there.
   if (is_onroad) {
     return;
   }
 
-  if (!params_.getBool("CanTestTrigger")) {
+  // frame = (address, bus, data)
+  std::vector<std::tuple<uint16_t, uint8_t, std::string>> frames;
+
+  // CanTestTrigger: single hardcoded 0x750 lock frame (the tweaks CAN test button).
+  if (params_.getBool("CanTestTrigger")) {
+    params_.remove("CanTestTrigger");
+    static const uint8_t lock[] = {0x40, 0x05, 0x30, 0x11, 0x00, 0x80, 0x00, 0x00};
+    frames.emplace_back(0x750, 0, std::string((const char *)lock, sizeof(lock)));
+  }
+
+  // OffroadCanQueue: arbitrary frames as 12-byte records [addr_hi, addr_lo, bus, dlc, data[8]].
+  std::string queue = params_.get("OffroadCanQueue");
+  if (!queue.empty()) {
+    params_.remove("OffroadCanQueue");
+    for (size_t i = 0; i + 12 <= queue.size(); i += 12) {
+      uint16_t addr = ((uint8_t)queue[i] << 8) | (uint8_t)queue[i + 1];
+      uint8_t bus = (uint8_t)queue[i + 2];
+      uint8_t dlc = std::min((uint8_t)queue[i + 3], (uint8_t)8);
+      frames.emplace_back(addr, bus, queue.substr(i + 4, dlc));
+    }
+  }
+
+  if (frames.empty()) {
     return;
   }
-  // One-shot: clear immediately so a stuck param can't keep spamming the bus.
-  params_.remove("CanTestTrigger");
 
   // 0x750 is a UDS diagnostic address; ELM327 (no OBD multiplexing) is the least-privilege mode
   // that allows transmitting it. The offroad health loop re-asserts NO_OUTPUT afterwards.
   panda_->set_safety_model(cereal::CarParams::SafetyModel::ELM327, 1U);
 
-  static const uint8_t payload[] = {0x40, 0x05, 0x30, 0x11, 0x00, 0x80, 0x00, 0x00};
   MessageBuilder msg;
   auto evt = msg.initEvent();
-  auto sendcan = evt.initSendcan(1);
-  sendcan[0].setAddress(0x750);
-  sendcan[0].setDat(kj::arrayPtr(payload, sizeof(payload)));
-  sendcan[0].setSrc(0);  // bus 0
+  auto sendcan = evt.initSendcan(frames.size());
+  for (size_t i = 0; i < frames.size(); i++) {
+    const auto &[addr, bus, data] = frames[i];
+    sendcan[i].setAddress(addr);
+    sendcan[i].setDat(kj::arrayPtr((const uint8_t *)data.data(), data.size()));
+    sendcan[i].setSrc(bus);
+  }
   panda_->can_send(sendcan.asReader());
 
-  LOGW("CanTest: sent 0x750 diagnostic frame on bus 0 via ELM327");
+  LOGW("CanTest: sent %lu offroad frame(s) via ELM327", frames.size());
 
   // Revert immediately; don't leave the panda in an output-capable mode.
   panda_->set_safety_model(cereal::CarParams::SafetyModel::NO_OUTPUT);
