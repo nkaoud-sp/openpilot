@@ -37,8 +37,8 @@ DRIVER_DOOR = "DOOR_OPEN_FL"  # left-hand-drive: driver = front-left
 DOOR_FRESH_S = 2.0
 
 FACE_THRESHOLD = 0.6          # a face over this in either seat means the cabin is occupied
-DM_SETTLE_S = 3.0             # let the camera/model settle after it comes alive before sampling
-DM_SAMPLE_S = 2.0             # sample the face probabilities over this window, take the max
+DM_SETTLE_S = 1.0             # let the camera/model settle after it comes alive before sampling
+DM_SAMPLE_S = 1.0             # sample the face probabilities over this window, take the max
 DM_TIMEOUT_S = 20.0          # give up (and do NOT lock) if the camera never comes up
 
 
@@ -147,6 +147,9 @@ class AutoDoorLock:
 
     elif self.state == State.WAIT_DRIVER_OPEN:
       if self._doors_fresh and self._door_open(DRIVER_DOOR):
+        # Pre-warm the camera now, while the driver is getting out, so the model is already
+        # alive by the time the doors are closed and we sample.
+        self._set_driver_cam(True)
         self._set_state(State.WAIT_DRIVER_CLOSE)
 
     elif self.state == State.WAIT_DRIVER_CLOSE:
@@ -190,6 +193,7 @@ class AutoDoorLock:
 
     elif self.state == State.WAIT_ANY_OPEN:
       if self._doors_fresh and self._any_door_open():
+        self._set_driver_cam(True)  # pre-warm again for the re-check
         self._set_state(State.WAIT_ALL_CLOSED)
 
     elif self.state == State.SEND_LOCK:
@@ -202,6 +206,7 @@ class AutoDoorLock:
       # Locked. If a door opens again (someone came back to the car without cycling the
       # ignition), re-arm and run the empty-check again so it can re-lock on the next exit.
       if self._doors_fresh and self._any_door_open():
+        self._set_driver_cam(True)  # pre-warm for the re-check
         self._set_state(State.WAIT_ALL_CLOSED)
 
 
