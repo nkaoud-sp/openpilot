@@ -7,6 +7,7 @@ import openpilot.cereal.messaging as messaging
 from openpilot.common.params import Params
 from openpilot.selfdrive.pandad import can_capnp_to_list
 from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.sunnypilot.autolock_commands import build_queue
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.sunnypilot.widgets.list_view import simple_button_item_sp
 from openpilot.system.ui.widgets.list_view import text_item
@@ -56,7 +57,7 @@ class CanTestSettingsLayout(Widget):
 
   def _initialize_items(self):
     self._send_button = simple_button_item_sp(
-      button_text=lambda: tr("Send Test CAN Frame"),
+      button_text=lambda: tr("Send Lock Sequence"),
       button_width=800,
       callback=self._on_send,
     )
@@ -67,11 +68,11 @@ class CanTestSettingsLayout(Widget):
     )
     return [
       text_item(
-        title=lambda: tr("CAN Frame"),
+        title=lambda: tr("CAN Sequence"),
         value=lambda: "0x750 · bus 0",
-        description=lambda: tr("Sends 40 05 30 11 00 80 00 00 to address 0x750 on bus 0 once per press. Works " +
-                              "offroad: pandad briefly switches the panda to ELM327 diagnostic mode, sends the " +
-                              "frame, then reverts. Requires a panda connected to a live CAN bus."),
+        description=lambda: tr("Queues the full close-windows + fold-mirrors + lock sequence to 0x750 on bus 0. " +
+                              "pandad sends them one at a time (spaced) via ELM327 offroad, since the body ECU " +
+                              "drops a single burst. Requires a panda on a live, awake CAN bus."),
       ),
       self._send_button,
       text_item(
@@ -155,8 +156,9 @@ class CanTestSettingsLayout(Widget):
     return f"{state} ({tr('stale')})" if stale else state
 
   def _on_send(self):
-    # pandad reads this trigger in its health loop, sends the frame offroad, and clears it.
-    self._params.put_bool("CanTestTrigger", True)
+    # Enqueue the full sequence (windows + mirrors + lock). pandad drains OffroadCanQueue one
+    # frame at a time (spaced), which the body ECU needs, unlike a single burst.
+    self._params.put("OffroadCanQueue", build_queue(close_windows=True, fold_mirrors=True))
 
   def _on_toggle_driver_check(self):
     self._set_driver_check(not self._driver_check_active)

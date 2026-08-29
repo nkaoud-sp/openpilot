@@ -1,11 +1,11 @@
 #include <algorithm>
 #include <string>
-#include <tuple>
 #include <vector>
 
 #include "selfdrive/pandad/pandad.h"
 #include "openpilot/cereal/messaging/messaging.h"
 #include "common/swaglog.h"
+#include "common/timing.h"
 
 void PandaSafety::configureSafetyMode(bool is_onroad) {
   if (is_onroad && !safety_configured_) {
@@ -88,38 +88,54 @@ bool PandaSafety::getOffroadMode() {
   return offroad_mode;
 }
 
+// Gap between offroad CAN frames. The body ECU drops back-to-back diagnostic frames, so they are
+// sent one at a time this far apart. Tune here if some commands still don't land.
+static constexpr uint64_t OFFROAD_CAN_GAP_NS = 200000000ULL;  // 200 ms
+
 void PandaSafety::maybeSendCanTest(bool is_onroad) {
   // Only ever touch the safety model offroad. Onroad the car-specific safety mode is active and
   // must not be disturbed, so these triggers are intentionally ignored there.
   if (is_onroad) {
+    offroad_records_.clear();
     return;
   }
 
-  // frame = (address, bus, data)
-  std::vector<std::tuple<uint16_t, uint8_t, std::string>> frames;
-
-  // CanTestTrigger: single hardcoded 0x750 lock frame (the tweaks CAN test button).
+  // Append newly requested frames to the pending queue.
+  // CanTestTrigger: single hardcoded 0x750 lock frame (kept for the tweaks CAN test button).
   if (params_.getBool("CanTestTrigger")) {
     params_.remove("CanTestTrigger");
     static const uint8_t lock[] = {0x40, 0x05, 0x30, 0x11, 0x00, 0x80, 0x00, 0x00};
-    frames.emplace_back(0x750, 0, std::string((const char *)lock, sizeof(lock)));
+    std::string rec = {0x07, 0x50, 0x00, 0x08};  // addr_hi, addr_lo, bus, dlc
+    rec.append((const char *)lock, sizeof(lock));
+    offroad_records_.push_back(rec);
   }
 
-  // OffroadCanQueue: arbitrary frames as 12-byte records [addr_hi, addr_lo, bus, dlc, data[8]].
+  // OffroadCanQueue: 12-byte records [addr_hi, addr_lo, bus, dlc, data[8]].
   std::string queue = params_.get("OffroadCanQueue");
   if (!queue.empty()) {
     params_.remove("OffroadCanQueue");
     for (size_t i = 0; i + 12 <= queue.size(); i += 12) {
-      uint16_t addr = ((uint8_t)queue[i] << 8) | (uint8_t)queue[i + 1];
-      uint8_t bus = (uint8_t)queue[i + 2];
-      uint8_t dlc = std::min((uint8_t)queue[i + 3], (uint8_t)8);
-      frames.emplace_back(addr, bus, queue.substr(i + 4, dlc));
+      offroad_records_.push_back(queue.substr(i, 12));
     }
   }
 
-  if (frames.empty()) {
+  if (offroad_records_.empty()) {
     return;
   }
+
+  // Space the frames out: send at most one per OFFROAD_CAN_GAP_NS.
+  uint64_t now = nanos_since_boot();
+  if (now - last_offroad_send_ns_ < OFFROAD_CAN_GAP_NS) {
+    return;
+  }
+  last_offroad_send_ns_ = now;
+
+  std::string rec = offroad_records_.front();
+  offroad_records_.erase(offroad_records_.begin());
+
+  uint16_t addr = ((uint8_t)rec[0] << 8) | (uint8_t)rec[1];
+  uint8_t bus = (uint8_t)rec[2];
+  uint8_t dlc = std::min((uint8_t)rec[3], (uint8_t)8);
 
   // 0x750 is a UDS diagnostic address; ELM327 (no OBD multiplexing) is the least-privilege mode
   // that allows transmitting it. The offroad health loop re-asserts NO_OUTPUT afterwards.
@@ -127,17 +143,14 @@ void PandaSafety::maybeSendCanTest(bool is_onroad) {
 
   MessageBuilder msg;
   auto evt = msg.initEvent();
-  auto sendcan = evt.initSendcan(frames.size());
-  for (size_t i = 0; i < frames.size(); i++) {
-    const auto &[addr, bus, data] = frames[i];
-    sendcan[i].setAddress(addr);
-    sendcan[i].setDat(kj::arrayPtr((const uint8_t *)data.data(), data.size()));
-    sendcan[i].setSrc(bus);
-  }
+  auto sendcan = evt.initSendcan(1);
+  sendcan[0].setAddress(addr);
+  sendcan[0].setDat(kj::arrayPtr((const uint8_t *)rec.data() + 4, dlc));
+  sendcan[0].setSrc(bus);
   panda_->can_send(sendcan.asReader());
-
-  LOGW("CanTest: sent %lu offroad frame(s) via ELM327", frames.size());
 
   // Revert immediately; don't leave the panda in an output-capable mode.
   panda_->set_safety_model(cereal::CarParams::SafetyModel::NO_OUTPUT);
+
+  LOGW("CanTest: sent offroad frame 0x%x on bus %d via ELM327 (%zu queued)", addr, bus, offroad_records_.size());
 }
