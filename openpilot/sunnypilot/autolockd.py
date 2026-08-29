@@ -15,7 +15,7 @@ re-checks after the next door open/close, and only locks once the cabin is confi
 Reused building blocks:
   - doors: BODY_CONTROL_STATE decoded off the raw 'can' stream (works offroad).
   - occupancy: IsDriverViewEnabled spins up the driver camera + DM model; driverStateV2 faceProb.
-  - lock send: CanTestTrigger, which pandad fires offroad via ELM327 (the 0x750 lock frame).
+  - CAN send: OffroadCanQueue, which pandad drains offroad via ELM327 (lock/window/mirror frames).
 """
 import time
 from enum import Enum

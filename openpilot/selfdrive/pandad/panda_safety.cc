@@ -92,24 +92,15 @@ bool PandaSafety::getOffroadMode() {
 // sent one at a time this far apart. Tune here if some commands still don't land.
 static constexpr uint64_t OFFROAD_CAN_GAP_NS = 200000000ULL;  // 200 ms
 
-void PandaSafety::maybeSendCanTest(bool is_onroad) {
+void PandaSafety::maybeSendOffroadCan(bool is_onroad) {
   // Only ever touch the safety model offroad. Onroad the car-specific safety mode is active and
-  // must not be disturbed, so these triggers are intentionally ignored there.
+  // must not be disturbed, so the queue is intentionally ignored there.
   if (is_onroad) {
     offroad_records_.clear();
     return;
   }
 
   // Append newly requested frames to the pending queue.
-  // CanTestTrigger: single hardcoded 0x750 lock frame (kept for the tweaks CAN test button).
-  if (params_.getBool("CanTestTrigger")) {
-    params_.remove("CanTestTrigger");
-    static const uint8_t lock[] = {0x40, 0x05, 0x30, 0x11, 0x00, 0x80, 0x00, 0x00};
-    std::string rec = {0x07, 0x50, 0x00, 0x08};  // addr_hi, addr_lo, bus, dlc
-    rec.append((const char *)lock, sizeof(lock));
-    offroad_records_.push_back(rec);
-  }
-
   // OffroadCanQueue: 12-byte records [addr_hi, addr_lo, bus, dlc, data[8]].
   std::string queue = params_.get("OffroadCanQueue");
   if (!queue.empty()) {
@@ -152,5 +143,5 @@ void PandaSafety::maybeSendCanTest(bool is_onroad) {
   // Revert immediately; don't leave the panda in an output-capable mode.
   panda_->set_safety_model(cereal::CarParams::SafetyModel::NO_OUTPUT);
 
-  LOGW("CanTest: sent offroad frame 0x%x on bus %d via ELM327 (%zu queued)", addr, bus, offroad_records_.size());
+  LOGW("OffroadCan: sent frame 0x%x on bus %d via ELM327 (%zu queued)", addr, bus, offroad_records_.size());
 }

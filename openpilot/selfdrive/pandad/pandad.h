@@ -23,10 +23,10 @@ public:
   void configureSafetyMode(bool is_onroad);
   bool getOffroadMode();
 
-  // Developer/auto-lock: send diagnostic CAN frames while offroad, requested via the CanTestTrigger
-  // and OffroadCanQueue params. Frames are drained one at a time with a gap (the body ECU drops a
-  // burst). No-op onroad, where the real safety mode is active.
-  void maybeSendCanTest(bool is_onroad);
+  // Send diagnostic CAN frames while offroad, queued via the OffroadCanQueue param (used by the
+  // auto door lock). Frames are drained one at a time with a gap (the body ECU drops a burst).
+  // No-op onroad, where the real safety mode is active.
+  void maybeSendOffroadCan(bool is_onroad);
 
 private:
   void updateMultiplexingMode();
