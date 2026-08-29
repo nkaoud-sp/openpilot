@@ -36,7 +36,7 @@ DRIVER_DOOR = "DOOR_OPEN_FL"  # left-hand-drive: driver = front-left
 # Door reads are only trusted this recently; older than this the powertrain bus is asleep.
 DOOR_FRESH_S = 2.0
 
-FACE_THRESHOLD = 0.7          # matches selfdrive/monitoring/policy.py _FACE_THRESHOLD
+FACE_THRESHOLD = 0.6          # a face over this in either seat means the cabin is occupied
 DM_SETTLE_S = 3.0             # let the camera/model settle after it comes alive before sampling
 DM_SAMPLE_S = 2.0             # sample the face probabilities over this window, take the max
 DM_TIMEOUT_S = 20.0          # give up (and do NOT lock) if the camera never comes up
