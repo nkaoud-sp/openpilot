@@ -69,6 +69,25 @@ class TestLaneTurnDesire(OpenpilotTestCase):
     controller.update_lane_turn(False, True, True, False, v_ego)
     assert controller.get_turn_direction() == expected
 
+  @parameterized.expand([
+    (TurnDirection.turnLeft, TurnDirection.turnLeft),
+    (TurnDirection.turnRight, TurnDirection.turnRight),
+    (TurnDirection.none, TurnDirection.none),
+  ])
+  def test_lane_turn_button_override(self, button_value, expected):
+    # The manual button overrides regardless of speed, blinkers, or the toggle being off.
+    params = Params()
+    params.put("LaneTurnButtonDirection", int(button_value))
+    dh = DesireHelper()
+    controller = LaneTurnController(dh)
+    controller.enabled = False
+    controller.lane_turn_value = LANE_CHANGE_SPEED_MIN
+    controller.turn_direction = TurnDirection.none
+    # High speed, no blinkers: normally yields no turn desire at all.
+    controller.update_lane_turn(False, False, False, False, 30.0)
+    assert controller.get_turn_direction() == expected
+    params.put("LaneTurnButtonDirection", int(TurnDirection.none))
+
 
 class DummyCarState:
   def __init__(self, vEgo=0, leftBlinker=False, rightBlinker=False, leftBlindspot=False, rightBlindspot=False,

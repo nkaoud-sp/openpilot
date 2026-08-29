@@ -6,8 +6,10 @@ See the LICENSE.md file in the root directory for more details.
 """
 import pyray as rl
 
+from openpilot.cereal import custom
 from openpilot.common.constants import CV
 from openpilot.selfdrive.ui.mici.onroad.torque_bar import TorqueBar
+from openpilot.selfdrive.ui.sunnypilot.onroad.lane_turn_button import LaneTurnButton
 from openpilot.selfdrive.ui.sunnypilot.onroad.developer_ui import DeveloperUiRenderer, DeveloperUiState, get_bottom_dev_ui_offset
 from openpilot.selfdrive.ui.sunnypilot.onroad.road_name import RoadNameRenderer
 from openpilot.selfdrive.ui.sunnypilot.onroad.rocket_fuel import RocketFuel
@@ -24,6 +26,8 @@ from openpilot.system.ui.lib.text_measure import measure_text_cached
 
 SLA_ACTIVE_COLOR = rl.Color(0x91, 0x9b, 0x95, 0xff)
 
+TurnDirection = custom.ModelDataV2SP.TurnDirection
+
 
 class HudRendererSP(HudRenderer):
   def __init__(self):
@@ -37,6 +41,10 @@ class HudRendererSP(HudRenderer):
     self.circular_alerts_renderer = CircularAlertsRenderer()
     self.speed_renderer = SpeedRenderer()
     self._torque_bar = TorqueBar(scale=3.0, always=True)
+
+    # Manual turn-desire request buttons (left / right edges).
+    self._lane_turn_left_button = LaneTurnButton(TurnDirection.turnLeft, UI_CONFIG.button_size)
+    self._lane_turn_right_button = LaneTurnButton(TurnDirection.turnRight, UI_CONFIG.button_size)
 
     self.pcm_cruise_speed: bool = True
     self.show_icbm_status: bool = False
@@ -144,3 +152,18 @@ class HudRendererSP(HudRenderer):
     self.turn_signal_controller.render(rect)
     self.circular_alerts_renderer.render(rect)
     self.rocket_fuel.render(rect, ui_state.sm)
+
+    self._render_lane_turn_buttons(rect)
+
+  def _render_lane_turn_buttons(self, rect: rl.Rectangle) -> None:
+    size = UI_CONFIG.button_size
+    y = rect.y + rect.height / 2 - size / 2
+    left_x = rect.x + UI_CONFIG.border_size
+    right_x = rect.x + rect.width - UI_CONFIG.border_size - size
+    self._lane_turn_left_button.render(rl.Rectangle(left_x, y, size, size))
+    self._lane_turn_right_button.render(rl.Rectangle(right_x, y, size, size))
+
+  def user_interacting(self) -> bool:
+    return (super().user_interacting() or
+            self._lane_turn_left_button.is_pressed or
+            self._lane_turn_right_button.is_pressed)
