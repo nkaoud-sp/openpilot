@@ -93,6 +93,13 @@ class TweaksLayout(Widget):
       callback=lambda: self._set_current_panel(PanelType.SPEED_ASSIST),
     )
 
+    self._reverse_cruise = toggle_item_sp(
+      title=lambda: tr("Reverse Cruise Increase"),
+      description=lambda: tr("Reverse the cruise control button behavior so a short press increases the set speed " +
+                            "by 5 instead of 1. Lexus/Toyota only. Requires openpilot longitudinal control."),
+      param="ToyotaReverseCruise",
+    )
+
     self._auto_lock_button = simple_button_item_sp(
       button_text=lambda: tr("Auto Door Lock"),
       button_width=800,
@@ -108,6 +115,7 @@ class TweaksLayout(Widget):
       self._park_assist,
       self._park_assist_button,
       self._speed_assist_button,
+      self._reverse_cruise,
       self._auto_lock_button,
     ]
 
