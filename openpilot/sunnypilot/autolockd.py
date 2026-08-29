@@ -199,7 +199,10 @@ class AutoDoorLock:
       self._set_state(State.DONE)
 
     elif self.state == State.DONE:
-      pass  # stay locked; the ignition-on guard above re-arms us for next time
+      # Locked. If a door opens again (someone came back to the car without cycling the
+      # ignition), re-arm and run the empty-check again so it can re-lock on the next exit.
+      if self._doors_fresh and self._any_door_open():
+        self._set_state(State.WAIT_ALL_CLOSED)
 
 
 def main():
