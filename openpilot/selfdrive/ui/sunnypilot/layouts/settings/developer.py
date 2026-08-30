@@ -6,8 +6,11 @@ See the LICENSE.md file in the root directory for more details.
 """
 import datetime
 import os
+import subprocess
+import sys
 from pathlib import Path
 
+from openpilot.common.basedir import BASEDIR
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.selfdrive.ui.layouts.settings.developer import DeveloperLayout
 from openpilot.common.hardware import PC
@@ -52,7 +55,17 @@ class DeveloperLayoutSP(DeveloperLayout):
 
     self.error_log_btn = button_item(tr("Error Log"), tr("VIEW"), tr("View the error log for sunnypilot crashes."), callback=self._on_error_log_clicked)
 
-    self.items: list = [self.show_advanced_controls, self.enable_github_runner_toggle, self.enable_copyparty_toggle, self.prebuilt_toggle, self.error_log_btn,]
+    self.turn_signal_test_btn = button_item(
+      tr("Toyota Turn Signal CAN Test"),
+      tr("RUN"),
+      tr("Bench reverse-engineering tool. Replays the Techstream turn-signal active test (UDS 0x2F to the " +
+         "combination meter, 0x7C0) via the panda in elm327 mode. Toyota/Lexus only, verified on 2019+ Lexus ES. " +
+         "Car ON, in PARK, stationary. openpilot must be stopped (offroad) or the panda will be busy."),
+      callback=self._on_turn_signal_test_clicked,
+    )
+
+    self.items: list = [self.show_advanced_controls, self.enable_github_runner_toggle, self.enable_copyparty_toggle,
+                        self.prebuilt_toggle, self.error_log_btn, self.turn_signal_test_btn,]
 
   @staticmethod
   def _on_prebuilt_toggled(state):
@@ -71,6 +84,31 @@ class DeveloperLayoutSP(DeveloperLayout):
     if result == DialogResult.CONFIRM and log_exists:
       dialog2 = ConfirmDialog(tr("Would you like to delete this log?"), tr("Yes"), tr("No"), rich=False, callback=self._on_delete_confirm)
       gui_app.push_widget(dialog2)
+
+  def _on_turn_signal_test_confirm(self, result):
+    if result != DialogResult.CONFIRM:
+      return
+    log_path = os.path.join(Paths.log_root(), "turn_signal_test.log")
+    try:
+      os.makedirs(Paths.log_root(), exist_ok=True)
+      logfile = open(log_path, "w")
+      subprocess.Popen(
+        [sys.executable, "-m", "openpilot.tools.toyota.turn_signal_test", "--right", "--duration", "5", "--yes"],
+        cwd=BASEDIR, stdout=logfile, stderr=subprocess.STDOUT, start_new_session=True,
+      )
+    except Exception:
+      pass
+
+  def _on_turn_signal_test_clicked(self):
+    content = (
+      f"<h1>{tr('Toyota Turn Signal CAN Test')}</h1><br>" +
+      f"<p>{tr('This sends a diagnostic active test to the combination meter (0x7C0) to flash the RIGHT turn signal for 5 seconds.')}</p>" +
+      f"<p><b>{tr('Bench use only.')}</b> {tr('Car ON, in PARK, stationary. Toyota/Lexus only (verified on 2019+ Lexus ES).')}</p>" +
+      f"<p>{tr('openpilot must be stopped (offroad) so the panda is free, otherwise nothing will actuate. Output is logged to')} " +
+      f"{os.path.join(Paths.log_root(), 'turn_signal_test.log')}.</p>"
+    )
+    dialog = ConfirmDialog(content, tr("Run"), rich=True, callback=self._on_turn_signal_test_confirm)
+    gui_app.push_widget(dialog)
 
   def _on_error_log_clicked(self):
     text = ""
@@ -104,3 +142,5 @@ class DeveloperLayoutSP(DeveloperLayout):
     self.enable_copyparty_toggle.set_visible(show_advanced)
     self.enable_github_runner_toggle.set_visible(show_advanced and not self._is_release_branch)
     self.error_log_btn.set_visible(not self._is_release_branch)
+    # bench reverse-engineering tool: keep it out of release builds and behind Show Advanced Controls
+    self.turn_signal_test_btn.set_visible(show_advanced and not self._is_release_branch)
