@@ -42,6 +42,11 @@ BUS = 0
 # Verified right-turn active-test payloads (exact bytes from the Techstream capture)
 RIGHT_A = bytes.fromhex("2F291103" + "0000000000000008")
 RIGHT_B = bytes.fromhex("2F291103" + "0000000800000008")
+TURN_BITS = {
+  "right": 0x08,
+  "left": 0x10,
+  "hazard": 0x18,
+}
 
 # Session / control helpers
 EXTENDED_SESSION = bytes.fromhex("1003")   # DiagnosticSessionControl -> extended
@@ -174,6 +179,15 @@ def make_payload(byte_index: int, bits: int) -> bytes:
   return bytes.fromhex("2F291103") + bytes(state)
 
 
+def make_turn_payload(signal: str) -> bytes:
+  """Build a verified turn signal active-test payload by signal name."""
+  bits = TURN_BITS[signal]
+  state = bytearray(8)
+  state[3] = bits
+  state[7] = bits
+  return bytes.fromhex("2F291103") + bytes(state)
+
+
 def sweep(panda, bits: int, dwell: float) -> None:
   """
   Enumerate the 8 control-state bytes one at a time so you can watch which
@@ -189,11 +203,41 @@ def sweep(panda, bits: int, dwell: float) -> None:
     isotp_recv(panda)
 
 
+def run_sequence(panda) -> None:
+  """Run the scripted left/right/hazard timing sequence directly through panda."""
+  sequence = (
+    ("left", 0.8, 0.4, 5),
+    ("right", 0.4, 0.8, 5),
+    ("hazard", 0.6, 0.6, 5),
+  )
+  for signal, on_seconds, off_seconds, repeats in sequence:
+    on_payload = make_turn_payload(signal)
+    off_payload = bytes.fromhex("2F291103") + bytes([0, 0, 0, 0, 0, 0, 0, TURN_BITS[signal]])
+    print(f"\n{signal}: {on_seconds:.1f}s on / {off_seconds:.1f}s off x{repeats}")
+    for _ in range(repeats):
+      isotp_send(panda, on_payload)
+      print(f"    ON  -> {on_payload.hex(' ')}   {_describe(isotp_recv(panda))}")
+      time.sleep(on_seconds)
+      isotp_send(panda, off_payload)
+      print(f"    OFF -> {off_payload.hex(' ')}   {_describe(isotp_recv(panda))}")
+      time.sleep(off_seconds)
+
+
 def run_enqueue(args) -> None:
   """On-device offroad path: hand frames to pandad via Params OffroadCanQueue (no panda claim)."""
   from openpilot.common.params import Params
   from openpilot.sunnypilot.autolock_commands import frame_record, LOCK_CMD, UNLOCK_CMD
-  from openpilot.sunnypilot.turn_signal_commands import build_turn_signal_queue
+  from openpilot.sunnypilot.turn_signal_commands import (
+    build_turn_signal_pulse_queue,
+    build_turn_signal_queue,
+    build_turn_signal_sweep_queue,
+    turn_signal_payload,
+  )
+
+  if args.sequence:
+    Params().put_bool("OffroadTurnSignalSequence", True)
+    print("requested turn signal sequence via pandad internal timer")
+    return
 
   if args.lock:
     queue, what = frame_record(LOCK_CMD), "door lock"
@@ -201,9 +245,20 @@ def run_enqueue(args) -> None:
     queue, what = frame_record(UNLOCK_CMD), "door unlock"
   elif args.lock_test:
     queue, what = (frame_record(LOCK_CMD) * 6) + frame_record(UNLOCK_CMD), "door lock + unlock"
+  elif args.left:
+    queue = build_turn_signal_pulse_queue("left", session=not args.no_session)
+    what = "left turn signal"
+  elif args.hazard:
+    queue = build_turn_signal_pulse_queue("hazard", session=not args.no_session)
+    what = "hazard lights"
+  elif args.sweep:
+    queue = build_turn_signal_sweep_queue(bits=args.bits, session=not args.no_session)
+    what = "turn signal byte sweep"
   else:
-    payload = bytes.fromhex(args.payload.replace(" ", "")) if args.payload else RIGHT_B
-    queue = build_turn_signal_queue(payload, session=not args.no_session)
+    if args.payload:
+      queue = build_turn_signal_queue(bytes.fromhex(args.payload.replace(" ", "")), session=not args.no_session)
+    else:
+      queue = build_turn_signal_pulse_queue("right", session=not args.no_session)
     what = "right turn signal"
 
   Params().put("OffroadCanQueue", queue)
@@ -224,6 +279,9 @@ def main() -> None:
   p = argparse.ArgumentParser(description="Toyota/Lexus turn-signal CAN active-test (bench)")
   mode = p.add_mutually_exclusive_group()
   mode.add_argument("--right", action="store_true", help="verified right-turn test (replays the capture)")
+  mode.add_argument("--left", action="store_true", help="verified left-turn test")
+  mode.add_argument("--hazard", action="store_true", help="verified hazard-lights test")
+  mode.add_argument("--sequence", action="store_true", help="scripted left/right/hazard timing sequence")
   mode.add_argument("--sweep", action="store_true", help="enumerate control bytes to discover left/hazard/etc.")
   mode.add_argument("--off", action="store_true", help="return control to the ECU (stop any active test)")
   mode.add_argument("--payload", metavar="HEX", help="raw active-test payload, e.g. 2F2911030000000800000008")
@@ -281,11 +339,17 @@ def main() -> None:
 
     if args.sweep:
       sweep(panda, args.bits, args.dwell)
+    elif args.sequence:
+      run_sequence(panda)
     else:
       if args.payload is not None:
         frames = [bytes.fromhex(args.payload.replace(" ", ""))]
       elif args.byte is not None:
         frames = [make_payload(args.byte, args.bits)]
+      elif args.left:
+        frames = [make_turn_payload("left")]
+      elif args.hazard:
+        frames = [make_turn_payload("hazard")]
       else:  # default / --right : replay both captured frames
         frames = [RIGHT_A, RIGHT_B]
       hold(panda, frames, args.duration, rate=args.rate)

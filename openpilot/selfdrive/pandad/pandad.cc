@@ -391,6 +391,7 @@ void pandad_run(Panda *panda) {
   // Main loop: receive CAN first, then process lower priority panda and peripheral state.
   while (!do_exit && check_connected(panda)) {
     can_recv(panda, &pm);
+    panda_safety.maybeRunTurnSignalSequence(is_onroad);
 
     // Process peripheral state at 20 Hz
     if (rk.frame() % 5 == 0) {
