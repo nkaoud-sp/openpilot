@@ -6,11 +6,8 @@ See the LICENSE.md file in the root directory for more details.
 """
 import datetime
 import os
-import subprocess
-import sys
 from pathlib import Path
 
-from openpilot.common.basedir import BASEDIR
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.selfdrive.ui.layouts.settings.developer import DeveloperLayout
 from openpilot.common.hardware import PC
@@ -21,6 +18,8 @@ from openpilot.system.ui.widgets import DialogResult
 from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog
 from openpilot.system.ui.widgets.list_view import button_item
 
+from openpilot.sunnypilot.autolock_commands import frame_record, LOCK_CMD, UNLOCK_CMD
+from openpilot.sunnypilot.turn_signal_commands import build_turn_signal_queue
 from openpilot.system.ui.sunnypilot.widgets.html_render import HtmlModalSP
 from openpilot.system.ui.sunnypilot.widgets.list_view import toggle_item_sp
 
@@ -55,17 +54,28 @@ class DeveloperLayoutSP(DeveloperLayout):
 
     self.error_log_btn = button_item(tr("Error Log"), tr("VIEW"), tr("View the error log for sunnypilot crashes."), callback=self._on_error_log_clicked)
 
+    self.door_lock_test_btn = button_item(
+      tr("Door Lock CAN Test"),
+      tr("RUN"),
+      tr("Sanity check that the panda is transmitting: queues the known-good lock then unlock frames " +
+         "(0x750) via pandad's offroad ELM327 path. You should hear the doors lock, then unlock. " +
+         "Toyota/Lexus only. Offroad only."),
+      callback=self._on_door_lock_test_clicked,
+      enabled=ui_state.is_offroad,
+    )
+
     self.turn_signal_test_btn = button_item(
       tr("Toyota Turn Signal CAN Test"),
       tr("RUN"),
-      tr("Bench reverse-engineering tool. Replays the Techstream turn-signal active test (UDS 0x2F to the " +
-         "combination meter, 0x7C0) via the panda in elm327 mode. Toyota/Lexus only, verified on 2019+ Lexus ES. " +
-         "Car ON, in PARK, stationary. openpilot must be stopped (offroad) or the panda will be busy."),
+      tr("Flashes the RIGHT turn signal by queuing the Techstream active test (UDS 0x2F to the combination " +
+         "meter, 0x7C0) via pandad's offroad ELM327 path. Toyota/Lexus only, verified on 2019+ Lexus ES. " +
+         "Offroad only; ignition on so the meter actuates the lamps."),
       callback=self._on_turn_signal_test_clicked,
+      enabled=ui_state.is_offroad,
     )
 
     self.items: list = [self.show_advanced_controls, self.enable_github_runner_toggle, self.enable_copyparty_toggle,
-                        self.prebuilt_toggle, self.error_log_btn, self.turn_signal_test_btn,]
+                        self.prebuilt_toggle, self.error_log_btn, self.door_lock_test_btn, self.turn_signal_test_btn,]
 
   @staticmethod
   def _on_prebuilt_toggled(state):
@@ -85,27 +95,36 @@ class DeveloperLayoutSP(DeveloperLayout):
       dialog2 = ConfirmDialog(tr("Would you like to delete this log?"), tr("Yes"), tr("No"), rich=False, callback=self._on_delete_confirm)
       gui_app.push_widget(dialog2)
 
+  def _enqueue_offroad_can(self, queue: bytes):
+    # pandad drains OffroadCanQueue offroad via ELM327, one frame per 200 ms (see panda_safety.cc).
+    if queue and ui_state.is_offroad():
+      ui_state.params.put("OffroadCanQueue", queue)
+
+  def _on_door_lock_test_confirm(self, result):
+    if result == DialogResult.CONFIRM:
+      # Known-good frames drained 200 ms apart: hold lock ~1 s (idempotent repeats), then unlock,
+      # so you hear the lock, a pause, then the unlock.
+      self._enqueue_offroad_can((frame_record(LOCK_CMD) * 6) + frame_record(UNLOCK_CMD))
+
+  def _on_door_lock_test_clicked(self):
+    content = (
+      f"<h1>{tr('Door Lock CAN Test')}</h1><br>" +
+      f"<p>{tr('Queues the known-good lock then unlock frames (0x750) to confirm the panda is transmitting.')} " +
+      f"{tr('You should hear the doors lock, then unlock.')}</p>" +
+      f"<p><b>{tr('Toyota/Lexus only. Offroad only.')}</b></p>"
+    )
+    dialog = ConfirmDialog(content, tr("Run"), rich=True, callback=self._on_door_lock_test_confirm)
+    gui_app.push_widget(dialog)
+
   def _on_turn_signal_test_confirm(self, result):
-    if result != DialogResult.CONFIRM:
-      return
-    log_path = os.path.join(Paths.log_root(), "turn_signal_test.log")
-    try:
-      os.makedirs(Paths.log_root(), exist_ok=True)
-      logfile = open(log_path, "w")
-      subprocess.Popen(
-        [sys.executable, "-m", "openpilot.tools.toyota.turn_signal_test", "--right", "--duration", "5", "--yes"],
-        cwd=BASEDIR, stdout=logfile, stderr=subprocess.STDOUT, start_new_session=True,
-      )
-    except Exception:
-      pass
+    if result == DialogResult.CONFIRM:
+      self._enqueue_offroad_can(build_turn_signal_queue())
 
   def _on_turn_signal_test_clicked(self):
     content = (
       f"<h1>{tr('Toyota Turn Signal CAN Test')}</h1><br>" +
-      f"<p>{tr('This sends a diagnostic active test to the combination meter (0x7C0) to flash the RIGHT turn signal for 5 seconds.')}</p>" +
-      f"<p><b>{tr('Bench use only.')}</b> {tr('Car ON, in PARK, stationary. Toyota/Lexus only (verified on 2019+ Lexus ES).')}</p>" +
-      f"<p>{tr('openpilot must be stopped (offroad) so the panda is free, otherwise nothing will actuate. Output is logged to')} " +
-      f"{os.path.join(Paths.log_root(), 'turn_signal_test.log')}.</p>"
+      f"<p>{tr('Queues the Techstream active test (UDS 0x2F to the combination meter, 0x7C0) to flash the RIGHT turn signal for a few seconds.')}</p>" +
+      f"<p><b>{tr('Toyota/Lexus only')}</b> {tr('(verified on 2019+ Lexus ES). Offroad only, ignition on so the meter actuates the lamps.')}</p>"
     )
     dialog = ConfirmDialog(content, tr("Run"), rich=True, callback=self._on_turn_signal_test_confirm)
     gui_app.push_widget(dialog)
@@ -142,5 +161,6 @@ class DeveloperLayoutSP(DeveloperLayout):
     self.enable_copyparty_toggle.set_visible(show_advanced)
     self.enable_github_runner_toggle.set_visible(show_advanced and not self._is_release_branch)
     self.error_log_btn.set_visible(not self._is_release_branch)
-    # bench reverse-engineering tool: keep it out of release builds and behind Show Advanced Controls
+    # reverse-engineering test tools: keep them out of release builds and behind Show Advanced Controls
+    self.door_lock_test_btn.set_visible(show_advanced and not self._is_release_branch)
     self.turn_signal_test_btn.set_visible(show_advanced and not self._is_release_branch)

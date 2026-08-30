@@ -189,11 +189,34 @@ def sweep(panda, bits: int, dwell: float) -> None:
     isotp_recv(panda)
 
 
+def run_enqueue(args) -> None:
+  """On-device offroad path: hand frames to pandad via Params OffroadCanQueue (no panda claim)."""
+  from openpilot.common.params import Params
+  from openpilot.sunnypilot.autolock_commands import frame_record, LOCK_CMD, UNLOCK_CMD
+  from openpilot.sunnypilot.turn_signal_commands import build_turn_signal_queue
+
+  if args.lock:
+    queue, what = frame_record(LOCK_CMD), "door lock"
+  elif args.unlock:
+    queue, what = frame_record(UNLOCK_CMD), "door unlock"
+  elif args.lock_test:
+    queue, what = (frame_record(LOCK_CMD) * 6) + frame_record(UNLOCK_CMD), "door lock + unlock"
+  else:
+    payload = bytes.fromhex(args.payload.replace(" ", "")) if args.payload else RIGHT_B
+    queue = build_turn_signal_queue(payload, session=not args.no_session)
+    what = "right turn signal"
+
+  Params().put("OffroadCanQueue", queue)
+  print(f"queued {what}: {len(queue) // 12} frame(s) written to OffroadCanQueue " +
+        "(pandad drains them offroad via ELM327, 200ms apart)")
+
+
 BANNER = """
 ============================================================
  Toyota/Lexus TURN SIGNAL active-test  (BENCH USE ONLY)
  Car ON, in PARK, stationary. openpilot must be STOPPED.
  Verified only on 2019+ Lexus ES (TSS2). Others: unverified.
+ On a running device use --enqueue instead (offroad).
 ============================================================"""
 
 
@@ -205,6 +228,11 @@ def main() -> None:
   mode.add_argument("--off", action="store_true", help="return control to the ECU (stop any active test)")
   mode.add_argument("--payload", metavar="HEX", help="raw active-test payload, e.g. 2F2911030000000800000008")
   mode.add_argument("--byte", type=int, metavar="N", help="set control-state byte N (0-7); use with --bits")
+  mode.add_argument("--lock", action="store_true", help="door lock sanity frame (0x750)")
+  mode.add_argument("--unlock", action="store_true", help="door unlock sanity frame (0x750)")
+  mode.add_argument("--lock-test", action="store_true", help="lock then unlock (audible panda-TX check)")
+  p.add_argument("--enqueue", action="store_true",
+                 help="on-device offroad path: write Params OffroadCanQueue for pandad to drain (no panda claim)")
   p.add_argument("--bits", type=lambda x: int(x, 0), default=0x08, help="bit value for --byte/--sweep (default 0x08)")
   p.add_argument("--duration", type=float, default=5.0, help="seconds to hold the test (default 5)")
   p.add_argument("--dwell", type=float, default=2.0, help="seconds per byte in --sweep (default 2)")
@@ -212,6 +240,10 @@ def main() -> None:
   p.add_argument("--no-session", action="store_true", help="skip DiagnosticSessionControl 0x1003")
   p.add_argument("-y", "--yes", action="store_true", help="skip the confirmation prompt")
   args = p.parse_args()
+
+  if args.enqueue:
+    run_enqueue(args)
+    return
 
   print(BANNER)
   if not args.yes:
@@ -226,12 +258,24 @@ def main() -> None:
   panda = open_panda()
   print(f"panda opened, elm327 safety set, tx=0x{REQUEST_ADDR:03X} rx=0x{RESPONSE_ADDR:03X} bus={BUS}")
 
-  try:
-    if args.off:
-      isotp_send(panda, RETURN_CONTROL)
-      print(f"  returnControlToECU: {_describe(isotp_recv(panda))}")
-      return
+  if args.off:
+    isotp_send(panda, RETURN_CONTROL)
+    print(f"  returnControlToECU: {_describe(isotp_recv(panda))}")
+    return
 
+  if args.lock or args.unlock or args.lock_test:
+    from openpilot.sunnypilot.autolock_commands import LOCK_CMD, UNLOCK_CMD
+    if args.lock or args.lock_test:
+      panda.can_send(0x750, LOCK_CMD, BUS)
+      print(f"  sent door lock:   0x750  {LOCK_CMD.hex(' ')}")
+    if args.lock_test:
+      time.sleep(1.0)
+    if args.unlock or args.lock_test:
+      panda.can_send(0x750, UNLOCK_CMD, BUS)
+      print(f"  sent door unlock: 0x750  {UNLOCK_CMD.hex(' ')}")
+    return
+
+  try:
     if not args.no_session:
       begin_session(panda)
 
