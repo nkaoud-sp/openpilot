@@ -53,6 +53,7 @@ class UIStateSP:
     self.onroad_brightness: int = 0
     self.onroad_brightness_timer: int = 0
     self.onroad_brightness_timer_param: int = 0
+    self.lane_turn_buttons: bool = False
     self.rainbow_path: bool = False
     self.road_name_toggle: bool = False
     self.rocket_fuel: bool = False
@@ -163,6 +164,7 @@ class UIStateSP:
     self.hide_v_ego_ui = self.params.get_bool("HideVEgoUI")
     self.onroad_brightness = int(float(self.params.get("OnroadScreenOffBrightness", return_default=True)))
     self.onroad_brightness_timer_param = self.params.get("OnroadScreenOffTimer", return_default=True)
+    self.lane_turn_buttons = self.params.get_bool("LaneTurnButtonsVisible")
     self.rainbow_path = self.params.get_bool("RainbowMode")
     self.road_name_toggle = self.params.get_bool("RoadNameToggle")
     self.rocket_fuel = self.params.get_bool("RocketFuel")

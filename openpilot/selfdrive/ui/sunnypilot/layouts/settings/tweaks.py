@@ -109,6 +109,14 @@ class TweaksLayout(Widget):
       callback=lambda: self._set_current_panel(PanelType.AUTO_LOCK),
     )
 
+    self._lane_turn_buttons = toggle_item_sp(
+      title=lambda: tr("Show Lane Turn Buttons"),
+      description=lambda: tr("Show two on-road buttons on the left and right edges of the driving view. Holding a " +
+                            "button manually requests a turn desire in that direction, which nudges the model to " +
+                            "plan a turn that way."),
+      param="LaneTurnButtonsVisible",
+    )
+
     return [
       self._remember_experimental_mode,
       self._dynamic_follow,
@@ -120,6 +128,7 @@ class TweaksLayout(Widget):
       self._speed_assist_button,
       self._reverse_cruise,
       self._auto_lock_button,
+      self._lane_turn_buttons,
     ]
 
   def _on_reverse_cruise(self, state: bool):
