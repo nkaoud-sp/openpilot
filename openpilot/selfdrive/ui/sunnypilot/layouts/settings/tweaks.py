@@ -11,6 +11,7 @@ from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.dynam
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.launch_assist_settings import LaunchAssistSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.park_assist_settings import ParkAssistSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.speed_assist_settings import SpeedAssistSettingsLayout
+from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.sunnypilot.widgets.list_view import simple_button_item_sp, toggle_item_sp
 from openpilot.system.ui.widgets import Widget
@@ -98,6 +99,8 @@ class TweaksLayout(Widget):
       description=lambda: tr("Reverse the cruise control button behavior so a short press increases the set speed " +
                             "by 5 instead of 1. Lexus/Toyota only. Requires openpilot longitudinal control."),
       param="ToyotaReverseCruise",
+      callback=self._on_reverse_cruise,
+      enabled=lambda: not ui_state.engaged,
     )
 
     self._auto_lock_button = simple_button_item_sp(
@@ -118,6 +121,11 @@ class TweaksLayout(Widget):
       self._reverse_cruise,
       self._auto_lock_button,
     ]
+
+  def _on_reverse_cruise(self, state: bool):
+    # The flag is read at car-process init, so request an onroad cycle to apply it without a full reboot.
+    ui_state.params.put_bool("ToyotaReverseCruise", state)
+    ui_state.params.put_bool("OnroadCycleRequested", True)
 
   def _render(self, rect):
     if self._current_panel == PanelType.DYNAMIC_FOLLOW:
