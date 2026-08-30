@@ -6,10 +6,11 @@ See the LICENSE.md file in the root directory for more details.
 """
 import pyray as rl
 
-from openpilot.cereal import custom
 from openpilot.common.constants import CV
 from openpilot.selfdrive.ui.mici.onroad.torque_bar import TorqueBar
-from openpilot.selfdrive.ui.sunnypilot.onroad.lane_turn_button import LaneTurnButton
+from openpilot.selfdrive.ui.sunnypilot.onroad.lane_turn_button import (
+  DesireButton, DIR_LEFT, DIR_RIGHT, LANE_TURN_BUTTON_PARAM, LANE_CHANGE_BUTTON_PARAM,
+)
 from openpilot.selfdrive.ui.sunnypilot.onroad.developer_ui import DeveloperUiRenderer, DeveloperUiState, get_bottom_dev_ui_offset
 from openpilot.selfdrive.ui.sunnypilot.onroad.road_name import RoadNameRenderer
 from openpilot.selfdrive.ui.sunnypilot.onroad.rocket_fuel import RocketFuel
@@ -26,7 +27,12 @@ from openpilot.system.ui.lib.text_measure import measure_text_cached
 
 SLA_ACTIVE_COLOR = rl.Color(0x91, 0x9b, 0x95, 0xff)
 
-TurnDirection = custom.ModelDataV2SP.TurnDirection
+# Manual desire buttons: turn desires are red, lane changes are orange. Sized 50%
+# larger than the standard on-road button.
+LANE_TURN_CHEVRON_COLOR = rl.Color(0xff, 0x3b, 0x30, 0xff)
+LANE_CHANGE_CHEVRON_COLOR = rl.Color(0xff, 0x9f, 0x0a, 0xff)
+DESIRE_BUTTON_SIZE = int(UI_CONFIG.button_size * 1.5)
+DESIRE_BUTTON_GAP = 24
 
 
 class HudRendererSP(HudRenderer):
@@ -42,9 +48,16 @@ class HudRendererSP(HudRenderer):
     self.speed_renderer = SpeedRenderer()
     self._torque_bar = TorqueBar(scale=3.0, always=True)
 
-    # Manual turn-desire request buttons (left / right edges).
-    self._lane_turn_left_button = LaneTurnButton(TurnDirection.turnLeft, UI_CONFIG.button_size)
-    self._lane_turn_right_button = LaneTurnButton(TurnDirection.turnRight, UI_CONFIG.button_size)
+    # Manual desire request buttons: turn desires (red) on top, lane changes (orange)
+    # below, on the left and right edges of the driving view.
+    self._lane_turn_left_button = DesireButton(LANE_TURN_BUTTON_PARAM, DIR_LEFT, LANE_TURN_CHEVRON_COLOR, DESIRE_BUTTON_SIZE)
+    self._lane_turn_right_button = DesireButton(LANE_TURN_BUTTON_PARAM, DIR_RIGHT, LANE_TURN_CHEVRON_COLOR, DESIRE_BUTTON_SIZE)
+    self._lane_change_left_button = DesireButton(LANE_CHANGE_BUTTON_PARAM, DIR_LEFT, LANE_CHANGE_CHEVRON_COLOR, DESIRE_BUTTON_SIZE)
+    self._lane_change_right_button = DesireButton(LANE_CHANGE_BUTTON_PARAM, DIR_RIGHT, LANE_CHANGE_CHEVRON_COLOR, DESIRE_BUTTON_SIZE)
+    self._desire_buttons = [
+      self._lane_turn_left_button, self._lane_turn_right_button,
+      self._lane_change_left_button, self._lane_change_right_button,
+    ]
 
     self.pcm_cruise_speed: bool = True
     self.show_icbm_status: bool = False
@@ -158,14 +171,17 @@ class HudRendererSP(HudRenderer):
   def _render_lane_turn_buttons(self, rect: rl.Rectangle) -> None:
     if not ui_state.lane_turn_buttons:
       return
-    size = UI_CONFIG.button_size
-    y = rect.y + rect.height / 2 - size / 2
+    size = DESIRE_BUTTON_SIZE
+    # Two stacked buttons per side: turn desire on top, lane change below.
+    top_y = rect.y + rect.height / 2 - size - DESIRE_BUTTON_GAP / 2
+    bottom_y = top_y + size + DESIRE_BUTTON_GAP
     left_x = rect.x + UI_CONFIG.border_size
     right_x = rect.x + rect.width - UI_CONFIG.border_size - size
-    self._lane_turn_left_button.render(rl.Rectangle(left_x, y, size, size))
-    self._lane_turn_right_button.render(rl.Rectangle(right_x, y, size, size))
+    self._lane_turn_left_button.render(rl.Rectangle(left_x, top_y, size, size))
+    self._lane_turn_right_button.render(rl.Rectangle(right_x, top_y, size, size))
+    self._lane_change_left_button.render(rl.Rectangle(left_x, bottom_y, size, size))
+    self._lane_change_right_button.render(rl.Rectangle(right_x, bottom_y, size, size))
 
   def user_interacting(self) -> bool:
     return (super().user_interacting() or
-            (ui_state.lane_turn_buttons and
-             (self._lane_turn_left_button.is_pressed or self._lane_turn_right_button.is_pressed)))
+            (ui_state.lane_turn_buttons and any(b.is_pressed for b in self._desire_buttons)))

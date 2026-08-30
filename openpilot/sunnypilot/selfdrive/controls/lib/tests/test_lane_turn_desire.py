@@ -141,3 +141,19 @@ class TestDesireHelperIntegration(OpenpilotTestCase):
     assert dh.lane_change_state == LaneChangeState.preLaneChange
     assert dh.lane_change_direction == LaneChangeDirection.left
     assert dh.desire == log.Desire.none
+
+  @parameterized.expand([
+    (1, log.Desire.laneChangeLeft),
+    (2, log.Desire.laneChangeRight),
+    (0, log.Desire.none),
+  ])
+  def test_lane_change_button_override(self, button_value, expected_desire):
+    # The manual lane change button forces the desire with no blinker or nudge.
+    params = Params()
+    params.put("LaneChangeButtonDirection", button_value)
+    dh = DesireHelper()
+    carstate = DummyCarState(vEgo=30, leftBlinker=False, rightBlinker=False)
+    for _ in range(5):
+      dh.update(carstate, True, 1.0, left_edge_detected=False, right_edge_detected=False)
+    assert dh.desire == expected_desire
+    params.put("LaneChangeButtonDirection", 0)

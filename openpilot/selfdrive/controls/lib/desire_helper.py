@@ -18,6 +18,12 @@ TURN_DESIRES = {
   TurnDirection.turnRight: log.Desire.turnRight,
 }
 
+# Manual lane change button values (0 = none, 1 = left, 2 = right) -> Desire.
+LANE_CHANGE_BUTTON_DESIRES = {
+  1: log.Desire.laneChangeLeft,
+  2: log.Desire.laneChangeRight,
+}
+
 class DesireHelper:
   def __init__(self):
     self.lane_change_state = LaneChangeState.off
@@ -91,8 +97,13 @@ class DesireHelper:
 
     self.prev_one_blinker = one_blinker and lateral_active
 
+    lane_change_button = self.lane_turn_controller.get_lane_change_button()
+
     if self.lane_turn_direction != TurnDirection.none:
       self.desire = TURN_DESIRES[self.lane_turn_direction]
+    elif lane_change_button in LANE_CHANGE_BUTTON_DESIRES:
+      # Manual lane change button override: force the desire directly.
+      self.desire = LANE_CHANGE_BUTTON_DESIRES[lane_change_button]
     else:
       self.desire = log.Desire.none
       if self.lane_change_state == LaneChangeState.laneChangeStarting:

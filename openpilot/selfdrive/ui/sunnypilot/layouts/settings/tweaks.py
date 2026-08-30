@@ -110,10 +110,11 @@ class TweaksLayout(Widget):
     )
 
     self._lane_turn_buttons = toggle_item_sp(
-      title=lambda: tr("Show Lane Turn Buttons"),
-      description=lambda: tr("Show two on-road buttons on the left and right edges of the driving view. Holding a " +
-                            "button manually requests a turn desire in that direction, which nudges the model to " +
-                            "plan a turn that way."),
+      title=lambda: tr("Show Desire Buttons"),
+      description=lambda: tr("Show on-road buttons on the left and right edges of the driving view: a red turn " +
+                            "desire button on top and an orange lane change button below, on each side. Holding a " +
+                            "button manually requests that maneuver in its direction, nudging the model to plan " +
+                            "the path accordingly."),
       param="LaneTurnButtonsVisible",
     )
 
