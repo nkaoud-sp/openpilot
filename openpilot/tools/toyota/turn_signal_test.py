@@ -224,8 +224,9 @@ def run_enqueue(args) -> None:
     what = "custom active test"
   else:
     side = "left" if args.left else "hazard" if args.hazard else "right"
-    queue = build_turn_signal_pulses(side, on_durations=args.durations, session=not args.no_session)
-    what = f"{side} turn signal ({'/'.join(f'{d:g}s' for d in args.durations)})"
+    queue = build_turn_signal_pulses(side, on_durations=args.durations, session=not args.no_session,
+                                     single_shot=args.single_shot)
+    what = f"{side} turn signal ({'/'.join(f'{d:g}s' for d in args.durations)} + {args.single_shot:g}s single)"
 
   Params().put("OffroadCanQueue", queue)
   print(f"queued {what}: {len(queue) // 12} frame(s) written to OffroadCanQueue " +
@@ -258,7 +259,9 @@ def main() -> None:
                  help="on-device offroad path: write Params OffroadCanQueue for pandad to drain (no panda claim)")
   p.add_argument("--bits", type=lambda x: int(x, 0), default=0x08, help="bit value for --byte/--sweep (default 0x08)")
   p.add_argument("--durations", type=float, nargs="+", default=[2.0, 1.0, 0.5],
-                 help="turn-signal on-times per pulse (default: 2 1 0.5)")
+                 help="turn-signal on-times per refreshed pulse (default: 2 1 0.5)")
+  p.add_argument("--single-shot", type=float, default=0.8,
+                 help="final pulse: send one on message, hold this long without refresh (0 disables)")
   p.add_argument("--duration", type=float, default=5.0, help="seconds to hold --payload/--byte (default 5)")
   p.add_argument("--dwell", type=float, default=2.0, help="seconds per byte in --sweep (default 2)")
   p.add_argument("--rate", type=float, default=1.0, help="keep-alive resend interval (default 1.0s, matches Techstream)")
@@ -312,14 +315,24 @@ def main() -> None:
       hold(panda, [make_payload(args.byte, args.bits)], args.duration, rate=args.rate)
     else:  # --right / --left / --hazard : pulse on for each duration, then return control (off)
       from openpilot.sunnypilot.turn_signal_commands import active_test_payload, TURN_BITS
-      on = active_test_payload(TURN_BITS["left" if args.left else "hazard" if args.hazard else "right"])
-      for dur in args.durations:
-        print(f"  ON  {dur:g}s")
-        pulse(panda, on, dur)
+
+      def off():
         print("  OFF")
         isotp_send(panda, RETURN_CONTROL)
         isotp_recv(panda)
         time.sleep(1.0)
+
+      on = active_test_payload(TURN_BITS["left" if args.left else "hazard" if args.hazard else "right"])
+      for dur in args.durations:
+        print(f"  ON  {dur:g}s (refreshed)")
+        pulse(panda, on, dur)
+        off()
+      if args.single_shot > 0:  # one message, no refresh: does the ECU latch it?
+        print(f"  ON  {args.single_shot:g}s (single message, no refresh)")
+        isotp_send(panda, on)
+        isotp_recv(panda)
+        time.sleep(args.single_shot)
+        off()
   finally:
     end_session(panda)
 

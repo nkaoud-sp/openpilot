@@ -46,9 +46,11 @@ RETURN_CONTROL = bytes.fromhex("2F291100")  # InputOutputControl -> returnContro
 # does not extinguish it.
 FRAME_S = 0.3
 
-# Default 3-pulse test: on for 2 s, then 1 s, then 0.5 s (each followed by an explicit off).
+# Default test: three refreshed pulses (2 s, 1 s, 0.5 s), then a fourth single-shot pulse that
+# sends ONE on message and holds without refreshing to see whether the ECU latches it.
 DEFAULT_ON_DURATIONS = (2.0, 1.0, 0.5)
-DEFAULT_GAP_S = 1.0  # off time between pulses
+DEFAULT_GAP_S = 1.0        # off time between pulses
+DEFAULT_SINGLE_SHOT_S = 0.8  # single-message pulse hold (0 disables)
 
 
 def active_test_payload(bit: int, on: bool = True) -> bytes:
@@ -101,18 +103,31 @@ def _off_records(duration: float) -> bytes:
   return recs
 
 
+def _single_shot_records(payload: bytes, hold: float) -> bytes:
+  """Send exactly one on message, then hold with tester-present (no refresh) for `hold`."""
+  recs = _records(payload)  # one FF + CF, delivered once
+  for _ in range(max(1, round(hold / FRAME_S))):
+    recs += _records(TESTER_PRESENT)
+  return recs
+
+
 def build_turn_signal_pulses(side: str = "right", on_durations=DEFAULT_ON_DURATIONS,
-                             gap: float = DEFAULT_GAP_S, session: bool = True) -> bytes:
+                             gap: float = DEFAULT_GAP_S, session: bool = True,
+                             single_shot: float = DEFAULT_SINGLE_SHOT_S) -> bytes:
   """
-  OffroadCanQueue that pulses a turn signal `len(on_durations)` times: energise the lamp for each
-  duration (re-sending to hold it), then return control to the ECU to turn it off, held for `gap`
-  so the pulses are distinct. Default is the 2 s / 1 s / 0.5 s test. Timing quantizes to ~300 ms.
+  OffroadCanQueue that pulses a turn signal: for each of `on_durations`, energise the lamp
+  (re-sending to hold it) then return control to turn it off, held for `gap`. If `single_shot` > 0,
+  append a final pulse that sends ONE on message and holds it that long WITHOUT refreshing, to test
+  whether the ECU latches a single command. Timing quantizes to ~300 ms.
   """
   on = active_test_payload(TURN_BITS[side])
   queue = _records(EXTENDED_SESSION) if session else b""
   for dur in on_durations:
-    queue += _hold_records(on, dur)  # lamp on
+    queue += _hold_records(on, dur)  # lamp on (refreshed)
     queue += _off_records(gap)       # lamp off
+  if single_shot > 0:
+    queue += _single_shot_records(on, single_shot)  # one message, no refresh
+    queue += _off_records(gap)
   return queue
 
 

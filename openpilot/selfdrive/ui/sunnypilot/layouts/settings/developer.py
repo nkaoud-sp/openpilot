@@ -125,7 +125,7 @@ class DeveloperLayoutSP(DeveloperLayout):
     content = (
       f"<h1>{tr('Turn Signal CAN Test')}</h1><br>" +
       f"<p>{tr('Queues the Techstream active test (UDS 0x2F to the combination meter, 0x7C0) to pulse the')} " +
-      f"{names[side]}{predicted} {tr('three times: on for 2 s, then 1 s, then 0.5 s (off in between).')}</p>" +
+      f"{names[side]}{predicted} {tr('four times: on for 2 s, 1 s, 0.5 s (refreshed), then one single message held 0.8 s (off in between).')}</p>" +
       f"<p><b>{tr('Toyota/Lexus only')}</b> {tr('(verified on 2019+ Lexus ES). Offroad only, ignition on so the meter actuates the lamps.')}</p>"
     )
     dialog = ConfirmDialog(content, tr("Run"), rich=True,
