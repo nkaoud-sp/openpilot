@@ -224,9 +224,9 @@ def run_enqueue(args) -> None:
     what = "custom active test"
   else:
     side = "left" if args.left else "hazard" if args.hazard else "right"
-    queue = build_turn_signal_pulses(side, on_durations=args.durations, session=not args.no_session,
-                                     single_shot=args.single_shot)
-    what = f"{side} turn signal ({'/'.join(f'{d:g}s' for d in args.durations)} + {args.single_shot:g}s single)"
+    queue = build_turn_signal_pulses(side, on_durations=args.durations, gap=args.gap,
+                                     session=not args.no_session, single_shot=args.single_shot)
+    what = f"{side} turn signal ({args.single_shot:g}s single + {'/'.join(f'{d:g}s' for d in args.durations)})"
 
   Params().put("OffroadCanQueue", queue)
   print(f"queued {what}: {len(queue) // 12} frame(s) written to OffroadCanQueue " +
@@ -261,7 +261,8 @@ def main() -> None:
   p.add_argument("--durations", type=float, nargs="+", default=[2.0, 1.0, 0.5],
                  help="turn-signal on-times per refreshed pulse (default: 2 1 0.5)")
   p.add_argument("--single-shot", type=float, default=0.8,
-                 help="final pulse: send one on message, hold this long without refresh (0 disables)")
+                 help="first pulse: send one on message, hold this long without refresh (0 disables)")
+  p.add_argument("--gap", type=float, default=1.5, help="off time between pulses (default 1.5s)")
   p.add_argument("--duration", type=float, default=5.0, help="seconds to hold --payload/--byte (default 5)")
   p.add_argument("--dwell", type=float, default=2.0, help="seconds per byte in --sweep (default 2)")
   p.add_argument("--rate", type=float, default=1.0, help="keep-alive resend interval (default 1.0s, matches Techstream)")
@@ -304,34 +305,39 @@ def main() -> None:
     return
 
   try:
-    if not args.no_session:
-      begin_session(panda)
+    if args.sweep or args.payload is not None or args.byte is not None:
+      if not args.no_session:
+        begin_session(panda)
+      if args.sweep:
+        sweep(panda, args.bits, args.dwell)
+      elif args.payload is not None:
+        hold(panda, [bytes.fromhex(args.payload.replace(" ", ""))], args.duration, rate=args.rate)
+      else:
+        hold(panda, [make_payload(args.byte, args.bits)], args.duration, rate=args.rate)
+    else:  # --right / --left / --hazard : pulse on for each duration
+      from openpilot.sunnypilot.turn_signal_commands import DEFAULT_SESSION, active_test_payload, TURN_BITS
 
-    if args.sweep:
-      sweep(panda, args.bits, args.dwell)
-    elif args.payload is not None:
-      hold(panda, [bytes.fromhex(args.payload.replace(" ", ""))], args.duration, rate=args.rate)
-    elif args.byte is not None:
-      hold(panda, [make_payload(args.byte, args.bits)], args.duration, rate=args.rate)
-    else:  # --right / --left / --hazard : pulse on for each duration, then return control (off)
-      from openpilot.sunnypilot.turn_signal_commands import active_test_payload, TURN_BITS
-
-      def off():
+      def off():  # release IO control + drop to default session -> lamp off
         print("  OFF")
         isotp_send(panda, RETURN_CONTROL)
         isotp_recv(panda)
-        time.sleep(1.0)
+        isotp_send(panda, DEFAULT_SESSION)
+        isotp_recv(panda)
+        time.sleep(args.gap)
 
       on = active_test_payload(TURN_BITS["left" if args.left else "hazard" if args.hazard else "right"])
-      if args.single_shot > 0:  # first: one message, no refresh: does the ECU latch it?
-        print(f"  ON  {args.single_shot:g}s (single message, no refresh)")
-        isotp_send(panda, on)
-        isotp_recv(panda)
-        time.sleep(args.single_shot)
-        off()
-      for dur in args.durations:
-        print(f"  ON  {dur:g}s (refreshed)")
-        pulse(panda, on, dur)
+      holds = ([("single", args.single_shot)] if args.single_shot > 0 else []) + [("hold", d) for d in args.durations]
+      for kind, dur in holds:
+        if not args.no_session:
+          begin_session(panda)  # re-enter extended session before energising
+        if kind == "single":
+          print(f"  ON  {dur:g}s (single message, no refresh)")
+          isotp_send(panda, on)
+          isotp_recv(panda)
+          time.sleep(dur)
+        else:
+          print(f"  ON  {dur:g}s (refreshed)")
+          pulse(panda, on, dur)
         off()
   finally:
     end_session(panda)

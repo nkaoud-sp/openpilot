@@ -36,20 +36,21 @@ TURN_BITS = {
 
 # UDS session / control (single frames)
 EXTENDED_SESSION = bytes.fromhex("1003")    # DiagnosticSessionControl -> extended
+DEFAULT_SESSION = bytes.fromhex("1001")     # DiagnosticSessionControl -> default (releases IO control)
 TESTER_PRESENT = bytes.fromhex("3E00")      # keep the session alive between refreshes
 RETURN_CONTROL = bytes.fromhex("2F291100")  # InputOutputControl -> returnControlToECU
 
 # pandad nominally drains OffroadCanQueue one frame per 200 ms (panda_safety.cc), but the
 # measured on-car rate is ~300 ms/frame (a 27-frame queue took ~8.5 s), so timing quantizes to
-# ~300 ms. The lamp is energised while any active test with the select bit is being sent, so to
-# turn it OFF we return control to the ECU (2F 29 11 00); clearing the "blink phase" byte alone
-# does not extinguish it.
+# ~300 ms. The lamp stays energised while the active test / extended session is held; on-car,
+# returnControlToECU alone did NOT extinguish it, so between pulses we drop to the default session
+# (which releases the IO control) and re-enter the extended session before the next pulse.
 FRAME_S = 0.3
 
 # Default test: three refreshed pulses (2 s, 1 s, 0.5 s), then a fourth single-shot pulse that
 # sends ONE on message and holds without refreshing to see whether the ECU latches it.
 DEFAULT_ON_DURATIONS = (2.0, 1.0, 0.5)
-DEFAULT_GAP_S = 1.0        # off time between pulses
+DEFAULT_GAP_S = 1.5        # off time between pulses (wide, so any turn-off latency is visible)
 DEFAULT_SINGLE_SHOT_S = 0.8  # single-message pulse hold (0 disables)
 
 
@@ -96,9 +97,9 @@ def _hold_records(payload: bytes, duration: float) -> bytes:
 
 
 def _off_records(duration: float) -> bytes:
-  """Turn the lamp off (return control to the ECU), then hold off with tester-present."""
-  recs = _records(RETURN_CONTROL)  # single frame -> extinguishes the lamp
-  for _ in range(max(0, round(duration / FRAME_S) - 1)):
+  """Release the active test (return control + drop to default session), then hold off."""
+  recs = _records(RETURN_CONTROL) + _records(DEFAULT_SESSION)
+  for _ in range(max(0, round(duration / FRAME_S) - 2)):
     recs += _records(TESTER_PRESENT)
   return recs
 
@@ -117,17 +118,19 @@ def build_turn_signal_pulses(side: str = "right", on_durations=DEFAULT_ON_DURATI
   """
   OffroadCanQueue that pulses a turn signal. If `single_shot` > 0, the first pulse sends ONE on
   message and holds it that long WITHOUT refreshing, to test whether the ECU latches a single
-  command. Then, for each of `on_durations`, energise the lamp (re-sending to hold it) and return
-  control to turn it off, held for `gap`. Timing quantizes to ~300 ms.
+  command. Then, for each of `on_durations`, energise the lamp (re-sending to hold it). Between
+  pulses the lamp is turned off by releasing the IO control and dropping to the default session,
+  so each pulse re-enters the extended session first. Timing quantizes to ~300 ms.
   """
   on = active_test_payload(TURN_BITS[side])
-  queue = _records(EXTENDED_SESSION) if session else b""
-  if single_shot > 0:
-    queue += _single_shot_records(on, single_shot)  # first: one message, no refresh
-    queue += _off_records(gap)
-  for dur in on_durations:
-    queue += _hold_records(on, dur)  # lamp on (refreshed)
-    queue += _off_records(gap)       # lamp off
+  holds = ([("single", single_shot)] if single_shot > 0 else []) + [("hold", d) for d in on_durations]
+
+  queue = b""
+  for kind, dur in holds:
+    if session:
+      queue += _records(EXTENDED_SESSION)  # (re)enter extended session before energising
+    queue += _single_shot_records(on, dur) if kind == "single" else _hold_records(on, dur)
+    queue += _off_records(gap)             # release IO control + default session -> lamp off
   return queue
 
 
