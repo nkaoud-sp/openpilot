@@ -36,7 +36,17 @@ TURN_BITS = {
 
 # UDS session / control (single frames)
 EXTENDED_SESSION = bytes.fromhex("1003")    # DiagnosticSessionControl -> extended
+TESTER_PRESENT = bytes.fromhex("3E00")      # keep the session alive between refreshes
 RETURN_CONTROL = bytes.fromhex("2F291100")  # InputOutputControl -> returnControlToECU
+
+# pandad drains OffroadCanQueue one 8-byte frame per 200 ms (panda_safety.cc), so all timing
+# quantizes to 200 ms. The active test does not latch forever (Techstream re-sent it ~every
+# 1.2 s), so we refresh the ON command while holding.
+FRAME_S = 0.2
+
+# Default 3-pulse test: on for 2 s, then 1 s, then 0.5 s (each followed by an explicit off).
+DEFAULT_ON_DURATIONS = (2.0, 1.0, 0.5)
+DEFAULT_GAP_S = 0.6  # off time between pulses
 
 
 def active_test_payload(bit: int, on: bool) -> bytes:
@@ -64,23 +74,47 @@ def _records(payload: bytes) -> bytes:
   return b"".join(frame_record(f, addr=TS_ADDR, bus=TS_BUS) for f in isotp_frames(payload))
 
 
-def build_turn_signal_queue(side: str = "right", repeats: int = 5, session: bool = True,
-                            payload: bytes | None = None) -> bytes:
+def _hold_records(payload: bytes, duration: float) -> bytes:
   """
-  OffroadCanQueue to flash a turn signal. Optionally opens an extended diagnostic session, then
-  alternates the active test on/off `repeats` times to blink the lamp the way Techstream does
-  (each phase is 2 frames = ~400 ms at pandad's 200 ms spacing). `payload` overrides `side` with
-  a raw active-test payload (held, no blink).
+  Hold one active-test state for ~duration by re-sending it (each ISO-TP message is 2 frames =
+  400 ms), padding the sub-400 ms remainder with tester-present frames (200 ms each) for finer
+  timing. Refreshing keeps the commanded output alive without relying on the ECU to latch it.
   """
-  if payload is not None:
-    phases = [payload]
-  else:
-    bit = TURN_BITS[side]
-    phases = [active_test_payload(bit, True), active_test_payload(bit, False)]
+  total_frames = max(1, round(duration / FRAME_S))
+  recs, used = b"", 0
+  while total_frames - used >= 2:
+    recs += _records(payload)
+    used += 2
+  while used < total_frames:
+    recs += _records(TESTER_PRESENT)
+    used += 1
+  return recs
+
+
+def build_turn_signal_pulses(side: str = "right", on_durations=DEFAULT_ON_DURATIONS,
+                             gap: float = DEFAULT_GAP_S, session: bool = True) -> bytes:
+  """
+  OffroadCanQueue that pulses a turn signal `len(on_durations)` times: on for each duration, then
+  an explicit off (byte 7 cleared) held for `gap` so the pulses are distinct. Default is the
+  2 s / 1 s / 0.5 s test. Timing quantizes to 200 ms (pandad's frame spacing).
+  """
+  bit = TURN_BITS[side]
+  on = active_test_payload(bit, True)
+  off = active_test_payload(bit, False)
 
   queue = _records(EXTENDED_SESSION) if session else b""
-  for _ in range(repeats):
-    for phase in phases:
-      queue += _records(phase)
+  last = len(on_durations) - 1
+  for i, dur in enumerate(on_durations):
+    queue += _hold_records(on, dur)
+    queue += _hold_records(off, gap if i < last else 2 * FRAME_S)  # explicit off after each pulse
+  queue += _records(RETURN_CONTROL)
+  return queue
+
+
+def build_turn_signal_queue(side: str = "right", session: bool = True, payload: bytes | None = None) -> bytes:
+  """Simple single-state hold (used for raw --payload); pulse behaviour lives in build_turn_signal_pulses."""
+  state = payload if payload is not None else active_test_payload(TURN_BITS[side], True)
+  queue = _records(EXTENDED_SESSION) if session else b""
+  queue += _hold_records(state, 2.0)
   queue += _records(RETURN_CONTROL)
   return queue

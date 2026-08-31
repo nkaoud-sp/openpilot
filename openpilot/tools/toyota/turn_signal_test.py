@@ -167,6 +167,24 @@ def hold(panda, frames: list[bytes], duration: float, rate: float = 1.0) -> None
     print("\n  interrupted")
 
 
+def pulse(panda, payload: bytes, duration: float, refresh: float = 0.6) -> None:
+  """Assert one active-test state for `duration` seconds, refreshing so it doesn't time out."""
+  end = time.monotonic() + duration
+  isotp_send(panda, payload)
+  isotp_recv(panda)
+  try:
+    while True:
+      remaining = end - time.monotonic()
+      if remaining <= 0:
+        break
+      time.sleep(min(refresh, remaining))
+      if end - time.monotonic() > 0:  # still holding: refresh so the ECU keeps the output
+        isotp_send(panda, payload)
+        isotp_recv(panda)
+  except KeyboardInterrupt:
+    print("\n  interrupted")
+
+
 def make_payload(byte_index: int, bits: int) -> bytes:
   """Build a `2F 29 11 03` active test with one control-state byte set."""
   state = bytearray(8)
@@ -193,7 +211,7 @@ def run_enqueue(args) -> None:
   """On-device offroad path: hand frames to pandad via Params OffroadCanQueue (no panda claim)."""
   from openpilot.common.params import Params
   from openpilot.sunnypilot.autolock_commands import frame_record, LOCK_CMD, UNLOCK_CMD
-  from openpilot.sunnypilot.turn_signal_commands import build_turn_signal_queue
+  from openpilot.sunnypilot.turn_signal_commands import build_turn_signal_pulses, build_turn_signal_queue
 
   if args.lock:
     queue, what = frame_record(LOCK_CMD), "door lock"
@@ -206,8 +224,8 @@ def run_enqueue(args) -> None:
     what = "custom active test"
   else:
     side = "left" if args.left else "hazard" if args.hazard else "right"
-    queue = build_turn_signal_queue(side, session=not args.no_session)
-    what = f"{side} turn signal"
+    queue = build_turn_signal_pulses(side, on_durations=args.durations, session=not args.no_session)
+    what = f"{side} turn signal ({'/'.join(f'{d:g}s' for d in args.durations)})"
 
   Params().put("OffroadCanQueue", queue)
   print(f"queued {what}: {len(queue) // 12} frame(s) written to OffroadCanQueue " +
@@ -239,7 +257,9 @@ def main() -> None:
   p.add_argument("--enqueue", action="store_true",
                  help="on-device offroad path: write Params OffroadCanQueue for pandad to drain (no panda claim)")
   p.add_argument("--bits", type=lambda x: int(x, 0), default=0x08, help="bit value for --byte/--sweep (default 0x08)")
-  p.add_argument("--duration", type=float, default=5.0, help="seconds to hold the test (default 5)")
+  p.add_argument("--durations", type=float, nargs="+", default=[2.0, 1.0, 0.5],
+                 help="turn-signal on-times per pulse (default: 2 1 0.5)")
+  p.add_argument("--duration", type=float, default=5.0, help="seconds to hold --payload/--byte (default 5)")
   p.add_argument("--dwell", type=float, default=2.0, help="seconds per byte in --sweep (default 2)")
   p.add_argument("--rate", type=float, default=1.0, help="keep-alive resend interval (default 1.0s, matches Techstream)")
   p.add_argument("--no-session", action="store_true", help="skip DiagnosticSessionControl 0x1003")
@@ -286,16 +306,19 @@ def main() -> None:
 
     if args.sweep:
       sweep(panda, args.bits, args.dwell)
-    else:
-      if args.payload is not None:
-        frames = [bytes.fromhex(args.payload.replace(" ", ""))]
-      elif args.byte is not None:
-        frames = [make_payload(args.byte, args.bits)]
-      else:  # --right / --left / --hazard : alternate on/off like the capture
-        from openpilot.sunnypilot.turn_signal_commands import active_test_payload, TURN_BITS
-        bit = TURN_BITS["left" if args.left else "hazard" if args.hazard else "right"]
-        frames = [active_test_payload(bit, True), active_test_payload(bit, False)]
-      hold(panda, frames, args.duration, rate=args.rate)
+    elif args.payload is not None:
+      hold(panda, [bytes.fromhex(args.payload.replace(" ", ""))], args.duration, rate=args.rate)
+    elif args.byte is not None:
+      hold(panda, [make_payload(args.byte, args.bits)], args.duration, rate=args.rate)
+    else:  # --right / --left / --hazard : pulse on for each duration, then off
+      from openpilot.sunnypilot.turn_signal_commands import active_test_payload, TURN_BITS
+      bit = TURN_BITS["left" if args.left else "hazard" if args.hazard else "right"]
+      on, off = active_test_payload(bit, True), active_test_payload(bit, False)
+      for dur in args.durations:
+        print(f"  ON  {dur:g}s")
+        pulse(panda, on, dur)
+        print("  OFF")
+        pulse(panda, off, 0.6)
   finally:
     end_session(panda)
 

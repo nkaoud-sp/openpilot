@@ -19,7 +19,7 @@ from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog
 from openpilot.system.ui.widgets.list_view import button_item
 
 from openpilot.sunnypilot.autolock_commands import frame_record, LOCK_CMD, UNLOCK_CMD
-from openpilot.sunnypilot.turn_signal_commands import build_turn_signal_queue
+from openpilot.sunnypilot.turn_signal_commands import build_turn_signal_pulses
 from openpilot.system.ui.sunnypilot.widgets.html_render import HtmlModalSP
 from openpilot.system.ui.sunnypilot.widgets.list_view import toggle_item_sp
 
@@ -124,12 +124,12 @@ class DeveloperLayoutSP(DeveloperLayout):
     predicted = tr(" (predicted, unverified)") if side == "hazard" else ""
     content = (
       f"<h1>{tr('Turn Signal CAN Test')}</h1><br>" +
-      f"<p>{tr('Queues the Techstream active test (UDS 0x2F to the combination meter, 0x7C0) to flash the')} " +
-      f"{names[side]}{predicted} {tr('for a few seconds.')}</p>" +
+      f"<p>{tr('Queues the Techstream active test (UDS 0x2F to the combination meter, 0x7C0) to pulse the')} " +
+      f"{names[side]}{predicted} {tr('three times: on for 2 s, then 1 s, then 0.5 s (off in between).')}</p>" +
       f"<p><b>{tr('Toyota/Lexus only')}</b> {tr('(verified on 2019+ Lexus ES). Offroad only, ignition on so the meter actuates the lamps.')}</p>"
     )
     dialog = ConfirmDialog(content, tr("Run"), rich=True,
-                           callback=lambda result: self._enqueue_offroad_can(build_turn_signal_queue(side))
+                           callback=lambda result: self._enqueue_offroad_can(build_turn_signal_pulses(side))
                            if result == DialogResult.CONFIRM else None)
     gui_app.push_widget(dialog)
 
