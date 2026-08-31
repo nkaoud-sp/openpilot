@@ -201,10 +201,13 @@ def run_enqueue(args) -> None:
     queue, what = frame_record(UNLOCK_CMD), "door unlock"
   elif args.lock_test:
     queue, what = (frame_record(LOCK_CMD) * 6) + frame_record(UNLOCK_CMD), "door lock + unlock"
+  elif args.payload:
+    queue = build_turn_signal_queue(payload=bytes.fromhex(args.payload.replace(" ", "")), session=not args.no_session)
+    what = "custom active test"
   else:
-    payload = bytes.fromhex(args.payload.replace(" ", "")) if args.payload else RIGHT_B
-    queue = build_turn_signal_queue(payload, session=not args.no_session)
-    what = "right turn signal"
+    side = "left" if args.left else "hazard" if args.hazard else "right"
+    queue = build_turn_signal_queue(side, session=not args.no_session)
+    what = f"{side} turn signal"
 
   Params().put("OffroadCanQueue", queue)
   print(f"queued {what}: {len(queue) // 12} frame(s) written to OffroadCanQueue " +
@@ -224,7 +227,9 @@ def main() -> None:
   p = argparse.ArgumentParser(description="Toyota/Lexus turn-signal CAN active-test (bench)")
   mode = p.add_mutually_exclusive_group()
   mode.add_argument("--right", action="store_true", help="verified right-turn test (replays the capture)")
-  mode.add_argument("--sweep", action="store_true", help="enumerate control bytes to discover left/hazard/etc.")
+  mode.add_argument("--left", action="store_true", help="verified left-turn test (replays the capture)")
+  mode.add_argument("--hazard", action="store_true", help="both turn-signal bits (predicted, unverified)")
+  mode.add_argument("--sweep", action="store_true", help="enumerate control bytes to discover other outputs")
   mode.add_argument("--off", action="store_true", help="return control to the ECU (stop any active test)")
   mode.add_argument("--payload", metavar="HEX", help="raw active-test payload, e.g. 2F2911030000000800000008")
   mode.add_argument("--byte", type=int, metavar="N", help="set control-state byte N (0-7); use with --bits")
@@ -286,8 +291,10 @@ def main() -> None:
         frames = [bytes.fromhex(args.payload.replace(" ", ""))]
       elif args.byte is not None:
         frames = [make_payload(args.byte, args.bits)]
-      else:  # default / --right : replay both captured frames
-        frames = [RIGHT_A, RIGHT_B]
+      else:  # --right / --left / --hazard : alternate on/off like the capture
+        from openpilot.sunnypilot.turn_signal_commands import active_test_payload, TURN_BITS
+        bit = TURN_BITS["left" if args.left else "hazard" if args.hazard else "right"]
+        frames = [active_test_payload(bit, True), active_test_payload(bit, False)]
       hold(panda, frames, args.duration, rate=args.rate)
   finally:
     end_session(panda)

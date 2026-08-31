@@ -64,18 +64,21 @@ class DeveloperLayoutSP(DeveloperLayout):
       enabled=ui_state.is_offroad,
     )
 
-    self.turn_signal_test_btn = button_item(
-      tr("Toyota Turn Signal CAN Test"),
-      tr("RUN"),
-      tr("Flashes the RIGHT turn signal by queuing the Techstream active test (UDS 0x2F to the combination " +
-         "meter, 0x7C0) via pandad's offroad ELM327 path. Toyota/Lexus only, verified on 2019+ Lexus ES. " +
-         "Offroad only; ignition on so the meter actuates the lamps."),
-      callback=self._on_turn_signal_test_clicked,
-      enabled=ui_state.is_offroad,
-    )
+    ts_desc = tr("Flashes the turn signal by queuing the Techstream active test (UDS 0x2F to the combination " +
+                 "meter, 0x7C0) via pandad's offroad ELM327 path. Toyota/Lexus only, verified on 2019+ Lexus ES. " +
+                 "Offroad only; ignition on so the meter actuates the lamps.")
+    self.turn_signal_left_btn = button_item(tr("Turn Signal LEFT CAN Test"), tr("RUN"), ts_desc,
+                                            callback=lambda: self._on_turn_signal_clicked("left"), enabled=ui_state.is_offroad)
+    self.turn_signal_right_btn = button_item(tr("Turn Signal RIGHT CAN Test"), tr("RUN"), ts_desc,
+                                             callback=lambda: self._on_turn_signal_clicked("right"), enabled=ui_state.is_offroad)
+    self.hazard_test_btn = button_item(
+      tr("Hazard CAN Test"), tr("RUN"),
+      tr("Same active test with both turn-signal bits set (predicted, unverified). ") + ts_desc,
+      callback=lambda: self._on_turn_signal_clicked("hazard"), enabled=ui_state.is_offroad)
 
     self.items: list = [self.show_advanced_controls, self.enable_github_runner_toggle, self.enable_copyparty_toggle,
-                        self.prebuilt_toggle, self.error_log_btn, self.door_lock_test_btn, self.turn_signal_test_btn,]
+                        self.prebuilt_toggle, self.error_log_btn, self.door_lock_test_btn,
+                        self.turn_signal_left_btn, self.turn_signal_right_btn, self.hazard_test_btn,]
 
   @staticmethod
   def _on_prebuilt_toggled(state):
@@ -116,17 +119,18 @@ class DeveloperLayoutSP(DeveloperLayout):
     dialog = ConfirmDialog(content, tr("Run"), rich=True, callback=self._on_door_lock_test_confirm)
     gui_app.push_widget(dialog)
 
-  def _on_turn_signal_test_confirm(self, result):
-    if result == DialogResult.CONFIRM:
-      self._enqueue_offroad_can(build_turn_signal_queue())
-
-  def _on_turn_signal_test_clicked(self):
+  def _on_turn_signal_clicked(self, side: str):
+    names = {"left": tr("LEFT turn signal"), "right": tr("RIGHT turn signal"), "hazard": tr("hazard lights")}
+    predicted = tr(" (predicted, unverified)") if side == "hazard" else ""
     content = (
-      f"<h1>{tr('Toyota Turn Signal CAN Test')}</h1><br>" +
-      f"<p>{tr('Queues the Techstream active test (UDS 0x2F to the combination meter, 0x7C0) to flash the RIGHT turn signal for a few seconds.')}</p>" +
+      f"<h1>{tr('Turn Signal CAN Test')}</h1><br>" +
+      f"<p>{tr('Queues the Techstream active test (UDS 0x2F to the combination meter, 0x7C0) to flash the')} " +
+      f"{names[side]}{predicted} {tr('for a few seconds.')}</p>" +
       f"<p><b>{tr('Toyota/Lexus only')}</b> {tr('(verified on 2019+ Lexus ES). Offroad only, ignition on so the meter actuates the lamps.')}</p>"
     )
-    dialog = ConfirmDialog(content, tr("Run"), rich=True, callback=self._on_turn_signal_test_confirm)
+    dialog = ConfirmDialog(content, tr("Run"), rich=True,
+                           callback=lambda result: self._enqueue_offroad_can(build_turn_signal_queue(side))
+                           if result == DialogResult.CONFIRM else None)
     gui_app.push_widget(dialog)
 
   def _on_error_log_clicked(self):
@@ -162,5 +166,6 @@ class DeveloperLayoutSP(DeveloperLayout):
     self.enable_github_runner_toggle.set_visible(show_advanced and not self._is_release_branch)
     self.error_log_btn.set_visible(not self._is_release_branch)
     # reverse-engineering test tools: keep them out of release builds and behind Show Advanced Controls
-    self.door_lock_test_btn.set_visible(show_advanced and not self._is_release_branch)
-    self.turn_signal_test_btn.set_visible(show_advanced and not self._is_release_branch)
+    can_test_visible = show_advanced and not self._is_release_branch
+    for btn in (self.door_lock_test_btn, self.turn_signal_left_btn, self.turn_signal_right_btn, self.hazard_test_btn):
+      btn.set_visible(can_test_visible)
