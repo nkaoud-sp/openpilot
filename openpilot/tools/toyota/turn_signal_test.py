@@ -211,26 +211,28 @@ def run_enqueue(args) -> None:
   """On-device offroad path: hand frames to pandad via Params OffroadCanQueue (no panda claim)."""
   from openpilot.common.params import Params
   from openpilot.sunnypilot.autolock_commands import frame_record, LOCK_CMD, UNLOCK_CMD
-  from openpilot.sunnypilot.turn_signal_commands import build_turn_signal_pulses, build_turn_signal_queue
+  from openpilot.sunnypilot.turn_signal_commands import build_turn_signal_queue, run_pulse_sequence
 
-  if args.lock:
-    queue, what = frame_record(LOCK_CMD), "door lock"
-  elif args.unlock:
-    queue, what = frame_record(UNLOCK_CMD), "door unlock"
-  elif args.lock_test:
-    queue, what = (frame_record(LOCK_CMD) * 6) + frame_record(UNLOCK_CMD), "door lock + unlock"
+  one_shot = {
+    "lock": (frame_record(LOCK_CMD), "door lock") if args.lock else None,
+    "unlock": (frame_record(UNLOCK_CMD), "door unlock") if args.unlock else None,
+    "lock_test": ((frame_record(LOCK_CMD) * 6) + frame_record(UNLOCK_CMD), "door lock + unlock") if args.lock_test else None,
+  }
+  picked = next((v for v in one_shot.values() if v), None)
+
+  if picked is not None:
+    Params().put("OffroadCanQueue", picked[0])
+    print(f"queued {picked[1]}: {len(picked[0]) // 12} frame(s) written to OffroadCanQueue")
   elif args.payload:
     queue = build_turn_signal_queue(payload=bytes.fromhex(args.payload.replace(" ", "")), session=not args.no_session)
-    what = "custom active test"
-  else:
+    Params().put("OffroadCanQueue", queue)
+    print(f"queued custom active test: {len(queue) // 12} frame(s) written to OffroadCanQueue")
+  else:  # real-time driver: clock-paced pulses (consistent on-times), writes OffroadCanQueue over time
     side = "left" if args.left else "hazard" if args.hazard else "right"
-    queue = build_turn_signal_pulses(side, on_durations=args.durations, gap=args.gap,
-                                     session=not args.no_session, single_shot=args.single_shot)
-    what = f"{side} turn signal ({args.single_shot:g}s single + {'/'.join(f'{d:g}s' for d in args.durations)})"
-
-  Params().put("OffroadCanQueue", queue)
-  print(f"queued {what}: {len(queue) // 12} frame(s) written to OffroadCanQueue " +
-        "(pandad drains them offroad via ELM327, 200ms apart)")
+    print(f"driving {side} turn signal ({args.single_shot:g}s single + {'/'.join(f'{d:g}s' for d in args.durations)}) " +
+          "via OffroadCanQueue in real time...")
+    run_pulse_sequence(side, on_durations=args.durations, gap=args.gap, single_shot=args.single_shot)
+    print("done")
 
 
 BANNER = """

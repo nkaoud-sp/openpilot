@@ -134,6 +134,38 @@ def build_turn_signal_pulses(side: str = "right", on_durations=DEFAULT_ON_DURATI
   return queue
 
 
+def pulse_schedule(side: str = "right", on_durations=DEFAULT_ON_DURATIONS, gap: float = DEFAULT_GAP_S,
+                   single_shot: float = DEFAULT_SINGLE_SHOT_S, settle: float = 0.4):
+  """
+  Real-time pulse schedule as a list of (queue_bytes, sleep_s) steps. An executor writes each
+  queue_bytes to OffroadCanQueue then sleeps sleep_s, so the on-time is driven by a real clock
+  (consistent) rather than a frame count (jittery). One on message latches the lamp, so each pulse
+  energises once and holds via the sleep; off is returnControl + default session.
+  """
+  on = _records(active_test_payload(TURN_BITS[side]))
+  enter = _records(EXTENDED_SESSION)
+  off = _records(RETURN_CONTROL) + _records(DEFAULT_SESSION)
+  durs = ([single_shot] if single_shot > 0 else []) + list(on_durations)
+  steps = []
+  for dur in durs:
+    steps.append((enter, settle))  # enter extended session, let it transmit
+    steps.append((on, dur))        # energise (latched) and hold for a real dur
+    steps.append((off, gap))       # release + default session -> off, hold the gap
+  return steps
+
+
+def run_pulse_sequence(side: str = "right", on_durations=DEFAULT_ON_DURATIONS, gap: float = DEFAULT_GAP_S,
+                       single_shot: float = DEFAULT_SINGLE_SHOT_S) -> None:
+  """Execute pulse_schedule in real time, writing each step to OffroadCanQueue (pandad drains it).
+  Only touches Params, so it is safe to run alongside pandad (no panda claim)."""
+  import time
+  from openpilot.common.params import Params
+  params = Params()
+  for queue, sleep_s in pulse_schedule(side, on_durations, gap, single_shot):
+    params.put("OffroadCanQueue", queue)
+    time.sleep(sleep_s)
+
+
 def build_turn_signal_queue(side: str = "right", session: bool = True, payload: bytes | None = None) -> bytes:
   """Simple single-state hold (used for raw --payload); pulse behaviour lives in build_turn_signal_pulses."""
   state = payload if payload is not None else active_test_payload(TURN_BITS[side], True)
