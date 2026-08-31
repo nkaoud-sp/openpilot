@@ -310,15 +310,16 @@ def main() -> None:
       hold(panda, [bytes.fromhex(args.payload.replace(" ", ""))], args.duration, rate=args.rate)
     elif args.byte is not None:
       hold(panda, [make_payload(args.byte, args.bits)], args.duration, rate=args.rate)
-    else:  # --right / --left / --hazard : pulse on for each duration, then off
+    else:  # --right / --left / --hazard : pulse on for each duration, then return control (off)
       from openpilot.sunnypilot.turn_signal_commands import active_test_payload, TURN_BITS
-      bit = TURN_BITS["left" if args.left else "hazard" if args.hazard else "right"]
-      on, off = active_test_payload(bit, True), active_test_payload(bit, False)
+      on = active_test_payload(TURN_BITS["left" if args.left else "hazard" if args.hazard else "right"])
       for dur in args.durations:
         print(f"  ON  {dur:g}s")
         pulse(panda, on, dur)
         print("  OFF")
-        pulse(panda, off, 0.6)
+        isotp_send(panda, RETURN_CONTROL)
+        isotp_recv(panda)
+        time.sleep(1.0)
   finally:
     end_session(panda)
 

@@ -39,21 +39,23 @@ EXTENDED_SESSION = bytes.fromhex("1003")    # DiagnosticSessionControl -> extend
 TESTER_PRESENT = bytes.fromhex("3E00")      # keep the session alive between refreshes
 RETURN_CONTROL = bytes.fromhex("2F291100")  # InputOutputControl -> returnControlToECU
 
-# pandad drains OffroadCanQueue one 8-byte frame per 200 ms (panda_safety.cc), so all timing
-# quantizes to 200 ms. The active test does not latch forever (Techstream re-sent it ~every
-# 1.2 s), so we refresh the ON command while holding.
-FRAME_S = 0.2
+# pandad nominally drains OffroadCanQueue one frame per 200 ms (panda_safety.cc), but the
+# measured on-car rate is ~300 ms/frame (a 27-frame queue took ~8.5 s), so timing quantizes to
+# ~300 ms. The lamp is energised while any active test with the select bit is being sent, so to
+# turn it OFF we return control to the ECU (2F 29 11 00); clearing the "blink phase" byte alone
+# does not extinguish it.
+FRAME_S = 0.3
 
 # Default 3-pulse test: on for 2 s, then 1 s, then 0.5 s (each followed by an explicit off).
 DEFAULT_ON_DURATIONS = (2.0, 1.0, 0.5)
-DEFAULT_GAP_S = 0.6  # off time between pulses
+DEFAULT_GAP_S = 1.0  # off time between pulses
 
 
-def active_test_payload(bit: int, on: bool) -> bytes:
-  """Build a `2F 29 11 03` active-test payload for a lamp bit, in the on or off blink phase."""
+def active_test_payload(bit: int, on: bool = True) -> bytes:
+  """Build a `2F 29 11 03` active-test payload energising a lamp bit (message bytes 7 and 11)."""
   state = bytearray(8)
-  state[3] = bit if on else 0x00  # blink phase (message byte 7)
-  state[7] = bit                  # lamp selection, held for the whole test (message byte 11)
+  state[3] = bit if on else 0x00  # message byte 7 (observed redundant to selection)
+  state[7] = bit                  # message byte 11: lamp selection = what energises the lamp
   return bytes.fromhex("2F291103") + bytes(state)
 
 
@@ -91,23 +93,26 @@ def _hold_records(payload: bytes, duration: float) -> bytes:
   return recs
 
 
+def _off_records(duration: float) -> bytes:
+  """Turn the lamp off (return control to the ECU), then hold off with tester-present."""
+  recs = _records(RETURN_CONTROL)  # single frame -> extinguishes the lamp
+  for _ in range(max(0, round(duration / FRAME_S) - 1)):
+    recs += _records(TESTER_PRESENT)
+  return recs
+
+
 def build_turn_signal_pulses(side: str = "right", on_durations=DEFAULT_ON_DURATIONS,
                              gap: float = DEFAULT_GAP_S, session: bool = True) -> bytes:
   """
-  OffroadCanQueue that pulses a turn signal `len(on_durations)` times: on for each duration, then
-  an explicit off (byte 7 cleared) held for `gap` so the pulses are distinct. Default is the
-  2 s / 1 s / 0.5 s test. Timing quantizes to 200 ms (pandad's frame spacing).
+  OffroadCanQueue that pulses a turn signal `len(on_durations)` times: energise the lamp for each
+  duration (re-sending to hold it), then return control to the ECU to turn it off, held for `gap`
+  so the pulses are distinct. Default is the 2 s / 1 s / 0.5 s test. Timing quantizes to ~300 ms.
   """
-  bit = TURN_BITS[side]
-  on = active_test_payload(bit, True)
-  off = active_test_payload(bit, False)
-
+  on = active_test_payload(TURN_BITS[side])
   queue = _records(EXTENDED_SESSION) if session else b""
-  last = len(on_durations) - 1
-  for i, dur in enumerate(on_durations):
-    queue += _hold_records(on, dur)
-    queue += _hold_records(off, gap if i < last else 2 * FRAME_S)  # explicit off after each pulse
-  queue += _records(RETURN_CONTROL)
+  for dur in on_durations:
+    queue += _hold_records(on, dur)  # lamp on
+    queue += _off_records(gap)       # lamp off
   return queue
 
 
