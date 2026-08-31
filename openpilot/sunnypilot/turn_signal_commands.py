@@ -115,19 +115,19 @@ def build_turn_signal_pulses(side: str = "right", on_durations=DEFAULT_ON_DURATI
                              gap: float = DEFAULT_GAP_S, session: bool = True,
                              single_shot: float = DEFAULT_SINGLE_SHOT_S) -> bytes:
   """
-  OffroadCanQueue that pulses a turn signal: for each of `on_durations`, energise the lamp
-  (re-sending to hold it) then return control to turn it off, held for `gap`. If `single_shot` > 0,
-  append a final pulse that sends ONE on message and holds it that long WITHOUT refreshing, to test
-  whether the ECU latches a single command. Timing quantizes to ~300 ms.
+  OffroadCanQueue that pulses a turn signal. If `single_shot` > 0, the first pulse sends ONE on
+  message and holds it that long WITHOUT refreshing, to test whether the ECU latches a single
+  command. Then, for each of `on_durations`, energise the lamp (re-sending to hold it) and return
+  control to turn it off, held for `gap`. Timing quantizes to ~300 ms.
   """
   on = active_test_payload(TURN_BITS[side])
   queue = _records(EXTENDED_SESSION) if session else b""
+  if single_shot > 0:
+    queue += _single_shot_records(on, single_shot)  # first: one message, no refresh
+    queue += _off_records(gap)
   for dur in on_durations:
     queue += _hold_records(on, dur)  # lamp on (refreshed)
     queue += _off_records(gap)       # lamp off
-  if single_shot > 0:
-    queue += _single_shot_records(on, single_shot)  # one message, no refresh
-    queue += _off_records(gap)
   return queue
 
 

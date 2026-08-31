@@ -323,15 +323,15 @@ def main() -> None:
         time.sleep(1.0)
 
       on = active_test_payload(TURN_BITS["left" if args.left else "hazard" if args.hazard else "right"])
-      for dur in args.durations:
-        print(f"  ON  {dur:g}s (refreshed)")
-        pulse(panda, on, dur)
-        off()
-      if args.single_shot > 0:  # one message, no refresh: does the ECU latch it?
+      if args.single_shot > 0:  # first: one message, no refresh: does the ECU latch it?
         print(f"  ON  {args.single_shot:g}s (single message, no refresh)")
         isotp_send(panda, on)
         isotp_recv(panda)
         time.sleep(args.single_shot)
+        off()
+      for dur in args.durations:
+        print(f"  ON  {dur:g}s (refreshed)")
+        pulse(panda, on, dur)
         off()
   finally:
     end_session(panda)
