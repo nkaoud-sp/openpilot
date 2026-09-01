@@ -8,11 +8,15 @@ from dataclasses import dataclass
 import numpy as np
 
 
-GRID_W = 96
-GRID_H = 36
+GRID_W = 128
+GRID_H = 64
+CAMERA_GRID_W = 128
+CAMERA_GRID_H = 80
 MIN_TRACK_AGE = 3
 CONFIDENCE_ON = 0.58
 CONFIDENCE_OFF = 0.38
+PANORAMA_PITCH_TOP = np.deg2rad(55.0)
+PANORAMA_PITCH_BOTTOM = np.deg2rad(-55.0)
 
 
 @dataclass(frozen=True)
@@ -26,6 +30,53 @@ class Region:
 LEFT_CONFLICT = Region(0.02, 0.42, 0.30, 0.90)
 RIGHT_CONFLICT = Region(0.70, 0.42, 0.98, 0.90)
 DEBUG_SCALE = 8
+
+
+@dataclass(frozen=True)
+class FisheyeCalibration:
+  yaw_deg: float
+  pitch_deg: float
+  roll_deg: float
+  focal: float
+  max_theta_deg: float
+  flip_x: float
+  pan_x: float = 0.0
+  pan_y: float = 0.0
+  pan_z: float = 0.0
+  max_theta_bias_deg: float = 0.0
+
+
+CAMERA_CALIBRATIONS = {
+  "wide": FisheyeCalibration(
+    yaw_deg=180.0,
+    pitch_deg=6.5,
+    roll_deg=0.0,
+    focal=0.29,
+    max_theta_deg=86.0,
+    flip_x=-1.0,
+    pan_x=-0.20,
+    max_theta_bias_deg=6.0,
+  ),
+  "cabin": FisheyeCalibration(
+    yaw_deg=0.0,
+    pitch_deg=14.0,
+    roll_deg=0.0,
+    focal=0.29,
+    max_theta_deg=92.0,
+    flip_x=-1.0,
+    pan_y=-0.435,
+    pan_z=0.03,
+  ),
+  "narrow": FisheyeCalibration(
+    yaw_deg=180.0,
+    pitch_deg=4.5,
+    roll_deg=0.0,
+    focal=1.22,
+    max_theta_deg=40.0,
+    flip_x=-1.0,
+    pan_x=0.015,
+  ),
+}
 
 
 def region_pixels(region: Region, width: int, height: int) -> tuple[int, int, int, int]:
@@ -92,30 +143,80 @@ def resize_grid(frame: np.ndarray, width: int, height: int = GRID_H) -> np.ndarr
   return frame[np.ix_(ys, xs)]
 
 
+def _rotation_matrix(cal: FisheyeCalibration) -> np.ndarray:
+  yaw = np.deg2rad(cal.yaw_deg)
+  pitch = np.deg2rad(cal.pitch_deg)
+  roll = np.deg2rad(cal.roll_deg)
+
+  cy, sy = np.cos(yaw), np.sin(yaw)
+  cp, sp = np.cos(pitch), np.sin(pitch)
+  cr, sr = np.cos(roll), np.sin(roll)
+
+  ry = np.array(((cy, 0.0, sy), (0.0, 1.0, 0.0), (-sy, 0.0, cy)), dtype=np.float32)
+  rx = np.array(((1.0, 0.0, 0.0), (0.0, cp, -sp), (0.0, sp, cp)), dtype=np.float32)
+  rz = np.array(((cr, -sr, 0.0), (sr, cr, 0.0), (0.0, 0.0, 1.0)), dtype=np.float32)
+  return np.linalg.inv(ry @ rx @ rz).astype(np.float32)
+
+
+def _panorama_dirs(width: int, height: int) -> np.ndarray:
+  yaw = np.linspace(-np.pi, np.pi, width, endpoint=False, dtype=np.float32)
+  pitch = np.linspace(PANORAMA_PITCH_TOP, PANORAMA_PITCH_BOTTOM, height, dtype=np.float32)
+  yy, pp = np.meshgrid(yaw, pitch)
+
+  cos_pitch = np.cos(pp)
+  return np.stack((
+    np.sin(yy) * cos_pitch,
+    np.sin(pp),
+    -np.cos(yy) * cos_pitch,
+  ), axis=-1).astype(np.float32)
+
+
+PANORAMA_DIRS = _panorama_dirs(GRID_W, GRID_H)
+
+
+def _sample_fisheye(frame: np.ndarray, cal: FisheyeCalibration) -> tuple[np.ndarray, np.ndarray]:
+  h, w = frame.shape
+  world_pos = PANORAMA_DIRS - np.array((cal.pan_x, cal.pan_y, cal.pan_z), dtype=np.float32)
+  cam_pos = world_pos @ _rotation_matrix(cal).T
+
+  r_xy = np.linalg.norm(cam_pos[..., :2], axis=-1)
+  theta = np.arctan2(r_xy, cam_pos[..., 2])
+  limit = np.deg2rad(cal.max_theta_deg)
+  if cal.max_theta_bias_deg:
+    bias_dir = np.divide(cam_pos[..., 0], r_xy, out=np.zeros_like(r_xy), where=r_xy > 1e-4)
+    limit = limit + np.deg2rad(cal.max_theta_bias_deg) * bias_dir
+
+  uv_dir = np.divide(cam_pos[..., :2], r_xy[..., None], out=np.zeros_like(cam_pos[..., :2]), where=r_xy[..., None] > 1e-4)
+  uv_img = uv_dir * theta[..., None]
+  u = 0.5 + cal.flip_x * uv_img[..., 0] * cal.focal
+  v = 0.5 + uv_img[..., 1] * cal.focal * 1.596
+
+  valid = (theta <= limit) & (u >= 0.0) & (u <= 1.0) & (v >= 0.0) & (v <= 1.0)
+  xs = np.clip((u * (w - 1)).astype(np.int32), 0, w - 1)
+  ys = np.clip((v * (h - 1)).astype(np.int32), 0, h - 1)
+  return frame[ys, xs], valid
+
+
 def compose_common_frame(frames: dict[str, np.ndarray]) -> np.ndarray | None:
-  if "wide" in frames:
-    common = frames["wide"].copy()
-  elif "narrow" in frames:
-    common = frames["narrow"].copy()
-  elif "cabin" in frames:
-    common = frames["cabin"].copy()
-  else:
+  if not frames:
     return None
 
-  # Treat the common frame as one tracking canvas:
-  # - wide road supplies the full left/right context
-  # - narrow road sharpens the forward center
-  # - cabin camera is retained as a rear/context band when available
-  if "narrow" in frames:
-    center_w = GRID_W // 3
-    x0 = (GRID_W - center_w) // 2
-    common[:, x0:x0 + center_w] = resize_grid(frames["narrow"], center_w)
+  common = np.zeros((GRID_H, GRID_W), dtype=np.uint8)
+  valid_any = np.zeros((GRID_H, GRID_W), dtype=bool)
 
-  if "cabin" in frames:
-    band_h = GRID_H // 3
-    cabin_band = resize_grid(frames["cabin"], GRID_W, band_h)
-    common[-band_h:, :] = ((0.55 * common[-band_h:, :]) + (0.45 * cabin_band)).astype(np.uint8)
+  # Same priority as the 360 viewer's normal mode: narrow > wide > driver/cabin.
+  for name in ("cabin", "wide", "narrow"):
+    frame = frames.get(name)
+    cal = CAMERA_CALIBRATIONS.get(name)
+    if frame is None or cal is None:
+      continue
 
+    sampled, valid = _sample_fisheye(frame, cal)
+    common[valid] = sampled[valid]
+    valid_any |= valid
+
+  if not np.any(valid_any):
+    return None
   return common
 
 

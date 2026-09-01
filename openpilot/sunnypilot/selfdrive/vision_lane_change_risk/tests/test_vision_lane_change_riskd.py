@@ -4,7 +4,9 @@ from openpilot.sunnypilot.selfdrive.vision_lane_change_risk.common_frame_tracker
   CommonFrameMotionTracker,
   GRID_H,
   GRID_W,
+  LEFT_CONFLICT,
   compose_common_frame,
+  region_pixels,
   write_debug_png,
 )
 
@@ -14,9 +16,10 @@ def test_persistent_left_motion_sets_left_risk_only():
   frame = np.full((GRID_H, GRID_W), 80, dtype=np.uint8)
   tracker.update(frame)
 
+  x0, y0, x1, y1 = region_pixels(LEFT_CONFLICT, GRID_W, GRID_H)
   for i in range(8):
     frame = np.full((GRID_H, GRID_W), 80, dtype=np.uint8)
-    frame[18:32, 3 + i:27 + i] = 130
+    frame[y0:y1, x0 + i:x1] = 130
     tracker.update(frame)
 
   assert tracker.left.risk
@@ -43,9 +46,8 @@ def test_common_frame_uses_wide_narrow_and_cabin_regions():
 
   assert common is not None
   assert common.shape == (GRID_H, GRID_W)
-  assert common[5, 5] == 20
-  assert common[5, GRID_W // 2] == 100
-  assert 100 < common[-2, 5] < 200
+  values = set(np.unique(common).tolist())
+  assert {20, 100, 200}.issubset(values)
 
 
 def test_write_debug_png(tmp_path):
