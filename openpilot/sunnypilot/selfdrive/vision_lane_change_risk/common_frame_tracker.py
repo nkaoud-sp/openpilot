@@ -4,7 +4,7 @@ import json
 import os
 import struct
 import zlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -18,6 +18,8 @@ PANORAMA_PITCH_TOP = np.deg2rad(55.0)
 PANORAMA_PITCH_BOTTOM = np.deg2rad(-55.0)
 EDGE_FEATHER_PX = 18.0
 THETA_FEATHER_RAD = np.deg2rad(3.0)
+CABIN_LEFT_ROLL_OFFSET_DEG = -45.0
+CABIN_RIGHT_ROLL_OFFSET_DEG = 45.0
 
 
 @dataclass(frozen=True)
@@ -316,11 +318,22 @@ def compose_common_frame(frames: dict[str, np.ndarray], calibrations: dict[str, 
     if frame is None or cal is None:
       continue
 
-    sampled, valid, weight = _sample_fisheye(frame, cal)
-    weight *= priority
-    accum += sampled * weight
-    weight_sum += weight
-    valid_any |= valid
+    if name == "cabin":
+      for side_mask, roll_offset in (
+        (PANORAMA_DIRS[..., 0] < 0.0, CABIN_LEFT_ROLL_OFFSET_DEG),
+        (PANORAMA_DIRS[..., 0] > 0.0, CABIN_RIGHT_ROLL_OFFSET_DEG),
+      ):
+        sampled, valid, weight = _sample_fisheye(frame, replace(cal, roll_deg=cal.roll_deg + roll_offset))
+        weight = np.where(side_mask, weight * priority, 0.0)
+        accum += sampled * weight
+        weight_sum += weight
+        valid_any |= valid & side_mask
+    else:
+      sampled, valid, weight = _sample_fisheye(frame, cal)
+      weight *= priority
+      accum += sampled * weight
+      weight_sum += weight
+      valid_any |= valid
 
   if not np.any(valid_any):
     return None
