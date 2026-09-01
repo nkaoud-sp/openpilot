@@ -15,6 +15,8 @@ CONFIDENCE_ON = 0.58
 CONFIDENCE_OFF = 0.38
 PANORAMA_PITCH_TOP = np.deg2rad(55.0)
 PANORAMA_PITCH_BOTTOM = np.deg2rad(-55.0)
+EDGE_FEATHER_PX = 18.0
+THETA_FEATHER_RAD = np.deg2rad(3.0)
 
 
 @dataclass(frozen=True)
@@ -178,7 +180,37 @@ def _panorama_dirs(width: int, height: int) -> np.ndarray:
 PANORAMA_DIRS = _panorama_dirs(GRID_W, GRID_H)
 
 
-def _sample_fisheye(frame: np.ndarray, cal: FisheyeCalibration) -> tuple[np.ndarray, np.ndarray]:
+def _smoothstep(edge0: float, edge1: float, x: np.ndarray) -> np.ndarray:
+  t = np.clip((x - edge0) / (edge1 - edge0), 0.0, 1.0)
+  return t * t * (3.0 - 2.0 * t)
+
+
+def _bilinear_sample(frame: np.ndarray, u: np.ndarray, v: np.ndarray) -> np.ndarray:
+  h, w = frame.shape
+  x = np.clip(u * (w - 1), 0.0, w - 1)
+  y = np.clip(v * (h - 1), 0.0, h - 1)
+
+  x0 = np.floor(x).astype(np.int32)
+  y0 = np.floor(y).astype(np.int32)
+  x1 = np.minimum(x0 + 1, w - 1)
+  y1 = np.minimum(y0 + 1, h - 1)
+
+  wx = x - x0
+  wy = y - y0
+  top = (1.0 - wx) * frame[y0, x0].astype(np.float32) + wx * frame[y0, x1].astype(np.float32)
+  bottom = (1.0 - wx) * frame[y1, x0].astype(np.float32) + wx * frame[y1, x1].astype(np.float32)
+  return ((1.0 - wy) * top + wy * bottom).astype(np.float32)
+
+
+def _coverage_weight(u: np.ndarray, v: np.ndarray, theta: np.ndarray, limit: np.ndarray | float, width: int, height: int) -> np.ndarray:
+  edge_u = np.minimum(u, 1.0 - u) * width
+  edge_v = np.minimum(v, 1.0 - v) * height
+  edge_weight = _smoothstep(0.0, EDGE_FEATHER_PX, np.minimum(edge_u, edge_v))
+  theta_weight = _smoothstep(0.0, THETA_FEATHER_RAD, limit - theta)
+  return (edge_weight * theta_weight).astype(np.float32)
+
+
+def _sample_fisheye(frame: np.ndarray, cal: FisheyeCalibration) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
   h, w = frame.shape
   world_pos = PANORAMA_DIRS - np.array((cal.pan_x, cal.pan_y, cal.pan_z), dtype=np.float32)
   cam_pos = world_pos @ _rotation_matrix(cal).T
@@ -196,9 +228,9 @@ def _sample_fisheye(frame: np.ndarray, cal: FisheyeCalibration) -> tuple[np.ndar
   v = 0.5 + uv_img[..., 1] * cal.focal * 1.596
 
   valid = (theta <= limit) & (u >= 0.0) & (u <= 1.0) & (v >= 0.0) & (v <= 1.0)
-  xs = np.clip((u * (w - 1)).astype(np.int32), 0, w - 1)
-  ys = np.clip((v * (h - 1)).astype(np.int32), 0, h - 1)
-  return frame[ys, xs], valid
+  sampled = _bilinear_sample(frame, u, v)
+  weight = np.where(valid, _coverage_weight(u, v, theta, limit, w, h), 0.0)
+  return sampled, valid, weight
 
 
 def orient_common_frame(frame: np.ndarray) -> np.ndarray:
@@ -211,22 +243,28 @@ def compose_common_frame(frames: dict[str, np.ndarray]) -> np.ndarray | None:
   if not frames:
     return None
 
-  common = np.zeros((GRID_H, GRID_W), dtype=np.uint8)
+  accum = np.zeros((GRID_H, GRID_W), dtype=np.float32)
+  weight_sum = np.zeros((GRID_H, GRID_W), dtype=np.float32)
   valid_any = np.zeros((GRID_H, GRID_W), dtype=bool)
 
-  # Same priority as the 360 viewer's normal mode: narrow > wide > driver/cabin.
-  for name in ("cabin", "wide", "narrow"):
+  # Soft equivalent of the 360 viewer's normal mode: narrow > wide > driver/cabin,
+  # with feathered overlap so calibration errors are easier to tune from PNGs.
+  for name, priority in (("cabin", 1.0), ("wide", 2.0), ("narrow", 4.0)):
     frame = frames.get(name)
     cal = CAMERA_CALIBRATIONS.get(name)
     if frame is None or cal is None:
       continue
 
-    sampled, valid = _sample_fisheye(frame, cal)
-    common[valid] = sampled[valid]
+    sampled, valid, weight = _sample_fisheye(frame, cal)
+    weight *= priority
+    accum += sampled * weight
+    weight_sum += weight
     valid_any |= valid
 
   if not np.any(valid_any):
     return None
+  common = np.divide(accum, weight_sum, out=np.zeros_like(accum), where=weight_sum > 1e-6)
+  common = np.clip(common, 0.0, 255.0).astype(np.uint8)
   return orient_common_frame(common)
 
 
