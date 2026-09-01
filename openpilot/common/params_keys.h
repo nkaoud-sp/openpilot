@@ -205,6 +205,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"ShowTurnSignals", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"StandstillTimer", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"TrueVEgoUI", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"VisionLaneChangeRisk", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"VisionLaneChangeRiskDebug", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL, "0"}},
 
     // MADS params
     {"Mads", {PERSISTENT | BACKUP, BOOL, "1"}},

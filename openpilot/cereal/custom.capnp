@@ -469,7 +469,33 @@ struct ModelDataV2SP @0xa1680744031fdb2d {
   }
 }
 
-struct CustomReserved10 @0xcb9fd56c7057593a {
+struct VisionLaneChangeRisk @0xcb9fd56c7057593a {
+  valid @0 :Bool;
+  leftRisk @1 :Bool;
+  rightRisk @2 :Bool;
+  intendedRisk @3 :Bool;
+  leftConfidence @4 :Float32;
+  rightConfidence @5 :Float32;
+  leftTrackAge @6 :UInt16;
+  rightTrackAge @7 :UInt16;
+  frameId @8 :UInt32;
+  timestampSof @9 :UInt64;
+  source @10 :Source;
+  intendedDirection @11 :Direction;
+  reason @12 :Text;
+
+  enum Source {
+    none @0;
+    wideRoad @1;
+    narrowRoad @2;
+    commonFrame @3;
+  }
+
+  enum Direction {
+    none @0;
+    left @1;
+    right @2;
+  }
 }
 
 struct CustomReserved11 @0xc2243c65e0340384 {

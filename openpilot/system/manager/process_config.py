@@ -71,6 +71,9 @@ def auto_door_lock(started: bool, params: Params, CP: car.CarParams) -> bool:
 def livestream(started: bool, params: Params, CP: car.CarParams) -> bool:
   return params.get_bool("IsLiveStreaming")
 
+def vision_lane_change_risk(started: bool, params: Params, CP: car.CarParams) -> bool:
+  return started and params.get_bool("VisionLaneChangeRisk")
+
 def use_copyparty(started, params, CP: car.CarParams) -> bool:
   return bool(params.get_bool("EnableCopyparty"))
 
@@ -166,6 +169,7 @@ procs = [
   DaemonProcess("manage_sunnylinkd", "openpilot.sunnypilot.sunnylink.athena.manage_sunnylinkd", "SunnylinkdPid"),
   PythonProcess("sunnylink_registration_manager", "openpilot.sunnypilot.sunnylink.registration_manager", sunnylink_need_register_shim),
   PythonProcess("statsd_sp", "openpilot.sunnypilot.sunnylink.statsd", and_(always_run, sunnylink_ready_shim)),
+  PythonProcess("vision_lane_change_riskd", "openpilot.sunnypilot.selfdrive.vision_lane_change_risk.vision_lane_change_riskd", vision_lane_change_risk),
 ]
 
 # sunnypilot

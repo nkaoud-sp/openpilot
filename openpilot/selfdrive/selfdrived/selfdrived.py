@@ -98,7 +98,10 @@ class SelfdriveD(CruiseHelper):
     # TODO: de-couple selfdrived with card/conflate on carState without introducing controls mismatches
     self.car_state_sock = messaging.sub_sock('carState', timeout=20)
 
-    ignore = self.sensor_packets + self.gps_packets + ['alertDebug', 'lateralManeuverPlan'] + ['modelDataV2SP', 'longitudinalPlanSP']
+    ignore = self.sensor_packets + self.gps_packets + [
+      'alertDebug', 'lateralManeuverPlan', 'visionLaneChangeRisk',
+      'modelDataV2SP', 'longitudinalPlanSP',
+    ]
     if SIMULATION:
       ignore += ['cabinCameraState', 'managerState']
     if REPLAY:
@@ -108,7 +111,8 @@ class SelfdriveD(CruiseHelper):
                                    'carOutput', 'driverMonitoringState', 'longitudinalPlan', 'deviceMotion', 'lateralDelay',
                                    'managerState', 'vehicleParameters', 'radarState', 'lateralTorqueParameters',
                                    'controlsState', 'carControl', 'driverAssistance', 'alertDebug', 'userBookmark',
-                                   'lateralManeuverPlan', 'modelDataV2SP', 'longitudinalPlanSP'] + \
+                                   'lateralManeuverPlan', 'modelDataV2SP', 'longitudinalPlanSP',
+                                   'visionLaneChangeRisk'] + \
                                    self.camera_packets + self.sensor_packets + self.gps_packets,
                                   ignore_alive=ignore, ignore_avg_freq=ignore,
                                   ignore_valid=ignore, frequency=int(1/DT_CTRL))
@@ -117,6 +121,7 @@ class SelfdriveD(CruiseHelper):
     self.is_metric = self.params.get_bool("IsMetric")
     self.is_ldw_enabled = self.params.get_bool("IsLdwEnabled")
     self.disengage_on_accelerator = self.params.get_bool("DisengageOnAccelerator")
+    self.vision_lane_change_risk_enabled = self.params.get_bool("VisionLaneChangeRisk")
 
     car_recognized = self.CP.brand != 'mock'
 
@@ -351,9 +356,13 @@ class SelfdriveD(CruiseHelper):
     if self.sm['modelV2'].meta.laneChangeState == LaneChangeState.preLaneChange:
       direction = self.sm['modelV2'].meta.laneChangeDirection
       mdv2sp = self.sm['modelDataV2SP']
+      vlcr = self.sm['visionLaneChangeRisk']
 
-      if (CS.leftBlindspot and direction == LaneChangeDirection.left) or \
-         (CS.rightBlindspot and direction == LaneChangeDirection.right):
+      stock_bsm_blocked = ((CS.leftBlindspot and direction == LaneChangeDirection.left) or
+                           (CS.rightBlindspot and direction == LaneChangeDirection.right))
+      vision_lane_change_blocked = self.vision_lane_change_risk_enabled and self.sm.valid['visionLaneChangeRisk'] and vlcr.intendedRisk
+
+      if stock_bsm_blocked or vision_lane_change_blocked:
         self.events.add(EventName.laneChangeBlocked)
 
       elif (mdv2sp.leftLaneChangeEdgeBlock and direction == LaneChangeDirection.left) or \
@@ -664,6 +673,7 @@ class SelfdriveD(CruiseHelper):
       self.is_metric = self.params.get_bool("IsMetric")
       self.is_ldw_enabled = self.params.get_bool("IsLdwEnabled")
       self.disengage_on_accelerator = self.params.get_bool("DisengageOnAccelerator")
+      self.vision_lane_change_risk_enabled = self.params.get_bool("VisionLaneChangeRisk")
       self.experimental_mode = self.params.get_bool("ExperimentalMode") and self.CP.openpilotLongitudinalControl
       self.personality = self.params.get("LongitudinalPersonality", return_default=True)
 

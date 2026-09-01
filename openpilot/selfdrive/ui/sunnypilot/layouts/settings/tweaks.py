@@ -103,6 +103,22 @@ class TweaksLayout(Widget):
       enabled=lambda: not ui_state.engaged,
     )
 
+    self._vision_lane_change_risk = toggle_item_sp(
+      title=lambda: tr("Vision Lane Change Warning"),
+      description=lambda: tr("Use an experimental camera-only common-frame tracker to warn before a lane change " +
+                            "when persistent activity is seen in the intended side zone. Assistive warning only."),
+      param="VisionLaneChangeRisk",
+    )
+
+    self._vision_lane_change_risk_debug = toggle_item_sp(
+      title=lambda: tr("Vision Lane Change Debug Frames"),
+      description=lambda: tr("Save one annotated grayscale tracking PNG per second while driving for calibration. " +
+                            "Files are stored in /data/media/0/vision_lane_change_risk_debug and this resets after " +
+                            "the route."),
+      param="VisionLaneChangeRiskDebug",
+      enabled=lambda: self._vision_lane_change_risk.action_item.get_state(),
+    )
+
     self._auto_lock_button = simple_button_item_sp(
       button_text=lambda: tr("Auto Door Lock"),
       button_width=800,
@@ -119,6 +135,8 @@ class TweaksLayout(Widget):
       self._park_assist_button,
       self._speed_assist_button,
       self._reverse_cruise,
+      self._vision_lane_change_risk,
+      self._vision_lane_change_risk_debug,
       self._auto_lock_button,
     ]
 
@@ -163,3 +181,4 @@ class TweaksLayout(Widget):
     self._dynamic_follow_button.action_item.set_enabled(self._dynamic_follow.action_item.get_state())
     self._launch_assist_button.action_item.set_enabled(self._launch_assist.action_item.get_state())
     self._park_assist_button.action_item.set_enabled(self._park_assist.action_item.get_state())
+    self._vision_lane_change_risk_debug.action_item.set_enabled(self._vision_lane_change_risk.action_item.get_state())
