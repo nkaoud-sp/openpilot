@@ -82,6 +82,7 @@ class UIState(UIStateSP):
     self.always_on_dm: bool = self.params.get_bool("AlwaysOnDM")
     self.experimental_mode: bool = self.params.get_bool("ExperimentalMode")
     self.experimental_mode_confirmed: bool = self.params.get_bool("ExperimentalModeConfirmed")
+    self.force_onroad_mode: bool = self.params.get_bool("ForceOnroadMode")
     self.usbgpu: bool = False
     self.usbgpu_compiled: bool = usbgpu_compiled()
     self.usbgpu_active: bool | None = self.params.get("UsbGpuActive")
@@ -171,7 +172,7 @@ class UIState(UIStateSP):
       self.light_sensor = -1
 
     # Update started state
-    self.started = self.sm["deviceState"].started and self.ignition
+    self.started = self.sm["deviceState"].started and (self.ignition or self.force_onroad_mode)
 
     # Update body state
     if self.CP is not None and self.is_body != self.CP.notCar:
@@ -225,6 +226,7 @@ class UIState(UIStateSP):
     self.always_on_dm = self.params.get_bool("AlwaysOnDM")
     self.experimental_mode = self.params.get_bool("ExperimentalMode")
     self.experimental_mode_confirmed = self.params.get_bool("ExperimentalModeConfirmed")
+    self.force_onroad_mode = self.params.get_bool("ForceOnroadMode")
     # keep usbgpu UI active until offroad transition when gpu disappears
     self.usbgpu = self.sm["deviceState"].chestnutPresent or (self.usbgpu and self.started)
     if not self.usbgpu_compiled:

@@ -119,6 +119,15 @@ class TweaksLayout(Widget):
       enabled=lambda: self._vision_lane_change_risk.action_item.get_state(),
     )
 
+    self._force_onroad_mode = toggle_item_sp(
+      title=lambda: tr("Force Onroad Mode"),
+      description=lambda: tr("Temporarily start onroad processes without real ignition for bench testing camera " +
+                            "pipelines and debug captures. Clears after manager restart and is ignored by Always " +
+                            "Offroad mode."),
+      param="ForceOnroadMode",
+      enabled=lambda: not ui_state.engaged,
+    )
+
     self._auto_lock_button = simple_button_item_sp(
       button_text=lambda: tr("Auto Door Lock"),
       button_width=800,
@@ -137,6 +146,7 @@ class TweaksLayout(Widget):
       self._reverse_cruise,
       self._vision_lane_change_risk,
       self._vision_lane_change_risk_debug,
+      self._force_onroad_mode,
       self._auto_lock_button,
     ]
 
