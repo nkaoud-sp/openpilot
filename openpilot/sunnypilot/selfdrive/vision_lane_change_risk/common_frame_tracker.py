@@ -8,10 +8,8 @@ from dataclasses import dataclass
 import numpy as np
 
 
-GRID_W = 128
-GRID_H = 64
-CAMERA_GRID_W = 128
-CAMERA_GRID_H = 80
+GRID_W = 1024
+GRID_H = 512
 MIN_TRACK_AGE = 3
 CONFIDENCE_ON = 0.58
 CONFIDENCE_OFF = 0.38
@@ -29,7 +27,7 @@ class Region:
 
 LEFT_CONFLICT = Region(0.02, 0.42, 0.30, 0.90)
 RIGHT_CONFLICT = Region(0.70, 0.42, 0.98, 0.90)
-DEBUG_SCALE = 8
+DEBUG_SCALE = 1
 
 
 @dataclass(frozen=True)
@@ -144,18 +142,24 @@ def resize_grid(frame: np.ndarray, width: int, height: int = GRID_H) -> np.ndarr
 
 
 def _rotation_matrix(cal: FisheyeCalibration) -> np.ndarray:
-  yaw = np.deg2rad(cal.yaw_deg)
-  pitch = np.deg2rad(cal.pitch_deg)
-  roll = np.deg2rad(cal.roll_deg)
+  # Match the comma-360-viewer shader path:
+  # new THREE.Euler(pitch, yaw, roll, 'YXZ') -> Matrix4 -> Matrix3 -> invert().
+  x = np.deg2rad(cal.pitch_deg)
+  y = np.deg2rad(cal.yaw_deg)
+  z = np.deg2rad(cal.roll_deg)
 
-  cy, sy = np.cos(yaw), np.sin(yaw)
-  cp, sp = np.cos(pitch), np.sin(pitch)
-  cr, sr = np.cos(roll), np.sin(roll)
+  a, b = np.cos(x), np.sin(x)
+  c, d = np.cos(y), np.sin(y)
+  e, f = np.cos(z), np.sin(z)
+  ce, cf = c * e, c * f
+  de, df = d * e, d * f
 
-  ry = np.array(((cy, 0.0, sy), (0.0, 1.0, 0.0), (-sy, 0.0, cy)), dtype=np.float32)
-  rx = np.array(((1.0, 0.0, 0.0), (0.0, cp, -sp), (0.0, sp, cp)), dtype=np.float32)
-  rz = np.array(((cr, -sr, 0.0), (sr, cr, 0.0), (0.0, 0.0, 1.0)), dtype=np.float32)
-  return np.linalg.inv(ry @ rx @ rz).astype(np.float32)
+  mat = np.array((
+    (ce + df * b, de * b - cf, a * d),
+    (a * f, a * e, -b),
+    (cf * b - de, df + ce * b, a * c),
+  ), dtype=np.float32)
+  return np.linalg.inv(mat).astype(np.float32)
 
 
 def _panorama_dirs(width: int, height: int) -> np.ndarray:

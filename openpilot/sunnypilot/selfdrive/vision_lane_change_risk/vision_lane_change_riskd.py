@@ -16,8 +16,6 @@ from msgq.visionipc import VisionIpcClient, VisionBuf
 
 from openpilot.sunnypilot.selfdrive.vision_lane_change_risk.common_frame_tracker import (
   CommonFrameMotionTracker,
-  CAMERA_GRID_H,
-  CAMERA_GRID_W,
   compose_common_frame,
   write_debug_png,
 )
@@ -46,13 +44,7 @@ STREAM_CONFIGS = {
 
 def y_plane_to_grid(buf: VisionBuf) -> np.ndarray:
   y = np.frombuffer(buf.data, dtype=np.uint8, count=buf.uv_offset)
-  y = y.reshape((-1, buf.stride))[:buf.height, :buf.width]
-
-  # Keep the full camera image for the fisheye projection, but shrink it before
-  # CPU stitching so the daemon stays light enough to run live.
-  ys = np.linspace(0, y.shape[0] - 1, CAMERA_GRID_H).astype(np.int32)
-  xs = np.linspace(0, y.shape[1] - 1, CAMERA_GRID_W).astype(np.int32)
-  return y[np.ix_(ys, xs)]
+  return y.reshape((-1, buf.stride))[:buf.height, :buf.width]
 
 
 def intended_direction(model_v2) -> int:
