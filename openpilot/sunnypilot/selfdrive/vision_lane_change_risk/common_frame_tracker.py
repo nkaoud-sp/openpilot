@@ -201,6 +201,12 @@ def _sample_fisheye(frame: np.ndarray, cal: FisheyeCalibration) -> tuple[np.ndar
   return frame[ys, xs], valid
 
 
+def orient_common_frame(frame: np.ndarray) -> np.ndarray:
+  # Keep the tracker frame, debug PNG, and calibration tuning view in one coordinate system.
+  # Requested orientation: rotate 180 degrees, then flip horizontally.
+  return np.fliplr(np.rot90(frame, 2))
+
+
 def compose_common_frame(frames: dict[str, np.ndarray]) -> np.ndarray | None:
   if not frames:
     return None
@@ -221,17 +227,12 @@ def compose_common_frame(frames: dict[str, np.ndarray]) -> np.ndarray | None:
 
   if not np.any(valid_any):
     return None
-  return common
+  return orient_common_frame(common)
 
 
 def _png_chunk(chunk_type: bytes, data: bytes) -> bytes:
   body = chunk_type + data
   return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xffffffff)
-
-
-def orient_debug_image(rgb: np.ndarray) -> np.ndarray:
-  # Requested debug view orientation: rotate 180 degrees, then flip horizontally.
-  return np.fliplr(np.rot90(rgb, 2))
 
 
 def write_debug_png(
@@ -267,7 +268,6 @@ def write_debug_png(
   if right_w > 0:
     rgb[:bar_h, -right_w:] = np.array([255, 210, 64], dtype=np.uint8)
 
-  rgb = orient_debug_image(rgb)
   raw = b"".join(b"\x00" + row.tobytes() for row in rgb)
   png = (
     b"\x89PNG\r\n\x1a\n" +
