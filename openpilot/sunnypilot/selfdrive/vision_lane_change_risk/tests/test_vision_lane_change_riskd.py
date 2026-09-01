@@ -6,6 +6,7 @@ from openpilot.sunnypilot.selfdrive.vision_lane_change_risk.common_frame_tracker
   GRID_W,
   LEFT_CONFLICT,
   compose_common_frame,
+  orient_debug_image,
   region_pixels,
   write_debug_png,
 )
@@ -60,3 +61,8 @@ def test_write_debug_png(tmp_path):
   assert data.startswith(b"\x89PNG\r\n\x1a\n")
   assert b"IHDR" in data
   assert b"IDAT" in data
+
+
+def test_debug_image_orientation():
+  rgb = np.arange(2 * 3 * 3, dtype=np.uint8).reshape((2, 3, 3))
+  assert np.array_equal(orient_debug_image(rgb), np.fliplr(np.rot90(rgb, 2)))
