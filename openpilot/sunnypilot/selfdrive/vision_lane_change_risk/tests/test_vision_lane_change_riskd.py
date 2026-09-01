@@ -6,6 +6,7 @@ from openpilot.sunnypilot.selfdrive.vision_lane_change_risk.common_frame_tracker
   GRID_W,
   LEFT_CONFLICT,
   compose_common_frame,
+  load_calibrations_from_json,
   orient_common_frame,
   region_pixels,
   write_debug_png,
@@ -61,6 +62,18 @@ def test_write_debug_png(tmp_path):
   assert data.startswith(b"\x89PNG\r\n\x1a\n")
   assert b"IHDR" in data
   assert b"IDAT" in data
+
+
+def test_load_calibrations_from_json(tmp_path):
+  path = tmp_path / "calibration.json"
+  path.write_text('{"frontPitch": 7.5, "frontPanX": -25, "driverPanY": -40, "narrowFocal": 1.35}')
+
+  calibrations = load_calibrations_from_json(str(path))
+
+  assert calibrations["wide"].pitch_deg == 7.5
+  assert calibrations["wide"].pan_x == -0.25
+  assert calibrations["cabin"].pan_y == -0.40
+  assert calibrations["narrow"].focal == 1.35
 
 
 def test_common_frame_orientation():

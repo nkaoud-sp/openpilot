@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import struct
 import zlib
@@ -77,6 +78,7 @@ CAMERA_CALIBRATIONS = {
     pan_x=0.015,
   ),
 }
+CALIBRATION_JSON_PATH = "/data/comma-360-viewer/calibration.json"
 
 
 def region_pixels(region: Region, width: int, height: int) -> tuple[int, int, int, int]:
@@ -239,9 +241,68 @@ def orient_common_frame(frame: np.ndarray) -> np.ndarray:
   return np.fliplr(np.rot90(frame, 2))
 
 
-def compose_common_frame(frames: dict[str, np.ndarray]) -> np.ndarray | None:
+def _json_float(data: dict, key: str, default: float) -> float:
+  value = data.get(key, default)
+  try:
+    return float(value)
+  except (TypeError, ValueError):
+    return default
+
+
+def load_calibrations_from_json(path: str = CALIBRATION_JSON_PATH) -> dict[str, FisheyeCalibration]:
+  calibrations = dict(CAMERA_CALIBRATIONS)
+  try:
+    with open(path) as f:
+      data = json.load(f)
+  except (OSError, json.JSONDecodeError):
+    return calibrations
+
+  wide = calibrations["wide"]
+  cabin = calibrations["cabin"]
+  narrow = calibrations["narrow"]
+  calibrations["wide"] = FisheyeCalibration(
+    yaw_deg=_json_float(data, "frontYaw", wide.yaw_deg),
+    pitch_deg=_json_float(data, "frontPitch", wide.pitch_deg),
+    roll_deg=_json_float(data, "frontRoll", wide.roll_deg),
+    focal=_json_float(data, "frontFocal", wide.focal),
+    max_theta_deg=_json_float(data, "frontMaxTheta", wide.max_theta_deg),
+    flip_x=_json_float(data, "frontFlipX", wide.flip_x),
+    pan_x=_json_float(data, "frontPanX", wide.pan_x * 100.0) / 100.0,
+    pan_y=_json_float(data, "frontPanY", wide.pan_y * 100.0) / 100.0,
+    pan_z=_json_float(data, "frontPanZ", wide.pan_z * 100.0) / 100.0,
+    max_theta_bias_deg=_json_float(data, "frontMaxThetaBias", wide.max_theta_bias_deg),
+  )
+  calibrations["cabin"] = FisheyeCalibration(
+    yaw_deg=_json_float(data, "driverYaw", cabin.yaw_deg),
+    pitch_deg=_json_float(data, "driverPitch", cabin.pitch_deg),
+    roll_deg=_json_float(data, "driverRoll", cabin.roll_deg),
+    focal=_json_float(data, "driverFocal", cabin.focal),
+    max_theta_deg=_json_float(data, "driverMaxTheta", cabin.max_theta_deg),
+    flip_x=_json_float(data, "driverFlipX", cabin.flip_x),
+    pan_x=_json_float(data, "driverPanX", cabin.pan_x * 100.0) / 100.0,
+    pan_y=_json_float(data, "driverPanY", cabin.pan_y * 100.0) / 100.0,
+    pan_z=_json_float(data, "driverPanZ", cabin.pan_z * 100.0) / 100.0,
+  )
+  calibrations["narrow"] = FisheyeCalibration(
+    yaw_deg=_json_float(data, "narrowYaw", narrow.yaw_deg),
+    pitch_deg=_json_float(data, "narrowPitch", narrow.pitch_deg),
+    roll_deg=_json_float(data, "narrowRoll", narrow.roll_deg),
+    focal=_json_float(data, "narrowFocal", narrow.focal),
+    max_theta_deg=_json_float(data, "narrowMaxTheta", narrow.max_theta_deg),
+    flip_x=_json_float(data, "narrowFlipX", narrow.flip_x),
+    pan_x=_json_float(data, "narrowPanX", narrow.pan_x * 100.0) / 100.0,
+    pan_y=_json_float(data, "narrowPanY", narrow.pan_y * 100.0) / 100.0,
+    pan_z=_json_float(data, "narrowPanZ", narrow.pan_z * 100.0) / 100.0,
+  )
+  return calibrations
+
+
+def compose_common_frame(frames: dict[str, np.ndarray], calibrations: dict[str, FisheyeCalibration] | None = None) -> np.ndarray | None:
   if not frames:
     return None
+
+  if calibrations is None:
+    calibrations = CAMERA_CALIBRATIONS
 
   accum = np.zeros((GRID_H, GRID_W), dtype=np.float32)
   weight_sum = np.zeros((GRID_H, GRID_W), dtype=np.float32)
@@ -251,7 +312,7 @@ def compose_common_frame(frames: dict[str, np.ndarray]) -> np.ndarray | None:
   # with feathered overlap so calibration errors are easier to tune from PNGs.
   for name, priority in (("cabin", 1.0), ("wide", 2.0), ("narrow", 4.0)):
     frame = frames.get(name)
-    cal = CAMERA_CALIBRATIONS.get(name)
+    cal = calibrations.get(name)
     if frame is None or cal is None:
       continue
 

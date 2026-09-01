@@ -15,8 +15,10 @@ from openpilot.common.swaglog import cloudlog
 from msgq.visionipc import VisionIpcClient, VisionBuf
 
 from openpilot.sunnypilot.selfdrive.vision_lane_change_risk.common_frame_tracker import (
+  CALIBRATION_JSON_PATH,
   CommonFrameMotionTracker,
   compose_common_frame,
+  load_calibrations_from_json,
   write_debug_png,
 )
 
@@ -29,6 +31,7 @@ Source = custom.VisionLaneChangeRisk.Source
 MODEL_RATE = 20
 DEBUG_DUMP_INTERVAL = 1.0
 DEBUG_DUMP_DIR = "/data/media/0/vision_lane_change_risk_debug"
+CALIBRATION_RELOAD_INTERVAL = 1.0
 SOURCE_NAMES = {
   Source.none: "none",
   Source.wideRoad: "wideRoad",
@@ -87,7 +90,7 @@ def main_camera_name(clients: dict[str, VisionIpcClient]) -> str:
   raise RuntimeError("vision_lane_change_riskd has no connected camera clients")
 
 
-def read_common_frame(clients: dict[str, VisionIpcClient]) -> tuple[np.ndarray | None, int, int]:
+def read_common_frame(clients: dict[str, VisionIpcClient], calibrations) -> tuple[np.ndarray | None, int, int]:
   main_name = main_camera_name(clients)
   bufs: dict[str, VisionBuf] = {}
   bufs[main_name] = clients[main_name].recv()
@@ -105,7 +108,7 @@ def read_common_frame(clients: dict[str, VisionIpcClient]) -> tuple[np.ndarray |
     for name, buf in bufs.items()
     if buf is not None
   }
-  return compose_common_frame(frames), clients[main_name].frame_id, main_sof
+  return compose_common_frame(frames, calibrations), clients[main_name].frame_id, main_sof
 
 
 def build_reason(tracker: CommonFrameMotionTracker, direction: int) -> str:
@@ -125,11 +128,19 @@ def main() -> None:
   sm = messaging.SubMaster(["carState", "modelV2"])
   clients = connect_cameras()
   tracker = CommonFrameMotionTracker()
+  calibration_path = os.getenv("VLCR_CALIBRATION_JSON", CALIBRATION_JSON_PATH)
+  calibrations = load_calibrations_from_json(calibration_path)
+  last_calibration_reload_t = 0.0
   last_debug_dump_t = 0.0
   rk = Ratekeeper(MODEL_RATE, print_delay_threshold=None)
 
   while True:
-    frame, frame_id, timestamp_sof = read_common_frame(clients)
+    now = time.monotonic()
+    if now - last_calibration_reload_t >= CALIBRATION_RELOAD_INTERVAL:
+      calibrations = load_calibrations_from_json(calibration_path)
+      last_calibration_reload_t = now
+
+    frame, frame_id, timestamp_sof = read_common_frame(clients, calibrations)
     sm.update(0)
 
     msg = messaging.new_message("visionLaneChangeRisk")
@@ -161,7 +172,6 @@ def main() -> None:
         os.getenv("VLCR_DEBUG_PNGS") == "1" or
         params.get_bool("VisionLaneChangeRiskDebug")
       )
-      now = time.monotonic()
       if debug_enabled and now - last_debug_dump_t >= DEBUG_DUMP_INTERVAL:
         filename = f"vlcr_{frame_id:08d}_{timestamp_sof}.png"
         path = os.path.join(DEBUG_DUMP_DIR, filename)
