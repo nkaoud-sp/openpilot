@@ -93,6 +93,8 @@ MIN_APPEARANCE_DENSITY = 0.010
 MIN_TRACKABLE_LUMA = 12
 MAX_TRACKABLE_LUMA = 245
 MAX_TRACK_MATCH_DISTANCE = 190.0
+MAX_TRANSITION_MATCH_DISTANCE = 430.0
+CAMERA_TRANSITION_MARGIN = 170
 MAX_TRACK_MISSES = 4
 MAX_OBJECT_TRACKS = 12
 TRACK_COLOR = np.array([64, 220, 255], dtype=np.uint8)
@@ -153,6 +155,23 @@ def bbox_side(bbox: tuple[int, int, int, int], width: int, height: int) -> str:
   if bbox_intersects_region(bbox, RIGHT_CONFLICT, width, height):
     return "right"
   return "center"
+
+
+def bbox_touches_camera_transition(bbox: tuple[int, int, int, int]) -> bool:
+  x0, _, x1, _ = bbox
+  boundaries = (RAW_STRIP_PANEL_W, RAW_STRIP_PANEL_W * 3)
+  return any(
+    abs(x0 - boundary) <= CAMERA_TRANSITION_MARGIN or
+    abs(x1 - boundary) <= CAMERA_TRANSITION_MARGIN or
+    x0 <= boundary <= x1
+    for boundary in boundaries
+  )
+
+
+def virtual_frame_match_distance(track: MotionTrack, bbox: tuple[int, int, int, int]) -> float:
+  if bbox_touches_camera_transition(track.bbox) or bbox_touches_camera_transition(bbox):
+    return MAX_TRANSITION_MATCH_DISTANCE
+  return MAX_TRACK_MATCH_DISTANCE
 
 
 class SideTracker:
@@ -358,7 +377,7 @@ class CommonFrameMotionTracker:
         dx = bbox_center(bbox)[0] - tx
         dy = bbox_center(bbox)[1] - ty
         dist = float(np.hypot(dx, dy))
-        if dist <= MAX_TRACK_MATCH_DISTANCE:
+        if dist <= virtual_frame_match_distance(track, bbox):
           matches.append((dist, track_idx, det_idx))
 
     for _, track_idx, det_idx in sorted(matches):

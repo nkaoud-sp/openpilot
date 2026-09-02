@@ -109,6 +109,27 @@ def test_external_detector_box_creates_stable_track():
   assert tracks[0].x0 == detection[0][0]
 
 
+def test_external_detector_id_persists_across_camera_transition():
+  tracker = CommonFrameMotionTracker()
+  frame = np.full((GRID_H, GRID_W), 80, dtype=np.uint8)
+  boxes = (
+    (1260, 250, 1380, 315),
+    (1385, 252, 1505, 317),
+    (1590, 260, 1710, 330),
+    (1705, 270, 1825, 340),
+  )
+
+  track_ids = []
+  for bbox in boxes:
+    tracker.update(frame, [(bbox, 0.90)])
+    tracks = tracker.tracks
+    assert tracks
+    track_ids.append(tracks[0].track_id)
+
+  assert len(set(track_ids)) == 1
+  assert tracker.tracks[0].side == "right"
+
+
 def test_tracker_ignores_roof_and_stitched_edge_motion():
   tracker = CommonFrameMotionTracker()
   tracker.update(np.full((GRID_H, GRID_W), 80, dtype=np.uint8))
