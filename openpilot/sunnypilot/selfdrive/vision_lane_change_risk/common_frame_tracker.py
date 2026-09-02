@@ -1,25 +1,20 @@
 from __future__ import annotations
 
-import json
 import os
 import struct
 import zlib
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 import numpy as np
 
 
-GRID_W = 1024
-GRID_H = 512
+RAW_STRIP_PANEL_W = 512
+RAW_STRIP_PANEL_H = 512
+GRID_W = RAW_STRIP_PANEL_W * 4
+GRID_H = RAW_STRIP_PANEL_H
 MIN_TRACK_AGE = 3
 CONFIDENCE_ON = 0.58
 CONFIDENCE_OFF = 0.38
-PANORAMA_PITCH_TOP = np.deg2rad(55.0)
-PANORAMA_PITCH_BOTTOM = np.deg2rad(-55.0)
-EDGE_FEATHER_PX = 18.0
-THETA_FEATHER_RAD = np.deg2rad(3.0)
-CABIN_LEFT_ROLL_OFFSET_DEG = 45.0
-CABIN_RIGHT_ROLL_OFFSET_DEG = -45.0
 
 
 @dataclass(frozen=True)
@@ -33,60 +28,10 @@ class Region:
 LEFT_CONFLICT = Region(0.02, 0.42, 0.30, 0.90)
 RIGHT_CONFLICT = Region(0.70, 0.42, 0.98, 0.90)
 DEBUG_SCALE = 1
-RAW_STRIP_PANEL_W = 512
-RAW_STRIP_PANEL_H = 512
-RAW_V2_LEFT_PANEL_CENTER = (367, 425)
-RAW_V2_RIGHT_PANEL_CENTER = (1703, 409)
-RAW_V2_LEFT_ROTATION_DEG = -36.0
-RAW_V2_RIGHT_ROTATION_DEG = 36.0
-
-
-@dataclass(frozen=True)
-class FisheyeCalibration:
-  yaw_deg: float
-  pitch_deg: float
-  roll_deg: float
-  focal: float
-  max_theta_deg: float
-  flip_x: float
-  pan_x: float = 0.0
-  pan_y: float = 0.0
-  pan_z: float = 0.0
-  max_theta_bias_deg: float = 0.0
-
-
-CAMERA_CALIBRATIONS = {
-  "wide": FisheyeCalibration(
-    yaw_deg=180.0,
-    pitch_deg=6.5,
-    roll_deg=0.0,
-    focal=0.29,
-    max_theta_deg=86.0,
-    flip_x=-1.0,
-    pan_x=-0.20,
-    max_theta_bias_deg=6.0,
-  ),
-  "cabin": FisheyeCalibration(
-    yaw_deg=0.0,
-    pitch_deg=14.0,
-    roll_deg=0.0,
-    focal=0.29,
-    max_theta_deg=92.0,
-    flip_x=-1.0,
-    pan_y=-0.435,
-    pan_z=0.03,
-  ),
-  "narrow": FisheyeCalibration(
-    yaw_deg=180.0,
-    pitch_deg=4.5,
-    roll_deg=0.0,
-    focal=1.22,
-    max_theta_deg=40.0,
-    flip_x=-1.0,
-    pan_x=0.015,
-  ),
-}
-CALIBRATION_JSON_PATH = "/data/comma-360-viewer/calibration.json"
+TUNED_LEFT_PANEL_CENTER = (367, 425)
+TUNED_RIGHT_PANEL_CENTER = (1703, 409)
+TUNED_LEFT_ROTATION_DEG = -36.0
+TUNED_RIGHT_ROTATION_DEG = 36.0
 
 
 def region_pixels(region: Region, width: int, height: int) -> tuple[int, int, int, int]:
@@ -147,12 +92,6 @@ class CommonFrameMotionTracker:
     self.background = 0.95 * self.background + 0.05 * frame_f
 
 
-def resize_grid(frame: np.ndarray, width: int, height: int = GRID_H) -> np.ndarray:
-  ys = np.linspace(0, frame.shape[0] - 1, height).astype(np.int32)
-  xs = np.linspace(0, frame.shape[1] - 1, width).astype(np.int32)
-  return frame[np.ix_(ys, xs)]
-
-
 def resize_frame(frame: np.ndarray, width: int, height: int) -> np.ndarray:
   ys = np.linspace(0, frame.shape[0] - 1, height).astype(np.int32)
   xs = np.linspace(0, frame.shape[1] - 1, width).astype(np.int32)
@@ -209,8 +148,12 @@ def _paste_rotated_panel(canvas: np.ndarray, panel: np.ndarray, center_x: int, c
   sy0 = np.clip(np.floor(src_y).astype(np.int32), 0, src_h - 1)
   sx1 = np.minimum(sx0 + 1, src_w - 1)
   sy1 = np.minimum(sy0 + 1, src_h - 1)
-  wx = (src_x - sx0)[..., None]
-  wy = (src_y - sy0)[..., None]
+  if panel.ndim == 3:
+    wx = (src_x - sx0)[..., None]
+    wy = (src_y - sy0)[..., None]
+  else:
+    wx = src_x - sx0
+    wy = src_y - sy0
   top = (1.0 - wx) * panel[sy0, sx0].astype(np.float32) + wx * panel[sy0, sx1].astype(np.float32)
   bottom = (1.0 - wx) * panel[sy1, sx0].astype(np.float32) + wx * panel[sy1, sx1].astype(np.float32)
   sampled = ((1.0 - wy) * top + wy * bottom).astype(np.uint8)
@@ -218,222 +161,25 @@ def _paste_rotated_panel(canvas: np.ndarray, panel: np.ndarray, center_x: int, c
   canvas_region[valid] = sampled[valid]
 
 
-def compose_raw_strip_v2_debug(
-  raw_strip: np.ndarray,
-  left_risk: bool,
-  right_risk: bool,
-  left_confidence: float,
-  right_confidence: float,
-) -> np.ndarray:
-  raw_rgb = debug_frame_rgb(raw_strip, left_risk, right_risk, left_confidence, right_confidence)
-  left_dm = raw_rgb[:, :RAW_STRIP_PANEL_W]
-  front = raw_rgb[:, RAW_STRIP_PANEL_W:RAW_STRIP_PANEL_W * 3]
-  right_dm = raw_rgb[:, RAW_STRIP_PANEL_W * 3:]
+def compose_tuned_frame_from_raw(raw_strip: np.ndarray) -> np.ndarray:
+  left_dm = raw_strip[:, :RAW_STRIP_PANEL_W]
+  front = raw_strip[:, RAW_STRIP_PANEL_W:RAW_STRIP_PANEL_W * 3]
+  right_dm = raw_strip[:, RAW_STRIP_PANEL_W * 3:]
 
-  canvas = np.full(raw_rgb.shape, 255, dtype=np.uint8)
+  canvas = np.full(raw_strip.shape, 255, dtype=np.uint8)
   _paste_rotated_panel(
-    canvas, right_dm, RAW_V2_LEFT_PANEL_CENTER[0], RAW_V2_LEFT_PANEL_CENTER[1], RAW_V2_LEFT_ROTATION_DEG
+    canvas, right_dm, TUNED_LEFT_PANEL_CENTER[0], TUNED_LEFT_PANEL_CENTER[1], TUNED_LEFT_ROTATION_DEG
   )
   _paste_rotated_panel(
-    canvas, left_dm, RAW_V2_RIGHT_PANEL_CENTER[0], RAW_V2_RIGHT_PANEL_CENTER[1], RAW_V2_RIGHT_ROTATION_DEG
+    canvas, left_dm, TUNED_RIGHT_PANEL_CENTER[0], TUNED_RIGHT_PANEL_CENTER[1], TUNED_RIGHT_ROTATION_DEG
   )
   canvas[:, RAW_STRIP_PANEL_W:RAW_STRIP_PANEL_W * 3] = front
   return canvas
 
 
-def _rotation_matrix(cal: FisheyeCalibration) -> np.ndarray:
-  # Match the comma-360-viewer shader path:
-  # new THREE.Euler(pitch, yaw, roll, 'YXZ') -> Matrix4 -> Matrix3 -> invert().
-  x = np.deg2rad(cal.pitch_deg)
-  y = np.deg2rad(cal.yaw_deg)
-  z = np.deg2rad(cal.roll_deg)
-
-  a, b = np.cos(x), np.sin(x)
-  c, d = np.cos(y), np.sin(y)
-  e, f = np.cos(z), np.sin(z)
-  ce, cf = c * e, c * f
-  de, df = d * e, d * f
-
-  mat = np.array((
-    (ce + df * b, de * b - cf, a * d),
-    (a * f, a * e, -b),
-    (cf * b - de, df + ce * b, a * c),
-  ), dtype=np.float32)
-  return np.linalg.inv(mat).astype(np.float32)
-
-
-def _panorama_dirs(width: int, height: int) -> np.ndarray:
-  yaw = np.linspace(-np.pi, np.pi, width, endpoint=False, dtype=np.float32)
-  pitch = np.linspace(PANORAMA_PITCH_TOP, PANORAMA_PITCH_BOTTOM, height, dtype=np.float32)
-  yy, pp = np.meshgrid(yaw, pitch)
-
-  cos_pitch = np.cos(pp)
-  return np.stack((
-    np.sin(yy) * cos_pitch,
-    np.sin(pp),
-    -np.cos(yy) * cos_pitch,
-  ), axis=-1).astype(np.float32)
-
-
-PANORAMA_DIRS = _panorama_dirs(GRID_W, GRID_H)
-
-
-def _smoothstep(edge0: float, edge1: float, x: np.ndarray) -> np.ndarray:
-  t = np.clip((x - edge0) / (edge1 - edge0), 0.0, 1.0)
-  return t * t * (3.0 - 2.0 * t)
-
-
-def _bilinear_sample(frame: np.ndarray, u: np.ndarray, v: np.ndarray) -> np.ndarray:
-  h, w = frame.shape
-  x = np.clip(u * (w - 1), 0.0, w - 1)
-  y = np.clip(v * (h - 1), 0.0, h - 1)
-
-  x0 = np.floor(x).astype(np.int32)
-  y0 = np.floor(y).astype(np.int32)
-  x1 = np.minimum(x0 + 1, w - 1)
-  y1 = np.minimum(y0 + 1, h - 1)
-
-  wx = x - x0
-  wy = y - y0
-  top = (1.0 - wx) * frame[y0, x0].astype(np.float32) + wx * frame[y0, x1].astype(np.float32)
-  bottom = (1.0 - wx) * frame[y1, x0].astype(np.float32) + wx * frame[y1, x1].astype(np.float32)
-  return ((1.0 - wy) * top + wy * bottom).astype(np.float32)
-
-
-def _coverage_weight(u: np.ndarray, v: np.ndarray, theta: np.ndarray, limit: np.ndarray | float, width: int, height: int) -> np.ndarray:
-  edge_u = np.minimum(u, 1.0 - u) * width
-  edge_v = np.minimum(v, 1.0 - v) * height
-  edge_weight = _smoothstep(0.0, EDGE_FEATHER_PX, np.minimum(edge_u, edge_v))
-  theta_weight = _smoothstep(0.0, THETA_FEATHER_RAD, limit - theta)
-  return (edge_weight * theta_weight).astype(np.float32)
-
-
-def _sample_fisheye(frame: np.ndarray, cal: FisheyeCalibration) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-  h, w = frame.shape
-  world_pos = PANORAMA_DIRS - np.array((cal.pan_x, cal.pan_y, cal.pan_z), dtype=np.float32)
-  cam_pos = world_pos @ _rotation_matrix(cal).T
-
-  r_xy = np.linalg.norm(cam_pos[..., :2], axis=-1)
-  theta = np.arctan2(r_xy, cam_pos[..., 2])
-  limit = np.deg2rad(cal.max_theta_deg)
-  if cal.max_theta_bias_deg:
-    bias_dir = np.divide(cam_pos[..., 0], r_xy, out=np.zeros_like(r_xy), where=r_xy > 1e-4)
-    limit = limit + np.deg2rad(cal.max_theta_bias_deg) * bias_dir
-
-  uv_dir = np.divide(cam_pos[..., :2], r_xy[..., None], out=np.zeros_like(cam_pos[..., :2]), where=r_xy[..., None] > 1e-4)
-  uv_img = uv_dir * theta[..., None]
-  u = 0.5 + cal.flip_x * uv_img[..., 0] * cal.focal
-  v = 0.5 + uv_img[..., 1] * cal.focal * 1.596
-
-  valid = (theta <= limit) & (u >= 0.0) & (u <= 1.0) & (v >= 0.0) & (v <= 1.0)
-  sampled = _bilinear_sample(frame, u, v)
-  weight = np.where(valid, _coverage_weight(u, v, theta, limit, w, h), 0.0)
-  return sampled, valid, weight
-
-
-def orient_common_frame(frame: np.ndarray) -> np.ndarray:
-  # Keep the tracker frame, debug PNG, and calibration tuning view in one coordinate system.
-  # Requested orientation: rotate 180 degrees, then flip horizontally.
-  return np.fliplr(np.rot90(frame, 2))
-
-
-def _json_float(data: dict, key: str, default: float) -> float:
-  value = data.get(key, default)
-  try:
-    return float(value)
-  except (TypeError, ValueError):
-    return default
-
-
-def load_calibrations_from_json(path: str = CALIBRATION_JSON_PATH) -> dict[str, FisheyeCalibration]:
-  calibrations = dict(CAMERA_CALIBRATIONS)
-  try:
-    with open(path) as f:
-      data = json.load(f)
-  except (OSError, json.JSONDecodeError):
-    return calibrations
-
-  wide = calibrations["wide"]
-  cabin = calibrations["cabin"]
-  narrow = calibrations["narrow"]
-  calibrations["wide"] = FisheyeCalibration(
-    yaw_deg=_json_float(data, "frontYaw", wide.yaw_deg),
-    pitch_deg=_json_float(data, "frontPitch", wide.pitch_deg),
-    roll_deg=_json_float(data, "frontRoll", wide.roll_deg),
-    focal=_json_float(data, "frontFocal", wide.focal),
-    max_theta_deg=_json_float(data, "frontMaxTheta", wide.max_theta_deg),
-    flip_x=_json_float(data, "frontFlipX", wide.flip_x),
-    pan_x=_json_float(data, "frontPanX", wide.pan_x * 100.0) / 100.0,
-    pan_y=_json_float(data, "frontPanY", wide.pan_y * 100.0) / 100.0,
-    pan_z=_json_float(data, "frontPanZ", wide.pan_z * 100.0) / 100.0,
-    max_theta_bias_deg=_json_float(data, "frontMaxThetaBias", wide.max_theta_bias_deg),
-  )
-  calibrations["cabin"] = FisheyeCalibration(
-    yaw_deg=_json_float(data, "driverYaw", cabin.yaw_deg),
-    pitch_deg=_json_float(data, "driverPitch", cabin.pitch_deg),
-    roll_deg=_json_float(data, "driverRoll", cabin.roll_deg),
-    focal=_json_float(data, "driverFocal", cabin.focal),
-    max_theta_deg=_json_float(data, "driverMaxTheta", cabin.max_theta_deg),
-    flip_x=_json_float(data, "driverFlipX", cabin.flip_x),
-    pan_x=_json_float(data, "driverPanX", cabin.pan_x * 100.0) / 100.0,
-    pan_y=_json_float(data, "driverPanY", cabin.pan_y * 100.0) / 100.0,
-    pan_z=_json_float(data, "driverPanZ", cabin.pan_z * 100.0) / 100.0,
-  )
-  calibrations["narrow"] = FisheyeCalibration(
-    yaw_deg=_json_float(data, "narrowYaw", narrow.yaw_deg),
-    pitch_deg=_json_float(data, "narrowPitch", narrow.pitch_deg),
-    roll_deg=_json_float(data, "narrowRoll", narrow.roll_deg),
-    focal=_json_float(data, "narrowFocal", narrow.focal),
-    max_theta_deg=_json_float(data, "narrowMaxTheta", narrow.max_theta_deg),
-    flip_x=_json_float(data, "narrowFlipX", narrow.flip_x),
-    pan_x=_json_float(data, "narrowPanX", narrow.pan_x * 100.0) / 100.0,
-    pan_y=_json_float(data, "narrowPanY", narrow.pan_y * 100.0) / 100.0,
-    pan_z=_json_float(data, "narrowPanZ", narrow.pan_z * 100.0) / 100.0,
-  )
-  return calibrations
-
-
-def compose_common_frame(frames: dict[str, np.ndarray], calibrations: dict[str, FisheyeCalibration] | None = None) -> np.ndarray | None:
-  if not frames:
-    return None
-
-  if calibrations is None:
-    calibrations = CAMERA_CALIBRATIONS
-
-  accum = np.zeros((GRID_H, GRID_W), dtype=np.float32)
-  weight_sum = np.zeros((GRID_H, GRID_W), dtype=np.float32)
-  valid_any = np.zeros((GRID_H, GRID_W), dtype=bool)
-
-  # Soft equivalent of the 360 viewer's normal mode: narrow > wide > driver/cabin,
-  # with feathered overlap so calibration errors are easier to tune from PNGs.
-  for name, priority in (("cabin", 1.0), ("wide", 2.0), ("narrow", 4.0)):
-    frame = frames.get(name)
-    cal = calibrations.get(name)
-    if frame is None or cal is None:
-      continue
-
-    if name == "cabin":
-      for side_mask, roll_offset in (
-        (PANORAMA_DIRS[..., 0] < 0.0, CABIN_LEFT_ROLL_OFFSET_DEG),
-        (PANORAMA_DIRS[..., 0] > 0.0, CABIN_RIGHT_ROLL_OFFSET_DEG),
-      ):
-        sampled, valid, weight = _sample_fisheye(frame, replace(cal, roll_deg=cal.roll_deg + roll_offset))
-        weight = np.where(side_mask, weight * priority, 0.0)
-        accum += sampled * weight
-        weight_sum += weight
-        valid_any |= valid & side_mask
-    else:
-      sampled, valid, weight = _sample_fisheye(frame, cal)
-      weight *= priority
-      accum += sampled * weight
-      weight_sum += weight
-      valid_any |= valid
-
-  if not np.any(valid_any):
-    return None
-  common = np.divide(accum, weight_sum, out=np.zeros_like(accum), where=weight_sum > 1e-6)
-  common = np.clip(common, 0.0, 255.0).astype(np.uint8)
-  return orient_common_frame(common)
+def compose_tuned_frame(frames: dict[str, np.ndarray]) -> np.ndarray | None:
+  raw_strip = compose_raw_strip(frames)
+  return compose_tuned_frame_from_raw(raw_strip) if raw_strip is not None else None
 
 
 def _png_chunk(chunk_type: bytes, data: bytes) -> bytes:

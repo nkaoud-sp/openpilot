@@ -15,10 +15,10 @@ if str(REPO_ROOT) not in sys.path:
 
 from openpilot.sunnypilot.selfdrive.vision_lane_change_risk.common_frame_tracker import (  # noqa: E402
   RAW_STRIP_PANEL_W,
-  RAW_V2_LEFT_PANEL_CENTER,
-  RAW_V2_LEFT_ROTATION_DEG,
-  RAW_V2_RIGHT_PANEL_CENTER,
-  RAW_V2_RIGHT_ROTATION_DEG,
+  TUNED_LEFT_PANEL_CENTER,
+  TUNED_LEFT_ROTATION_DEG,
+  TUNED_RIGHT_PANEL_CENTER,
+  TUNED_RIGHT_ROTATION_DEG,
   _paste_rotated_panel,
   debug_frame_rgb,
 )
@@ -41,14 +41,14 @@ def values_block(
   right_center: tuple[int, int],
 ) -> str:
   return "\n".join((
-    f"RAW_V2_LEFT_PANEL_CENTER = {left_center}",
-    f"RAW_V2_RIGHT_PANEL_CENTER = {right_center}",
-    f"RAW_V2_LEFT_ROTATION_DEG = {left_angle:.1f}",
-    f"RAW_V2_RIGHT_ROTATION_DEG = {right_angle:.1f}",
+    f"TUNED_LEFT_PANEL_CENTER = {left_center}",
+    f"TUNED_RIGHT_PANEL_CENTER = {right_center}",
+    f"TUNED_LEFT_ROTATION_DEG = {left_angle:.1f}",
+    f"TUNED_RIGHT_ROTATION_DEG = {right_angle:.1f}",
   ))
 
 
-def render_raw_v2(
+def render_tuned_frame(
   raw_strip: np.ndarray,
   left_angle: float,
   right_angle: float,
@@ -73,7 +73,7 @@ def load_raw(path: Path) -> np.ndarray:
 
 def write_single(args: argparse.Namespace) -> Path:
   raw = load_raw(args.raw)
-  image = render_raw_v2(raw, args.left_angle, args.right_angle, args.left_center, args.right_center)
+  image = render_tuned_frame(raw, args.left_angle, args.right_angle, args.left_center, args.right_center)
   output = args.output or args.raw.with_name(f"{args.raw.stem}_tuned.png")
   Image.fromarray(image).save(output)
   return output
@@ -107,7 +107,7 @@ def write_contact_sheet(args: argparse.Namespace) -> Path:
 
   tiles: list[Image.Image] = []
   for name, left_angle, right_angle, left_center, right_center in variants:
-    image = render_raw_v2(raw, left_angle, right_angle, left_center, right_center)
+    image = render_tuned_frame(raw, left_angle, right_angle, left_center, right_center)
     image_path = output_dir / f"{name[0]}_{args.raw.stem}_tuned.png"
     Image.fromarray(image).save(image_path)
 
@@ -132,13 +132,13 @@ def write_contact_sheet(args: argparse.Namespace) -> Path:
 
 def build_parser() -> argparse.ArgumentParser:
   parser = argparse.ArgumentParser(
-    description="Tune the vision lane risk raw_v2 debug PNG transform from a *_raw.png strip.",
+    description="Tune the vision lane risk processed-frame transform from a raw camera strip PNG.",
   )
   parser.add_argument("raw", type=Path, help="Input raw strip PNG, for example C:/commaai/tmp/vid/372/..._raw.png")
-  parser.add_argument("--left-angle", type=float, default=RAW_V2_LEFT_ROTATION_DEG)
-  parser.add_argument("--right-angle", type=float, default=RAW_V2_RIGHT_ROTATION_DEG)
-  parser.add_argument("--left-center", type=parse_center, default=RAW_V2_LEFT_PANEL_CENTER)
-  parser.add_argument("--right-center", type=parse_center, default=RAW_V2_RIGHT_PANEL_CENTER)
+  parser.add_argument("--left-angle", type=float, default=TUNED_LEFT_ROTATION_DEG)
+  parser.add_argument("--right-angle", type=float, default=TUNED_RIGHT_ROTATION_DEG)
+  parser.add_argument("--left-center", type=parse_center, default=TUNED_LEFT_PANEL_CENTER)
+  parser.add_argument("--right-center", type=parse_center, default=TUNED_RIGHT_PANEL_CENTER)
   parser.add_argument("--output", type=Path, help="Single-preview output PNG path")
   parser.add_argument("--sheet", action="store_true", help="Write a 3x3 contact sheet of nearby tuning variants")
   parser.add_argument("--output-dir", type=Path, help="Contact-sheet output directory")

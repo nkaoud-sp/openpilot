@@ -5,11 +5,9 @@ from openpilot.sunnypilot.selfdrive.vision_lane_change_risk.common_frame_tracker
   GRID_H,
   GRID_W,
   LEFT_CONFLICT,
-  compose_common_frame,
   compose_raw_strip,
-  compose_raw_strip_v2_debug,
-  load_calibrations_from_json,
-  orient_common_frame,
+  compose_tuned_frame,
+  compose_tuned_frame_from_raw,
   region_pixels,
   write_debug_png,
 )
@@ -41,17 +39,19 @@ def test_global_brightness_change_does_not_create_risk():
   assert not tracker.right.risk
 
 
-def test_common_frame_uses_wide_narrow_and_cabin_regions():
-  wide = np.full((GRID_H, GRID_W), 20, dtype=np.uint8)
-  narrow = np.full((GRID_H, GRID_W), 100, dtype=np.uint8)
-  cabin = np.full((GRID_H, GRID_W), 200, dtype=np.uint8)
+def test_tuned_frame_uses_wide_and_cabin_regions():
+  cabin = np.zeros((4, 8), dtype=np.uint8)
+  cabin[:, :4] = 40
+  cabin[:, 4:] = 80
+  wide = np.full((4, 8), 160, dtype=np.uint8)
 
-  common = compose_common_frame({"wide": wide, "narrow": narrow, "cabin": cabin})
+  frame = compose_tuned_frame({"wide": wide, "cabin": cabin})
 
-  assert common is not None
-  assert common.shape == (GRID_H, GRID_W)
-  values = set(np.unique(common).tolist())
-  assert {20, 100, 200}.issubset(values)
+  assert frame is not None
+  assert frame.shape == (GRID_H, GRID_W)
+  assert frame[256, 1024] == 160
+  assert np.any(frame[:, :512] == 80)
+  assert np.any(frame[:, 1536:] == 40)
 
 
 def test_write_debug_png(tmp_path):
@@ -81,7 +81,7 @@ def test_compose_raw_strip_uses_left_dm_wide_right_dm():
   assert strip[256, 1920] == 80
 
 
-def test_compose_raw_strip_v2_swaps_rotated_dm_panels():
+def test_compose_tuned_frame_from_raw_swaps_rotated_dm_panels():
   cabin = np.zeros((4, 8), dtype=np.uint8)
   cabin[:, :4] = 40
   cabin[:, 4:] = 80
@@ -90,27 +90,10 @@ def test_compose_raw_strip_v2_swaps_rotated_dm_panels():
   strip = compose_raw_strip({"cabin": cabin, "wide": wide})
   assert strip is not None
 
-  v2 = compose_raw_strip_v2_debug(strip, False, False, 0.0, 0.0)
+  v2 = compose_tuned_frame_from_raw(strip)
 
-  assert v2.shape == (512, 2048, 3)
-  assert np.all(v2[256, 1024] == 160)
-  assert np.any(v2[:, :512, 0] == 80)
-  assert np.any(v2[:, 1536:, 0] == 40)
-  assert np.all(v2[0, 0] == 255)
-
-
-def test_load_calibrations_from_json(tmp_path):
-  path = tmp_path / "calibration.json"
-  path.write_text('{"frontPitch": 7.5, "frontPanX": -25, "driverPanY": -40, "narrowFocal": 1.35}')
-
-  calibrations = load_calibrations_from_json(str(path))
-
-  assert calibrations["wide"].pitch_deg == 7.5
-  assert calibrations["wide"].pan_x == -0.25
-  assert calibrations["cabin"].pan_y == -0.40
-  assert calibrations["narrow"].focal == 1.35
-
-
-def test_common_frame_orientation():
-  frame = np.arange(2 * 3, dtype=np.uint8).reshape((2, 3))
-  assert np.array_equal(orient_common_frame(frame), np.fliplr(np.rot90(frame, 2)))
+  assert v2.shape == (512, 2048)
+  assert v2[256, 1024] == 160
+  assert np.any(v2[:, :512] == 80)
+  assert np.any(v2[:, 1536:] == 40)
+  assert v2[0, 0] == 255

@@ -15,14 +15,9 @@ from openpilot.common.swaglog import cloudlog
 from msgq.visionipc import VisionIpcClient, VisionBuf
 
 from openpilot.sunnypilot.selfdrive.vision_lane_change_risk.common_frame_tracker import (
-  CALIBRATION_JSON_PATH,
   CommonFrameMotionTracker,
-  compose_common_frame,
-  compose_raw_strip,
-  compose_raw_strip_v2_debug,
-  load_calibrations_from_json,
+  compose_tuned_frame,
   write_debug_png,
-  write_rgb_png,
 )
 
 
@@ -34,16 +29,8 @@ Source = custom.VisionLaneChangeRisk.Source
 MODEL_RATE = 20
 DEBUG_DUMP_INTERVAL = 1.0
 DEBUG_DUMP_DIR = "/data/media/0/vision_lane_change_risk_debug"
-CALIBRATION_RELOAD_INTERVAL = 1.0
-SOURCE_NAMES = {
-  Source.none: "none",
-  Source.wideRoad: "wideRoad",
-  Source.narrowRoad: "narrowRoad",
-  Source.commonFrame: "commonFrame",
-}
 STREAM_CONFIGS = {
   "wide": VisionStreamType.VISION_STREAM_WIDE_ROAD,
-  "narrow": VisionStreamType.VISION_STREAM_NARROW_ROAD,
   "cabin": VisionStreamType.VISION_STREAM_CABIN,
 }
 
@@ -87,13 +74,13 @@ def connect_cameras() -> dict[str, VisionIpcClient]:
 
 
 def main_camera_name(clients: dict[str, VisionIpcClient]) -> str:
-  for name in ("wide", "narrow", "cabin"):
+  for name in ("wide", "cabin"):
     if name in clients:
       return name
   raise RuntimeError("vision_lane_change_riskd has no connected camera clients")
 
 
-def read_common_frame(clients: dict[str, VisionIpcClient], calibrations) -> tuple[np.ndarray | None, dict[str, np.ndarray], int, int]:
+def read_tuned_frame(clients: dict[str, VisionIpcClient]) -> tuple[np.ndarray | None, int, int]:
   main_name = main_camera_name(clients)
   bufs: dict[str, VisionBuf] = {}
   bufs[main_name] = clients[main_name].recv()
@@ -111,7 +98,7 @@ def read_common_frame(clients: dict[str, VisionIpcClient], calibrations) -> tupl
     for name, buf in bufs.items()
     if buf is not None
   }
-  return compose_common_frame(frames, calibrations), frames, clients[main_name].frame_id, main_sof
+  return compose_tuned_frame(frames), clients[main_name].frame_id, main_sof
 
 
 def build_reason(tracker: CommonFrameMotionTracker, direction: int) -> str:
@@ -131,19 +118,12 @@ def main() -> None:
   sm = messaging.SubMaster(["carState", "modelV2"])
   clients = connect_cameras()
   tracker = CommonFrameMotionTracker()
-  calibration_path = os.getenv("VLCR_CALIBRATION_JSON", CALIBRATION_JSON_PATH)
-  calibrations = load_calibrations_from_json(calibration_path)
-  last_calibration_reload_t = 0.0
   last_debug_dump_t = 0.0
   rk = Ratekeeper(MODEL_RATE, print_delay_threshold=None)
 
   while True:
     now = time.monotonic()
-    if now - last_calibration_reload_t >= CALIBRATION_RELOAD_INTERVAL:
-      calibrations = load_calibrations_from_json(calibration_path)
-      last_calibration_reload_t = now
-
-    frame, source_frames, frame_id, timestamp_sof = read_common_frame(clients, calibrations)
+    frame, frame_id, timestamp_sof = read_tuned_frame(clients)
     sm.update(0)
 
     msg = messaging.new_message("visionLaneChangeRisk")
@@ -176,7 +156,7 @@ def main() -> None:
         params.get_bool("VisionLaneChangeRiskDebug")
       )
       if debug_enabled and now - last_debug_dump_t >= DEBUG_DUMP_INTERVAL:
-        filename = f"vlcr_{frame_id:08d}_{timestamp_sof}.png"
+        filename = f"vlcr_{frame_id:08d}_{timestamp_sof}_processed.png"
         path = os.path.join(DEBUG_DUMP_DIR, filename)
         write_debug_png(
           path,
@@ -186,13 +166,6 @@ def main() -> None:
           tracker.left.confidence,
           tracker.right.confidence,
         )
-        raw_strip = compose_raw_strip(source_frames)
-        if raw_strip is not None:
-          raw_path = os.path.join(DEBUG_DUMP_DIR, f"vlcr_{frame_id:08d}_{timestamp_sof}_raw.png")
-          write_debug_png(raw_path, raw_strip, False, False, 0.0, 0.0)
-          raw_v2_path = os.path.join(DEBUG_DUMP_DIR, f"vlcr_{frame_id:08d}_{timestamp_sof}_raw_v2.png")
-          raw_v2 = compose_raw_strip_v2_debug(raw_strip, False, False, 0.0, 0.0)
-          write_rgb_png(raw_v2_path, raw_v2)
         last_debug_dump_t = now
 
     pm.send("visionLaneChangeRisk", msg)
