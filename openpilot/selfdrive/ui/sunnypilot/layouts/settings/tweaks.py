@@ -125,7 +125,6 @@ class TweaksLayout(Widget):
                             "Files are stored in /data/media/0/vision_lane_change_risk_debug and this resets after " +
                             "the route."),
       param="VisionLaneChangeRiskStreamVideo",
-      enabled=lambda: self._vision_lane_change_risk.action_item.get_state(),
     )
 
     self._force_onroad_mode = toggle_item_sp(
@@ -202,6 +201,3 @@ class TweaksLayout(Widget):
     self._launch_assist_button.action_item.set_enabled(self._launch_assist.action_item.get_state())
     self._park_assist_button.action_item.set_enabled(self._park_assist.action_item.get_state())
     self._vision_lane_change_risk_debug.action_item.set_enabled(self._vision_lane_change_risk.action_item.get_state())
-    self._vision_lane_change_risk_stream_video.action_item.set_enabled(
-      self._vision_lane_change_risk.action_item.get_state()
-    )

@@ -72,7 +72,11 @@ def livestream(started: bool, params: Params, CP: car.CarParams) -> bool:
   return params.get_bool("IsLiveStreaming")
 
 def vision_lane_change_risk(started: bool, params: Params, CP: car.CarParams) -> bool:
-  return started and params.get_bool("VisionLaneChangeRisk")
+  return started and (
+    params.get_bool("VisionLaneChangeRisk") or
+    params.get_bool("VisionLaneChangeRiskDebug") or
+    params.get_bool("VisionLaneChangeRiskStreamVideo")
+  )
 
 def use_copyparty(started, params, CP: car.CarParams) -> bool:
   return bool(params.get_bool("EnableCopyparty"))

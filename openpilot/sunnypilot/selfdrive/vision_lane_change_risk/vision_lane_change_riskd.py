@@ -155,6 +155,12 @@ class DebugVideoRecorder:
       self.close()
       self.unavailable = True
 
+  def update_enabled(self, enabled: bool, rgb: np.ndarray, now: float) -> None:
+    if enabled:
+      self.update(rgb, now)
+    else:
+      self.close()
+
   def _start(self) -> bool:
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
@@ -277,10 +283,8 @@ def main() -> None:
         os.getenv("VLCR_STREAM_VIDEO") == "1" or
         params.get_bool("VisionLaneChangeRiskStreamVideo")
       )
-      if debug_enabled:
-        overlay_video_recorder.update(overlay, now)
-      if clean_video_enabled:
-        clean_video_recorder.update(clean_frame_rgb(frame), now)
+      overlay_video_recorder.update_enabled(debug_enabled, overlay, now)
+      clean_video_recorder.update_enabled(clean_video_enabled, clean_frame_rgb(frame), now)
       if debug_enabled and now - last_debug_dump_t >= DEBUG_DUMP_INTERVAL:
         filename = f"vlcr_{frame_id:08d}_{timestamp_sof}_processed.png"
         path = os.path.join(DEBUG_DUMP_DIR, filename)
