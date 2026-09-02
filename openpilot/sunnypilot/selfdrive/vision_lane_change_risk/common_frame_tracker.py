@@ -33,6 +33,8 @@ class Region:
 LEFT_CONFLICT = Region(0.02, 0.42, 0.30, 0.90)
 RIGHT_CONFLICT = Region(0.70, 0.42, 0.98, 0.90)
 DEBUG_SCALE = 1
+RAW_STRIP_PANEL_W = 512
+RAW_STRIP_PANEL_H = 512
 
 
 @dataclass(frozen=True)
@@ -145,6 +147,33 @@ def resize_grid(frame: np.ndarray, width: int, height: int = GRID_H) -> np.ndarr
   ys = np.linspace(0, frame.shape[0] - 1, height).astype(np.int32)
   xs = np.linspace(0, frame.shape[1] - 1, width).astype(np.int32)
   return frame[np.ix_(ys, xs)]
+
+
+def resize_frame(frame: np.ndarray, width: int, height: int) -> np.ndarray:
+  ys = np.linspace(0, frame.shape[0] - 1, height).astype(np.int32)
+  xs = np.linspace(0, frame.shape[1] - 1, width).astype(np.int32)
+  return frame[np.ix_(ys, xs)]
+
+
+def compose_raw_strip(frames: dict[str, np.ndarray]) -> np.ndarray | None:
+  cabin = frames.get("cabin")
+  wide = frames.get("wide")
+  if cabin is None and wide is None:
+    return None
+
+  blank = np.zeros((RAW_STRIP_PANEL_H, RAW_STRIP_PANEL_W), dtype=np.uint8)
+  if cabin is not None:
+    cabin_panel = resize_frame(cabin, RAW_STRIP_PANEL_W * 2, RAW_STRIP_PANEL_H)
+    left_dm = cabin_panel[:, :RAW_STRIP_PANEL_W]
+    right_dm = cabin_panel[:, RAW_STRIP_PANEL_W:]
+  else:
+    left_dm = blank
+    right_dm = blank
+
+  front = resize_frame(wide, RAW_STRIP_PANEL_W * 2, RAW_STRIP_PANEL_H) if wide is not None else np.zeros(
+    (RAW_STRIP_PANEL_H, RAW_STRIP_PANEL_W * 2), dtype=np.uint8
+  )
+  return np.hstack((left_dm, front, right_dm)).astype(np.uint8)
 
 
 def _rotation_matrix(cal: FisheyeCalibration) -> np.ndarray:

@@ -6,6 +6,7 @@ from openpilot.sunnypilot.selfdrive.vision_lane_change_risk.common_frame_tracker
   GRID_W,
   LEFT_CONFLICT,
   compose_common_frame,
+  compose_raw_strip,
   load_calibrations_from_json,
   orient_common_frame,
   region_pixels,
@@ -62,6 +63,21 @@ def test_write_debug_png(tmp_path):
   assert data.startswith(b"\x89PNG\r\n\x1a\n")
   assert b"IHDR" in data
   assert b"IDAT" in data
+
+
+def test_compose_raw_strip_uses_left_dm_wide_right_dm():
+  cabin = np.zeros((4, 8), dtype=np.uint8)
+  cabin[:, :4] = 40
+  cabin[:, 4:] = 80
+  wide = np.full((4, 8), 160, dtype=np.uint8)
+
+  strip = compose_raw_strip({"cabin": cabin, "wide": wide})
+
+  assert strip is not None
+  assert strip.shape == (512, 2048)
+  assert strip[256, 128] == 40
+  assert strip[256, 768] == 160
+  assert strip[256, 1920] == 80
 
 
 def test_load_calibrations_from_json(tmp_path):

@@ -18,6 +18,7 @@ from openpilot.sunnypilot.selfdrive.vision_lane_change_risk.common_frame_tracker
   CALIBRATION_JSON_PATH,
   CommonFrameMotionTracker,
   compose_common_frame,
+  compose_raw_strip,
   load_calibrations_from_json,
   write_debug_png,
 )
@@ -90,7 +91,7 @@ def main_camera_name(clients: dict[str, VisionIpcClient]) -> str:
   raise RuntimeError("vision_lane_change_riskd has no connected camera clients")
 
 
-def read_common_frame(clients: dict[str, VisionIpcClient], calibrations) -> tuple[np.ndarray | None, int, int]:
+def read_common_frame(clients: dict[str, VisionIpcClient], calibrations) -> tuple[np.ndarray | None, dict[str, np.ndarray], int, int]:
   main_name = main_camera_name(clients)
   bufs: dict[str, VisionBuf] = {}
   bufs[main_name] = clients[main_name].recv()
@@ -108,7 +109,7 @@ def read_common_frame(clients: dict[str, VisionIpcClient], calibrations) -> tupl
     for name, buf in bufs.items()
     if buf is not None
   }
-  return compose_common_frame(frames, calibrations), clients[main_name].frame_id, main_sof
+  return compose_common_frame(frames, calibrations), frames, clients[main_name].frame_id, main_sof
 
 
 def build_reason(tracker: CommonFrameMotionTracker, direction: int) -> str:
@@ -140,7 +141,7 @@ def main() -> None:
       calibrations = load_calibrations_from_json(calibration_path)
       last_calibration_reload_t = now
 
-    frame, frame_id, timestamp_sof = read_common_frame(clients, calibrations)
+    frame, source_frames, frame_id, timestamp_sof = read_common_frame(clients, calibrations)
     sm.update(0)
 
     msg = messaging.new_message("visionLaneChangeRisk")
@@ -183,6 +184,10 @@ def main() -> None:
           tracker.left.confidence,
           tracker.right.confidence,
         )
+        raw_strip = compose_raw_strip(source_frames)
+        if raw_strip is not None:
+          raw_path = os.path.join(DEBUG_DUMP_DIR, f"vlcr_{frame_id:08d}_{timestamp_sof}_raw.png")
+          write_debug_png(raw_path, raw_strip, False, False, 0.0, 0.0)
         last_debug_dump_t = now
 
     pm.send("visionLaneChangeRisk", msg)
