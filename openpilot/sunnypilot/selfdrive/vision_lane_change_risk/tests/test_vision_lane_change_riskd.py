@@ -8,7 +8,9 @@ from openpilot.sunnypilot.selfdrive.vision_lane_change_risk.common_frame_tracker
   compose_raw_strip,
   compose_tuned_frame,
   compose_tuned_frame_from_raw,
+  debug_frame_rgb,
   region_pixels,
+  rgb_to_yuv420,
   write_debug_png,
 )
 
@@ -26,6 +28,8 @@ def test_persistent_left_motion_sets_left_risk_only():
 
   assert tracker.left.risk
   assert not tracker.right.risk
+  assert len(tracker.tracks) == 1
+  assert tracker.tracks[0].side == "left"
 
 
 def test_global_brightness_change_does_not_create_risk():
@@ -37,6 +41,24 @@ def test_global_brightness_change_does_not_create_risk():
 
   assert not tracker.left.risk
   assert not tracker.right.risk
+  assert not tracker.tracks
+
+
+def test_track_bbox_moves_with_side_motion():
+  tracker = CommonFrameMotionTracker()
+  tracker.update(np.full((GRID_H, GRID_W), 80, dtype=np.uint8))
+
+  x0, y0, x1, y1 = region_pixels(LEFT_CONFLICT, GRID_W, GRID_H)
+  for offset in (0, 8, 16, 24):
+    frame = np.full((GRID_H, GRID_W), 80, dtype=np.uint8)
+    frame[y0 + 40:y0 + 100, x0 + 50 + offset:x0 + 170 + offset] = 140
+    tracker.update(frame)
+
+  tracks = tracker.tracks
+  assert len(tracks) == 1
+  assert tracks[0].age >= 1
+  assert tracks[0].x0 >= x0 + 50
+  assert tracks[0].vx > 0.0
 
 
 def test_tuned_frame_uses_wide_and_cabin_regions():
@@ -64,6 +86,24 @@ def test_write_debug_png(tmp_path):
   assert data.startswith(b"\x89PNG\r\n\x1a\n")
   assert b"IHDR" in data
   assert b"IDAT" in data
+
+
+def test_debug_rgb_and_yuv420_include_track_overlay():
+  frame = np.full((GRID_H, GRID_W), 80, dtype=np.uint8)
+  tracker = CommonFrameMotionTracker()
+  tracker.update(frame)
+  x0, y0, _, _ = region_pixels(LEFT_CONFLICT, GRID_W, GRID_H)
+  for _ in range(4):
+    frame = np.full((GRID_H, GRID_W), 80, dtype=np.uint8)
+    frame[y0 + 30:y0 + 90, x0 + 40:x0 + 150] = 145
+    tracker.update(frame)
+
+  rgb = debug_frame_rgb(frame, tracker.left.risk, tracker.right.risk, 0.5, 0.0, tracker.tracks)
+  payload = rgb_to_yuv420(rgb)
+
+  assert rgb.shape == (GRID_H, GRID_W, 3)
+  assert len(payload) == GRID_W * GRID_H * 3 // 2
+  assert np.any(np.all(rgb == np.array([255, 96, 64], dtype=np.uint8), axis=2))
 
 
 def test_compose_raw_strip_uses_left_dm_wide_right_dm():

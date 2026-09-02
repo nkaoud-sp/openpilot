@@ -25,6 +25,19 @@ class Region:
   y1: float
 
 
+@dataclass(frozen=True)
+class TrackedObject:
+  side: str
+  x0: int
+  y0: int
+  x1: int
+  y1: int
+  confidence: float
+  age: int
+  vx: float
+  vy: float
+
+
 LEFT_CONFLICT = Region(0.02, 0.42, 0.30, 0.90)
 RIGHT_CONFLICT = Region(0.70, 0.42, 0.98, 0.90)
 DEBUG_SCALE = 1
@@ -32,6 +45,10 @@ TUNED_LEFT_PANEL_CENTER = (367, 425)
 TUNED_RIGHT_PANEL_CENTER = (1703, 409)
 TUNED_LEFT_ROTATION_DEG = -36.0
 TUNED_RIGHT_ROTATION_DEG = 36.0
+MOTION_THRESHOLD = 8.0
+MIN_TRACK_PIXELS = 120
+TRACK_COLOR = np.array([64, 220, 255], dtype=np.uint8)
+TRACK_RISK_COLOR = np.array([255, 96, 64], dtype=np.uint8)
 
 
 def region_pixels(region: Region, width: int, height: int) -> tuple[int, int, int, int]:
@@ -43,12 +60,17 @@ def region_pixels(region: Region, width: int, height: int) -> tuple[int, int, in
 
 
 class SideTracker:
-  def __init__(self) -> None:
+  def __init__(self, side: str) -> None:
+    self.side = side
     self.confidence = 0.0
     self.track_age = 0
+    self.object_age = 0
     self.risk = False
+    self.bbox: tuple[int, int, int, int] | None = None
+    self.center: tuple[float, float] | None = None
+    self.velocity = (0.0, 0.0)
 
-  def update(self, score: float) -> None:
+  def update(self, score: float, bbox: tuple[int, int, int, int] | None) -> None:
     self.confidence = float(np.clip(0.70 * self.confidence + 0.30 * score, 0.0, 1.0))
     if self.confidence >= CONFIDENCE_ON:
       self.track_age = min(self.track_age + 1, 65535)
@@ -56,16 +78,40 @@ class SideTracker:
       self.track_age = 0
 
     self.risk = self.track_age >= MIN_TRACK_AGE
+    if bbox is not None:
+      self.object_age = min(self.object_age + 1, 65535)
+      x0, y0, x1, y1 = bbox
+      center = ((x0 + x1) * 0.5, (y0 + y1) * 0.5)
+      self.velocity = (
+        center[0] - self.center[0],
+        center[1] - self.center[1],
+      ) if self.center is not None else (0.0, 0.0)
+      self.center = center
+      self.bbox = bbox
+    else:
+      self.object_age = 0
+      self.bbox = None
+      self.center = None
+      self.velocity = (0.0, 0.0)
+
+  def tracked_object(self) -> TrackedObject | None:
+    if self.bbox is None or self.object_age == 0:
+      return None
+    return TrackedObject(self.side, *self.bbox, self.confidence, self.object_age, self.velocity[0], self.velocity[1])
 
 
 class CommonFrameMotionTracker:
   def __init__(self) -> None:
     self.background: np.ndarray | None = None
-    self.left = SideTracker()
-    self.right = SideTracker()
+    self.left = SideTracker("left")
+    self.right = SideTracker("right")
 
   @staticmethod
-  def _region_score(diff: np.ndarray, global_motion: float, region: Region) -> float:
+  def _region_motion(
+    diff: np.ndarray,
+    global_motion: float,
+    region: Region,
+  ) -> tuple[float, tuple[int, int, int, int] | None]:
     h, w = diff.shape
     x0, y0, x1, y1 = region_pixels(region, w, h)
     roi = diff[y0:y1, x0:x1]
@@ -73,23 +119,36 @@ class CommonFrameMotionTracker:
     # Use excess local motion over global brightness/camera motion. This is a
     # cheap first proxy for persistent occupancy in the lane-change side zones.
     excess = np.maximum(roi - global_motion, 0.0)
-    motion_fraction = float(np.mean(excess > 5.0))
+    motion_mask = excess > MOTION_THRESHOLD
+    motion_fraction = float(np.mean(motion_mask))
     motion_strength = float(np.clip(np.mean(excess) / 20.0, 0.0, 1.0))
-    return float(np.clip(0.65 * motion_fraction + 0.35 * motion_strength, 0.0, 1.0))
+    score = float(np.clip(0.65 * motion_fraction + 0.35 * motion_strength, 0.0, 1.0))
+
+    ys, xs = np.where(motion_mask)
+    bbox = None
+    if xs.size >= MIN_TRACK_PIXELS:
+      bbox = (int(x0 + xs.min()), int(y0 + ys.min()), int(x0 + xs.max() + 1), int(y0 + ys.max() + 1))
+    return score, bbox
 
   def update(self, frame: np.ndarray) -> None:
     frame_f = frame.astype(np.float32)
     if self.background is None or self.background.shape != frame.shape:
       self.background = frame_f
-      self.left.update(0.0)
-      self.right.update(0.0)
+      self.left.update(0.0, None)
+      self.right.update(0.0, None)
       return
 
     diff = np.abs(frame_f - self.background)
     global_motion = float(np.percentile(diff, 50))
-    self.left.update(self._region_score(diff, global_motion, LEFT_CONFLICT))
-    self.right.update(self._region_score(diff, global_motion, RIGHT_CONFLICT))
+    left_score, left_bbox = self._region_motion(diff, global_motion, LEFT_CONFLICT)
+    right_score, right_bbox = self._region_motion(diff, global_motion, RIGHT_CONFLICT)
+    self.left.update(left_score, left_bbox)
+    self.right.update(right_score, right_bbox)
     self.background = 0.95 * self.background + 0.05 * frame_f
+
+  @property
+  def tracks(self) -> list[TrackedObject]:
+    return [track for track in (self.left.tracked_object(), self.right.tracked_object()) if track is not None]
 
 
 def resize_frame(frame: np.ndarray, width: int, height: int) -> np.ndarray:
@@ -187,12 +246,24 @@ def _png_chunk(chunk_type: bytes, data: bytes) -> bytes:
   return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xffffffff)
 
 
+def _draw_box(rgb: np.ndarray, x0: int, y0: int, x1: int, y1: int, color: np.ndarray, thickness: int = 2) -> None:
+  x0 = max(0, min(rgb.shape[1] - 1, x0))
+  x1 = max(x0 + 1, min(rgb.shape[1], x1))
+  y0 = max(0, min(rgb.shape[0] - 1, y0))
+  y1 = max(y0 + 1, min(rgb.shape[0], y1))
+  rgb[y0:y0 + thickness, x0:x1] = color
+  rgb[y1 - thickness:y1, x0:x1] = color
+  rgb[y0:y1, x0:x0 + thickness] = color
+  rgb[y0:y1, x1 - thickness:x1] = color
+
+
 def debug_frame_rgb(
   frame: np.ndarray,
   left_risk: bool,
   right_risk: bool,
   left_confidence: float,
   right_confidence: float,
+  tracks: list[TrackedObject] | None = None,
 ) -> np.ndarray:
   image = np.repeat(np.repeat(frame, DEBUG_SCALE, axis=0), DEBUG_SCALE, axis=1)
   rgb = np.repeat(image[:, :, None], 3, axis=2).astype(np.uint8)
@@ -205,11 +276,19 @@ def debug_frame_rgb(
     y0 *= DEBUG_SCALE
     y1 *= DEBUG_SCALE
     color = np.array([255, 64, 64] if risk else [255, 210, 64], dtype=np.uint8)
-    thickness = 2
-    rgb[y0:y0 + thickness, x0:x1] = color
-    rgb[y1 - thickness:y1, x0:x1] = color
-    rgb[y0:y1, x0:x0 + thickness] = color
-    rgb[y0:y1, x1 - thickness:x1] = color
+    _draw_box(rgb, x0, y0, x1, y1, color)
+
+  for track in tracks or []:
+    color = TRACK_RISK_COLOR if track.age >= MIN_TRACK_AGE else TRACK_COLOR
+    _draw_box(
+      rgb,
+      track.x0 * DEBUG_SCALE,
+      track.y0 * DEBUG_SCALE,
+      track.x1 * DEBUG_SCALE,
+      track.y1 * DEBUG_SCALE,
+      color,
+      thickness=3,
+    )
 
   # Tiny confidence bars along the top edge: left on the left, right on the right.
   bar_h = 4
@@ -220,6 +299,20 @@ def debug_frame_rgb(
     rgb[:bar_h, -right_w:] = np.array([255, 210, 64], dtype=np.uint8)
 
   return rgb
+
+
+def rgb_to_yuv420(rgb: np.ndarray) -> bytes:
+  rgb_f = rgb.astype(np.float32)
+  r = rgb_f[..., 0]
+  g = rgb_f[..., 1]
+  b = rgb_f[..., 2]
+  y = np.clip(0.299 * r + 0.587 * g + 0.114 * b, 0.0, 255.0).astype(np.uint8)
+  u = np.clip(-0.169 * r - 0.331 * g + 0.500 * b + 128.0, 0.0, 255.0)
+  v = np.clip(0.500 * r - 0.419 * g - 0.081 * b + 128.0, 0.0, 255.0)
+
+  u420 = u.reshape((rgb.shape[0] // 2, 2, rgb.shape[1] // 2, 2)).mean(axis=(1, 3)).astype(np.uint8)
+  v420 = v.reshape((rgb.shape[0] // 2, 2, rgb.shape[1] // 2, 2)).mean(axis=(1, 3)).astype(np.uint8)
+  return y.tobytes() + u420.tobytes() + v420.tobytes()
 
 
 def write_rgb_png(path: str, rgb: np.ndarray) -> None:
@@ -242,5 +335,6 @@ def write_debug_png(
   right_risk: bool,
   left_confidence: float,
   right_confidence: float,
+  tracks: list[TrackedObject] | None = None,
 ) -> None:
-  write_rgb_png(path, debug_frame_rgb(frame, left_risk, right_risk, left_confidence, right_confidence))
+  write_rgb_png(path, debug_frame_rgb(frame, left_risk, right_risk, left_confidence, right_confidence, tracks))

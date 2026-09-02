@@ -16,7 +16,11 @@ from msgq.visionipc import VisionIpcClient, VisionBuf
 
 from openpilot.sunnypilot.selfdrive.vision_lane_change_risk.common_frame_tracker import (
   CommonFrameMotionTracker,
+  GRID_H,
+  GRID_W,
   compose_tuned_frame,
+  debug_frame_rgb,
+  rgb_to_yuv420,
   write_debug_png,
 )
 
@@ -29,6 +33,8 @@ Source = custom.VisionLaneChangeRisk.Source
 MODEL_RATE = 20
 DEBUG_DUMP_INTERVAL = 1.0
 DEBUG_DUMP_DIR = "/data/media/0/vision_lane_change_risk_debug"
+STREAM_SERVER_NAME = "vision_lane_change_riskd"
+STREAM_TYPE = VisionStreamType.VISION_STREAM_MAP
 STREAM_CONFIGS = {
   "wide": VisionStreamType.VISION_STREAM_WIDE_ROAD,
   "cabin": VisionStreamType.VISION_STREAM_CABIN,
@@ -101,6 +107,19 @@ def read_tuned_frame(clients: dict[str, VisionIpcClient]) -> tuple[np.ndarray | 
   return compose_tuned_frame(frames), clients[main_name].frame_id, main_sof
 
 
+class ProcessedFrameStreamer:
+  def __init__(self) -> None:
+    from msgq.visionipc import VisionIpcServer
+
+    self.server = VisionIpcServer(STREAM_SERVER_NAME)
+    self.server.create_buffers(STREAM_TYPE, 4, GRID_W, GRID_H)
+    self.server.start_listener()
+    cloudlog.warning(f"vision_lane_change_riskd streaming processed frames on {STREAM_SERVER_NAME}:{STREAM_TYPE}")
+
+  def send(self, rgb: np.ndarray, frame_id: int, timestamp_sof: int) -> None:
+    self.server.send(STREAM_TYPE, rgb_to_yuv420(rgb), frame_id, timestamp_sof, int(time.monotonic() * 1e9))
+
+
 def build_reason(tracker: CommonFrameMotionTracker, direction: int) -> str:
   if direction == Direction.left and tracker.left.risk:
     return "left conflict zone persistent motion"
@@ -118,6 +137,7 @@ def main() -> None:
   sm = messaging.SubMaster(["carState", "modelV2"])
   clients = connect_cameras()
   tracker = CommonFrameMotionTracker()
+  streamer = ProcessedFrameStreamer()
   last_debug_dump_t = 0.0
   rk = Ratekeeper(MODEL_RATE, print_delay_threshold=None)
 
@@ -150,6 +170,15 @@ def main() -> None:
       risk.timestampSof = timestamp_sof
       risk.intendedDirection = direction
       risk.reason = build_reason(tracker, direction)
+      overlay = debug_frame_rgb(
+        frame,
+        tracker.left.risk,
+        tracker.right.risk,
+        tracker.left.confidence,
+        tracker.right.confidence,
+        tracker.tracks,
+      )
+      streamer.send(overlay, frame_id, timestamp_sof)
 
       debug_enabled = (
         os.getenv("VLCR_DEBUG_PNGS") == "1" or
@@ -165,6 +194,7 @@ def main() -> None:
           tracker.right.risk,
           tracker.left.confidence,
           tracker.right.confidence,
+          tracker.tracks,
         )
         last_debug_dump_t = now
 
