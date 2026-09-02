@@ -23,7 +23,6 @@ from openpilot.sunnypilot.selfdrive.vision_lane_change_risk.common_frame_tracker
   GRID_W,
   compose_tuned_frame,
   debug_frame_rgb,
-  model_lead_detections,
   rgb_to_yuv420,
   write_debug_png,
 )
@@ -235,7 +234,7 @@ def main() -> None:
     risk.source = Source.commonFrame
 
     if frame is not None:
-      tracker.update(frame, model_lead_detections(sm["modelV2"]))
+      tracker.update(frame)
       direction = intended_direction(sm["modelV2"])
       intended_risk = ((direction == Direction.left and tracker.left.risk) or
                        (direction == Direction.right and tracker.right.risk))

@@ -77,7 +77,6 @@ TUNED_LEFT_PANEL_CENTER = (367, 425)
 TUNED_RIGHT_PANEL_CENTER = (1703, 409)
 TUNED_LEFT_ROTATION_DEG = -36.0
 TUNED_RIGHT_ROTATION_DEG = 36.0
-MODEL_LEAD_PROB_MIN = 0.35
 MOTION_THRESHOLD = 8.0
 APPEARANCE_EDGE_THRESHOLD = 22
 MIN_TRACK_PIXELS = 120
@@ -154,31 +153,6 @@ def bbox_side(bbox: tuple[int, int, int, int], width: int, height: int) -> str:
   if bbox_intersects_region(bbox, RIGHT_CONFLICT, width, height):
     return "right"
   return "center"
-
-
-def model_lead_detections(model_v2) -> list[tuple[tuple[int, int, int, int], float]]:
-  detections: list[tuple[tuple[int, int, int, int], float]] = []
-  front_x0 = GRID_W // 4
-  front_x1 = GRID_W * 3 // 4
-
-  for lead in model_v2.leadsV3[:2]:
-    if lead.prob < MODEL_LEAD_PROB_MIN or len(lead.x) == 0 or len(lead.y) == 0:
-      continue
-
-    distance = max(1.0, float(lead.x[0]))
-    lateral = float(lead.y[0])
-    center_x = GRID_W * 0.5 - lateral * 70.0
-    center_y = float(np.clip(190.0 + 1600.0 / (distance + 8.0), 215.0, 380.0))
-    box_w = float(np.clip(2600.0 / (distance + 4.0), 28.0, 160.0))
-    box_h = float(np.clip(box_w * 0.55, 20.0, 90.0))
-
-    x0 = int(np.clip(center_x - box_w * 0.5, front_x0, front_x1 - 1))
-    x1 = int(np.clip(center_x + box_w * 0.5, x0 + 1, front_x1))
-    y0 = int(np.clip(center_y - box_h * 0.5, 0, GRID_H - 1))
-    y1 = int(np.clip(center_y + box_h * 0.5, y0 + 1, GRID_H))
-    detections.append(((x0, y0, x1, y1), float(lead.prob)))
-
-  return detections
 
 
 class SideTracker:

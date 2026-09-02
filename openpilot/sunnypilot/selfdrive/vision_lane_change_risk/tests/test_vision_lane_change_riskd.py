@@ -9,23 +9,10 @@ from openpilot.sunnypilot.selfdrive.vision_lane_change_risk.common_frame_tracker
   compose_tuned_frame,
   compose_tuned_frame_from_raw,
   debug_frame_rgb,
-  model_lead_detections,
   region_pixels,
   rgb_to_yuv420,
   write_debug_png,
 )
-
-
-class FakeLead:
-  def __init__(self, prob: float, x: float, y: float) -> None:
-    self.prob = prob
-    self.x = [x]
-    self.y = [y]
-
-
-class FakeModel:
-  def __init__(self, leads) -> None:
-    self.leadsV3 = leads
 
 
 def test_persistent_left_motion_sets_left_risk_only():
@@ -120,16 +107,6 @@ def test_external_detector_box_creates_stable_track():
   assert tracks[0].age == 3
   assert tracks[0].track_id == 1
   assert tracks[0].x0 == detection[0][0]
-
-
-def test_model_lead_detections_project_into_front_panel():
-  detections = model_lead_detections(FakeModel([FakeLead(0.80, 24.0, -1.2), FakeLead(0.20, 15.0, 0.0)]))
-
-  assert len(detections) == 1
-  bbox, confidence = detections[0]
-  assert confidence == 0.80
-  assert GRID_W // 4 <= bbox[0] < bbox[2] <= GRID_W * 3 // 4
-  assert bbox[0] > GRID_W // 2
 
 
 def test_tracker_ignores_roof_and_stitched_edge_motion():
