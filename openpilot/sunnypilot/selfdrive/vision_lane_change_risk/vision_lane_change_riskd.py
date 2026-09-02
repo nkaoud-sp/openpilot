@@ -19,8 +19,10 @@ from openpilot.sunnypilot.selfdrive.vision_lane_change_risk.common_frame_tracker
   CommonFrameMotionTracker,
   compose_common_frame,
   compose_raw_strip,
+  compose_raw_strip_v2_debug,
   load_calibrations_from_json,
   write_debug_png,
+  write_rgb_png,
 )
 
 
@@ -188,6 +190,9 @@ def main() -> None:
         if raw_strip is not None:
           raw_path = os.path.join(DEBUG_DUMP_DIR, f"vlcr_{frame_id:08d}_{timestamp_sof}_raw.png")
           write_debug_png(raw_path, raw_strip, False, False, 0.0, 0.0)
+          raw_v2_path = os.path.join(DEBUG_DUMP_DIR, f"vlcr_{frame_id:08d}_{timestamp_sof}_raw_v2.png")
+          raw_v2 = compose_raw_strip_v2_debug(raw_strip, False, False, 0.0, 0.0)
+          write_rgb_png(raw_v2_path, raw_v2)
         last_debug_dump_t = now
 
     pm.send("visionLaneChangeRisk", msg)

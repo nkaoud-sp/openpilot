@@ -35,6 +35,10 @@ RIGHT_CONFLICT = Region(0.70, 0.42, 0.98, 0.90)
 DEBUG_SCALE = 1
 RAW_STRIP_PANEL_W = 512
 RAW_STRIP_PANEL_H = 512
+RAW_V2_LEFT_PANEL_CENTER = (407, 425)
+RAW_V2_RIGHT_PANEL_CENTER = (1663, 409)
+RAW_V2_LEFT_ROTATION_DEG = -45.0
+RAW_V2_RIGHT_ROTATION_DEG = 45.0
 
 
 @dataclass(frozen=True)
@@ -174,6 +178,67 @@ def compose_raw_strip(frames: dict[str, np.ndarray]) -> np.ndarray | None:
     (RAW_STRIP_PANEL_H, RAW_STRIP_PANEL_W * 2), dtype=np.uint8
   )
   return np.hstack((left_dm, front, right_dm)).astype(np.uint8)
+
+
+def _paste_rotated_panel(canvas: np.ndarray, panel: np.ndarray, center_x: int, center_y: int, angle_deg: float) -> None:
+  src_h, src_w = panel.shape[:2]
+  dst_h, dst_w = canvas.shape[:2]
+  angle = np.deg2rad(angle_deg)
+  cos_a = float(np.cos(angle))
+  sin_a = float(np.sin(angle))
+
+  half_w = int(np.ceil((abs(src_w * cos_a) + abs(src_h * sin_a)) * 0.5)) + 2
+  half_h = int(np.ceil((abs(src_w * sin_a) + abs(src_h * cos_a)) * 0.5)) + 2
+  x0 = max(0, center_x - half_w)
+  x1 = min(dst_w, center_x + half_w)
+  y0 = max(0, center_y - half_h)
+  y1 = min(dst_h, center_y + half_h)
+  if x0 >= x1 or y0 >= y1:
+    return
+
+  yy, xx = np.mgrid[y0:y1, x0:x1]
+  dx = xx.astype(np.float32) - center_x
+  dy = yy.astype(np.float32) - center_y
+  src_x = cos_a * dx + sin_a * dy + (src_w - 1) * 0.5
+  src_y = -sin_a * dx + cos_a * dy + (src_h - 1) * 0.5
+  valid = (src_x >= 0.0) & (src_x <= src_w - 1) & (src_y >= 0.0) & (src_y <= src_h - 1)
+  if not np.any(valid):
+    return
+
+  sx0 = np.clip(np.floor(src_x).astype(np.int32), 0, src_w - 1)
+  sy0 = np.clip(np.floor(src_y).astype(np.int32), 0, src_h - 1)
+  sx1 = np.minimum(sx0 + 1, src_w - 1)
+  sy1 = np.minimum(sy0 + 1, src_h - 1)
+  wx = (src_x - sx0)[..., None]
+  wy = (src_y - sy0)[..., None]
+  top = (1.0 - wx) * panel[sy0, sx0].astype(np.float32) + wx * panel[sy0, sx1].astype(np.float32)
+  bottom = (1.0 - wx) * panel[sy1, sx0].astype(np.float32) + wx * panel[sy1, sx1].astype(np.float32)
+  sampled = ((1.0 - wy) * top + wy * bottom).astype(np.uint8)
+  canvas_region = canvas[y0:y1, x0:x1]
+  canvas_region[valid] = sampled[valid]
+
+
+def compose_raw_strip_v2_debug(
+  raw_strip: np.ndarray,
+  left_risk: bool,
+  right_risk: bool,
+  left_confidence: float,
+  right_confidence: float,
+) -> np.ndarray:
+  raw_rgb = debug_frame_rgb(raw_strip, left_risk, right_risk, left_confidence, right_confidence)
+  left_dm = raw_rgb[:, :RAW_STRIP_PANEL_W]
+  front = raw_rgb[:, RAW_STRIP_PANEL_W:RAW_STRIP_PANEL_W * 3]
+  right_dm = raw_rgb[:, RAW_STRIP_PANEL_W * 3:]
+
+  canvas = np.full(raw_rgb.shape, 255, dtype=np.uint8)
+  _paste_rotated_panel(
+    canvas, right_dm, RAW_V2_LEFT_PANEL_CENTER[0], RAW_V2_LEFT_PANEL_CENTER[1], RAW_V2_LEFT_ROTATION_DEG
+  )
+  _paste_rotated_panel(
+    canvas, left_dm, RAW_V2_RIGHT_PANEL_CENTER[0], RAW_V2_RIGHT_PANEL_CENTER[1], RAW_V2_RIGHT_ROTATION_DEG
+  )
+  canvas[:, RAW_STRIP_PANEL_W:RAW_STRIP_PANEL_W * 3] = front
+  return canvas
 
 
 def _rotation_matrix(cal: FisheyeCalibration) -> np.ndarray:
@@ -376,14 +441,13 @@ def _png_chunk(chunk_type: bytes, data: bytes) -> bytes:
   return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xffffffff)
 
 
-def write_debug_png(
-  path: str,
+def debug_frame_rgb(
   frame: np.ndarray,
   left_risk: bool,
   right_risk: bool,
   left_confidence: float,
   right_confidence: float,
-) -> None:
+) -> np.ndarray:
   image = np.repeat(np.repeat(frame, DEBUG_SCALE, axis=0), DEBUG_SCALE, axis=1)
   rgb = np.repeat(image[:, :, None], 3, axis=2).astype(np.uint8)
 
@@ -409,6 +473,10 @@ def write_debug_png(
   if right_w > 0:
     rgb[:bar_h, -right_w:] = np.array([255, 210, 64], dtype=np.uint8)
 
+  return rgb
+
+
+def write_rgb_png(path: str, rgb: np.ndarray) -> None:
   raw = b"".join(b"\x00" + row.tobytes() for row in rgb)
   png = (
     b"\x89PNG\r\n\x1a\n" +
@@ -419,3 +487,14 @@ def write_debug_png(
   os.makedirs(os.path.dirname(path), exist_ok=True)
   with open(path, "wb") as f:
     f.write(png)
+
+
+def write_debug_png(
+  path: str,
+  frame: np.ndarray,
+  left_risk: bool,
+  right_risk: bool,
+  left_confidence: float,
+  right_confidence: float,
+) -> None:
+  write_rgb_png(path, debug_frame_rgb(frame, left_risk, right_risk, left_confidence, right_confidence))

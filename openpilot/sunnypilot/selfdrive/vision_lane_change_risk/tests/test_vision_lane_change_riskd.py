@@ -7,6 +7,7 @@ from openpilot.sunnypilot.selfdrive.vision_lane_change_risk.common_frame_tracker
   LEFT_CONFLICT,
   compose_common_frame,
   compose_raw_strip,
+  compose_raw_strip_v2_debug,
   load_calibrations_from_json,
   orient_common_frame,
   region_pixels,
@@ -78,6 +79,24 @@ def test_compose_raw_strip_uses_left_dm_wide_right_dm():
   assert strip[256, 128] == 40
   assert strip[256, 768] == 160
   assert strip[256, 1920] == 80
+
+
+def test_compose_raw_strip_v2_swaps_rotated_dm_panels():
+  cabin = np.zeros((4, 8), dtype=np.uint8)
+  cabin[:, :4] = 40
+  cabin[:, 4:] = 80
+  wide = np.full((4, 8), 160, dtype=np.uint8)
+
+  strip = compose_raw_strip({"cabin": cabin, "wide": wide})
+  assert strip is not None
+
+  v2 = compose_raw_strip_v2_debug(strip, False, False, 0.0, 0.0)
+
+  assert v2.shape == (512, 2048, 3)
+  assert np.all(v2[256, 1024] == 160)
+  assert np.any(v2[:, :512, 0] == 80)
+  assert np.any(v2[:, 1536:, 0] == 40)
+  assert np.all(v2[0, 0] == 255)
 
 
 def test_load_calibrations_from_json(tmp_path):
