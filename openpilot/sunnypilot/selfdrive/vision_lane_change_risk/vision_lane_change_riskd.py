@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import atexit
+import json
 import os
 import shutil
 import subprocess
@@ -40,6 +41,7 @@ DEBUG_DUMP_DIR = "/data/media/0/vision_lane_change_risk_debug"
 VIDEO_DUMP_FPS = 10
 VIDEO_DUMP_SECONDS = 180
 PNG_FALLBACK_FPS = 2
+RAW_CAPTURE_FORMAT = "y8"
 CAPTURE_STATUS_PATH = os.path.join(DEBUG_DUMP_DIR, "vlcr_capture_status.txt")
 STREAM_SERVER_NAME = "vision_lane_change_riskd"
 STREAM_TYPE = VisionStreamType.VISION_STREAM_MAP
@@ -248,6 +250,102 @@ class DebugVideoRecorder:
       self.proc = None
 
 
+class CleanStreamRecorder:
+  def __init__(self) -> None:
+    self.video_recorder = DebugVideoRecorder("vlcr_stream")
+    self.raw_file = None
+    self.raw_path = ""
+    self.meta_path = ""
+    self.started_t = 0.0
+    self.last_frame_t = 0.0
+    self.frame_count = 0
+
+  def update_enabled(self, enabled: bool, frame: np.ndarray, now: float) -> None:
+    if not enabled:
+      self.close()
+      return
+
+    rgb = clean_frame_rgb(frame)
+    self.video_recorder.update(rgb, now)
+    if not self.video_recorder.unavailable:
+      return
+
+    self._write_raw_fallback(frame, now)
+
+  def _write_raw_fallback(self, frame: np.ndarray, now: float) -> None:
+    if VIDEO_DUMP_SECONDS > 0 and self.started_t > 0.0 and now - self.started_t > VIDEO_DUMP_SECONDS:
+      self.close()
+      return
+    if now - self.last_frame_t < 1.0 / VIDEO_DUMP_FPS:
+      return
+    if self.raw_file is None:
+      self._start_raw(frame)
+
+    try:
+      assert self.raw_file is not None
+      self.raw_file.write(np.ascontiguousarray(frame).tobytes())
+      self.raw_file.flush()
+      self.frame_count += 1
+      self.last_frame_t = now
+      self._write_metadata(finalized=False)
+    except OSError:
+      cloudlog.exception("vision_lane_change_riskd raw stream fallback failed")
+      self.close()
+
+  def _start_raw(self, frame: np.ndarray) -> None:
+    os.makedirs(DEBUG_DUMP_DIR, exist_ok=True)
+    ts = int(time.time())
+    self.raw_path = os.path.join(DEBUG_DUMP_DIR, f"vlcr_stream_{ts}.{RAW_CAPTURE_FORMAT}")
+    self.meta_path = os.path.join(DEBUG_DUMP_DIR, f"vlcr_stream_{ts}.json")
+    self.raw_file = open(self.raw_path, "wb")
+    self.started_t = time.monotonic()
+    self.frame_count = 0
+    self._write_metadata(finalized=False, frame_shape=frame.shape)
+    write_capture_status(
+      "vlcr_stream: ffmpeg unavailable; writing raw video fallback "
+      f"{self.raw_path} with metadata {self.meta_path}"
+    )
+    cloudlog.warning(f"vision_lane_change_riskd raw stream fallback {self.raw_path}")
+
+  def _write_metadata(self, finalized: bool, frame_shape: tuple[int, int] | None = None) -> None:
+    if not self.meta_path:
+      return
+    height = int(frame_shape[0]) if frame_shape is not None else GRID_H
+    width = int(frame_shape[1]) if frame_shape is not None else GRID_W
+    metadata = {
+      "raw_path": self.raw_path,
+      "width": width,
+      "height": height,
+      "fps": VIDEO_DUMP_FPS,
+      "pixel_format": RAW_CAPTURE_FORMAT,
+      "frame_count": self.frame_count,
+      "finalized": finalized,
+    }
+    try:
+      with open(self.meta_path, "w") as f:
+        json.dump(metadata, f, indent=2)
+        f.write("\n")
+    except OSError:
+      cloudlog.exception("vision_lane_change_riskd failed to write raw stream metadata")
+
+  def close(self) -> None:
+    self.video_recorder.close()
+    if self.raw_file is None:
+      return
+    try:
+      self.raw_file.close()
+    except OSError:
+      cloudlog.exception("vision_lane_change_riskd failed to close raw stream fallback")
+    finally:
+      self.raw_file = None
+      self._write_metadata(finalized=True)
+      if self.raw_path:
+        write_capture_status(
+          f"vlcr_stream: closed raw video fallback {self.raw_path} "
+          f"({self.frame_count} frames at {VIDEO_DUMP_FPS} fps)"
+        )
+
+
 def build_reason(tracker: CommonFrameMotionTracker, direction: int) -> str:
   if direction == Direction.left and tracker.left.risk:
     return "left conflict zone persistent motion"
@@ -281,7 +379,7 @@ def main() -> None:
   tracker = CommonFrameMotionTracker()
   streamer = ProcessedFrameStreamer()
   overlay_video_recorder = DebugVideoRecorder("vlcr_tracks")
-  clean_video_recorder = DebugVideoRecorder("vlcr_stream", png_fallback=True)
+  clean_video_recorder = CleanStreamRecorder()
   atexit.register(overlay_video_recorder.close)
   atexit.register(clean_video_recorder.close)
   last_debug_dump_t = 0.0
@@ -336,7 +434,7 @@ def main() -> None:
         params.get_bool("VisionLaneChangeRiskStreamVideo")
       )
       overlay_video_recorder.update_enabled(debug_enabled, overlay, now)
-      clean_video_recorder.update_enabled(clean_video_enabled, clean_frame_rgb(frame), now)
+      clean_video_recorder.update_enabled(clean_video_enabled, frame, now)
       if debug_enabled and now - last_debug_dump_t >= DEBUG_DUMP_INTERVAL:
         filename = f"vlcr_{frame_id:08d}_{timestamp_sof}_processed.png"
         path = os.path.join(DEBUG_DUMP_DIR, filename)
