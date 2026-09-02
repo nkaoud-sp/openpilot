@@ -61,6 +61,23 @@ def test_track_bbox_moves_with_side_motion():
   assert tracks[0].vx > 0.0
 
 
+def test_track_id_persists_from_center_to_side_zone():
+  tracker = CommonFrameMotionTracker()
+  tracker.update(np.full((GRID_H, GRID_W), 80, dtype=np.uint8))
+
+  track_ids = []
+  for x in (1180, 1280, 1390, 1510):
+    frame = np.full((GRID_H, GRID_W), 80, dtype=np.uint8)
+    frame[250:330, x:x + 160] = 145
+    tracker.update(frame)
+    tracks = tracker.tracks
+    assert tracks
+    track_ids.append(tracks[0].track_id)
+
+  assert len(set(track_ids)) == 1
+  assert tracker.tracks[0].side == "right"
+
+
 def test_tuned_frame_uses_wide_and_cabin_regions():
   cabin = np.zeros((4, 8), dtype=np.uint8)
   cabin[:, :4] = 40

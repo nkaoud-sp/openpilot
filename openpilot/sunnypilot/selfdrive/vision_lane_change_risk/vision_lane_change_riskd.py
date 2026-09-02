@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import atexit
 import os
+import shutil
+import subprocess
 import time
 
 import numpy as np
@@ -33,6 +36,8 @@ Source = custom.VisionLaneChangeRisk.Source
 MODEL_RATE = 20
 DEBUG_DUMP_INTERVAL = 1.0
 DEBUG_DUMP_DIR = "/data/media/0/vision_lane_change_risk_debug"
+VIDEO_DUMP_FPS = 10
+VIDEO_DUMP_SECONDS = 180
 STREAM_SERVER_NAME = "vision_lane_change_riskd"
 STREAM_TYPE = VisionStreamType.VISION_STREAM_MAP
 STREAM_CONFIGS = {
@@ -120,6 +125,81 @@ class ProcessedFrameStreamer:
     self.server.send(STREAM_TYPE, rgb_to_yuv420(rgb), frame_id, timestamp_sof, int(time.monotonic() * 1e9))
 
 
+class DebugVideoRecorder:
+  def __init__(self) -> None:
+    self.proc: subprocess.Popen | None = None
+    self.output_path = ""
+    self.started_t = 0.0
+    self.last_frame_t = 0.0
+    self.unavailable = False
+
+  def update(self, rgb: np.ndarray, now: float) -> None:
+    if self.unavailable:
+      return
+    if self.proc is not None and VIDEO_DUMP_SECONDS > 0 and now - self.started_t > VIDEO_DUMP_SECONDS:
+      self.close()
+      return
+    if now - self.last_frame_t < 1.0 / VIDEO_DUMP_FPS:
+      return
+    if self.proc is None and not self._start():
+      return
+
+    try:
+      assert self.proc is not None
+      assert self.proc.stdin is not None
+      self.proc.stdin.write(rgb.tobytes())
+      self.last_frame_t = now
+    except (BrokenPipeError, OSError):
+      cloudlog.exception("vision_lane_change_riskd debug video writer failed")
+      self.close()
+      self.unavailable = True
+
+  def _start(self) -> bool:
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+      cloudlog.warning("vision_lane_change_riskd debug video disabled: ffmpeg not found")
+      self.unavailable = True
+      return False
+
+    os.makedirs(DEBUG_DUMP_DIR, exist_ok=True)
+    self.output_path = os.path.join(DEBUG_DUMP_DIR, f"vlcr_tracks_{int(time.time())}.mp4")
+    cmd = [
+      ffmpeg,
+      "-y",
+      "-f", "rawvideo",
+      "-pixel_format", "rgb24",
+      "-video_size", f"{GRID_W}x{GRID_H}",
+      "-framerate", str(VIDEO_DUMP_FPS),
+      "-i", "-",
+      "-an",
+      "-vcodec", "libx264",
+      "-preset", "ultrafast",
+      "-pix_fmt", "yuv420p",
+      self.output_path,
+    ]
+    try:
+      self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+      self.started_t = time.monotonic()
+      cloudlog.warning(f"vision_lane_change_riskd debug video recording {self.output_path}")
+      return True
+    except OSError:
+      cloudlog.exception("vision_lane_change_riskd debug video failed to start")
+      self.unavailable = True
+      return False
+
+  def close(self) -> None:
+    if self.proc is None:
+      return
+    try:
+      if self.proc.stdin is not None:
+        self.proc.stdin.close()
+      self.proc.wait(timeout=2.0)
+    except (OSError, subprocess.TimeoutExpired):
+      self.proc.kill()
+    finally:
+      self.proc = None
+
+
 def build_reason(tracker: CommonFrameMotionTracker, direction: int) -> str:
   if direction == Direction.left and tracker.left.risk:
     return "left conflict zone persistent motion"
@@ -138,6 +218,8 @@ def main() -> None:
   clients = connect_cameras()
   tracker = CommonFrameMotionTracker()
   streamer = ProcessedFrameStreamer()
+  video_recorder = DebugVideoRecorder()
+  atexit.register(video_recorder.close)
   last_debug_dump_t = 0.0
   rk = Ratekeeper(MODEL_RATE, print_delay_threshold=None)
 
@@ -184,6 +266,8 @@ def main() -> None:
         os.getenv("VLCR_DEBUG_PNGS") == "1" or
         params.get_bool("VisionLaneChangeRiskDebug")
       )
+      if debug_enabled:
+        video_recorder.update(overlay, now)
       if debug_enabled and now - last_debug_dump_t >= DEBUG_DUMP_INTERVAL:
         filename = f"vlcr_{frame_id:08d}_{timestamp_sof}_processed.png"
         path = os.path.join(DEBUG_DUMP_DIR, filename)

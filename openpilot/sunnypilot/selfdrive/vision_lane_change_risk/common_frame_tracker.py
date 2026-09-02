@@ -27,6 +27,7 @@ class Region:
 
 @dataclass(frozen=True)
 class TrackedObject:
+  track_id: int
   side: str
   x0: int
   y0: int
@@ -38,6 +39,33 @@ class TrackedObject:
   vy: float
 
 
+@dataclass
+class MotionTrack:
+  track_id: int
+  x0: int
+  y0: int
+  x1: int
+  y1: int
+  confidence: float
+  age: int = 1
+  missed: int = 0
+  vx: float = 0.0
+  vy: float = 0.0
+
+  @property
+  def center(self) -> tuple[float, float]:
+    return (self.x0 + self.x1) * 0.5, (self.y0 + self.y1) * 0.5
+
+  @property
+  def predicted_center(self) -> tuple[float, float]:
+    cx, cy = self.center
+    return cx + self.vx, cy + self.vy
+
+  @property
+  def bbox(self) -> tuple[int, int, int, int]:
+    return self.x0, self.y0, self.x1, self.y1
+
+
 LEFT_CONFLICT = Region(0.02, 0.42, 0.30, 0.90)
 RIGHT_CONFLICT = Region(0.70, 0.42, 0.98, 0.90)
 DEBUG_SCALE = 1
@@ -47,6 +75,11 @@ TUNED_LEFT_ROTATION_DEG = -36.0
 TUNED_RIGHT_ROTATION_DEG = 36.0
 MOTION_THRESHOLD = 8.0
 MIN_TRACK_PIXELS = 120
+COMPONENT_CELL_SIZE = 8
+MIN_COMPONENT_CELLS = 6
+MAX_TRACK_MATCH_DISTANCE = 190.0
+MAX_TRACK_MISSES = 4
+MAX_OBJECT_TRACKS = 12
 TRACK_COLOR = np.array([64, 220, 255], dtype=np.uint8)
 TRACK_RISK_COLOR = np.array([255, 96, 64], dtype=np.uint8)
 
@@ -57,6 +90,25 @@ def region_pixels(region: Region, width: int, height: int) -> tuple[int, int, in
   y0 = max(0, min(height - 1, int(region.y0 * height)))
   y1 = max(y0 + 1, min(height, int(region.y1 * height)))
   return x0, y0, x1, y1
+
+
+def bbox_center(bbox: tuple[int, int, int, int]) -> tuple[float, float]:
+  x0, y0, x1, y1 = bbox
+  return (x0 + x1) * 0.5, (y0 + y1) * 0.5
+
+
+def bbox_intersects_region(bbox: tuple[int, int, int, int], region: Region, width: int, height: int) -> bool:
+  x0, y0, x1, y1 = bbox
+  rx0, ry0, rx1, ry1 = region_pixels(region, width, height)
+  return x0 < rx1 and x1 > rx0 and y0 < ry1 and y1 > ry0
+
+
+def bbox_side(bbox: tuple[int, int, int, int], width: int, height: int) -> str:
+  if bbox_intersects_region(bbox, LEFT_CONFLICT, width, height):
+    return "left"
+  if bbox_intersects_region(bbox, RIGHT_CONFLICT, width, height):
+    return "right"
+  return "center"
 
 
 class SideTracker:
@@ -97,7 +149,9 @@ class SideTracker:
   def tracked_object(self) -> TrackedObject | None:
     if self.bbox is None or self.object_age == 0:
       return None
-    return TrackedObject(self.side, *self.bbox, self.confidence, self.object_age, self.velocity[0], self.velocity[1])
+    return TrackedObject(
+      -1, self.side, *self.bbox, self.confidence, self.object_age, self.velocity[0], self.velocity[1]
+    )
 
 
 class CommonFrameMotionTracker:
@@ -105,6 +159,8 @@ class CommonFrameMotionTracker:
     self.background: np.ndarray | None = None
     self.left = SideTracker("left")
     self.right = SideTracker("right")
+    self._tracks: list[MotionTrack] = []
+    self._next_track_id = 1
 
   @staticmethod
   def _region_motion(
@@ -130,6 +186,96 @@ class CommonFrameMotionTracker:
       bbox = (int(x0 + xs.min()), int(y0 + ys.min()), int(x0 + xs.max() + 1), int(y0 + ys.max() + 1))
     return score, bbox
 
+  @staticmethod
+  def _motion_components(motion_mask: np.ndarray) -> list[tuple[tuple[int, int, int, int], float]]:
+    cell = COMPONENT_CELL_SIZE
+    h, w = motion_mask.shape
+    cell_h = h // cell
+    cell_w = w // cell
+    trimmed = motion_mask[:cell_h * cell, :cell_w * cell]
+    cell_mask = trimmed.reshape((cell_h, cell, cell_w, cell)).any(axis=(1, 3))
+    seen = np.zeros_like(cell_mask, dtype=bool)
+    components: list[tuple[tuple[int, int, int, int], float]] = []
+
+    for start_y, start_x in zip(*np.where(cell_mask & ~seen)):
+      stack = [(int(start_y), int(start_x))]
+      seen[start_y, start_x] = True
+      xs: list[int] = []
+      ys: list[int] = []
+
+      while stack:
+        cy, cx = stack.pop()
+        xs.append(cx)
+        ys.append(cy)
+        for ny in (cy - 1, cy, cy + 1):
+          for nx in (cx - 1, cx, cx + 1):
+            if ny == cy and nx == cx:
+              continue
+            if 0 <= ny < cell_h and 0 <= nx < cell_w and cell_mask[ny, nx] and not seen[ny, nx]:
+              seen[ny, nx] = True
+              stack.append((ny, nx))
+
+      if len(xs) < MIN_COMPONENT_CELLS:
+        continue
+
+      x0 = max(0, min(xs) * cell)
+      y0 = max(0, min(ys) * cell)
+      x1 = min(w, (max(xs) + 1) * cell)
+      y1 = min(h, (max(ys) + 1) * cell)
+      pixels = int(np.count_nonzero(motion_mask[y0:y1, x0:x1]))
+      if pixels < MIN_TRACK_PIXELS:
+        continue
+      confidence = float(np.clip(pixels / 6000.0, 0.05, 1.0))
+      components.append(((x0, y0, x1, y1), confidence))
+
+    return sorted(components, key=lambda item: (item[0][2] - item[0][0]) * (item[0][3] - item[0][1]), reverse=True)
+
+  def _update_object_tracks(self, detections: list[tuple[tuple[int, int, int, int], float]]) -> None:
+    assigned_tracks: set[int] = set()
+    assigned_detections: set[int] = set()
+    matches: list[tuple[float, int, int]] = []
+
+    for track_idx, track in enumerate(self._tracks):
+      tx, ty = track.predicted_center
+      for det_idx, (bbox, _) in enumerate(detections):
+        dx = bbox_center(bbox)[0] - tx
+        dy = bbox_center(bbox)[1] - ty
+        dist = float(np.hypot(dx, dy))
+        if dist <= MAX_TRACK_MATCH_DISTANCE:
+          matches.append((dist, track_idx, det_idx))
+
+    for _, track_idx, det_idx in sorted(matches):
+      if track_idx in assigned_tracks or det_idx in assigned_detections:
+        continue
+      track = self._tracks[track_idx]
+      bbox, confidence = detections[det_idx]
+      old_cx, old_cy = track.center
+      new_cx, new_cy = bbox_center(bbox)
+      track.x0, track.y0, track.x1, track.y1 = bbox
+      track.vx = 0.55 * track.vx + 0.45 * (new_cx - old_cx)
+      track.vy = 0.55 * track.vy + 0.45 * (new_cy - old_cy)
+      track.confidence = float(np.clip(0.65 * track.confidence + 0.35 * confidence, 0.0, 1.0))
+      track.age = min(track.age + 1, 65535)
+      track.missed = 0
+      assigned_tracks.add(track_idx)
+      assigned_detections.add(det_idx)
+
+    for track_idx, track in enumerate(self._tracks):
+      if track_idx not in assigned_tracks:
+        track.missed += 1
+        track.confidence *= 0.75
+
+    for det_idx, (bbox, confidence) in enumerate(detections):
+      if det_idx in assigned_detections:
+        continue
+      self._tracks.append(MotionTrack(self._next_track_id, *bbox, confidence))
+      self._next_track_id += 1
+
+    self._tracks = [track for track in self._tracks if track.missed <= MAX_TRACK_MISSES]
+    self._tracks = sorted(
+      self._tracks, key=lambda track: (track.age, track.confidence), reverse=True
+    )[:MAX_OBJECT_TRACKS]
+
   def update(self, frame: np.ndarray) -> None:
     frame_f = frame.astype(np.float32)
     if self.background is None or self.background.shape != frame.shape:
@@ -140,15 +286,33 @@ class CommonFrameMotionTracker:
 
     diff = np.abs(frame_f - self.background)
     global_motion = float(np.percentile(diff, 50))
+    motion_mask = np.maximum(diff - global_motion, 0.0) > MOTION_THRESHOLD
     left_score, left_bbox = self._region_motion(diff, global_motion, LEFT_CONFLICT)
     right_score, right_bbox = self._region_motion(diff, global_motion, RIGHT_CONFLICT)
     self.left.update(left_score, left_bbox)
     self.right.update(right_score, right_bbox)
+    self._update_object_tracks(self._motion_components(motion_mask))
     self.background = 0.95 * self.background + 0.05 * frame_f
 
   @property
   def tracks(self) -> list[TrackedObject]:
-    return [track for track in (self.left.tracked_object(), self.right.tracked_object()) if track is not None]
+    if self.background is None:
+      return []
+    return [
+      TrackedObject(
+        track.track_id,
+        bbox_side(track.bbox, self.background.shape[1], self.background.shape[0]),
+        track.x0,
+        track.y0,
+        track.x1,
+        track.y1,
+        track.confidence,
+        track.age,
+        track.vx,
+        track.vy,
+      )
+      for track in self._tracks
+    ]
 
 
 def resize_frame(frame: np.ndarray, width: int, height: int) -> np.ndarray:

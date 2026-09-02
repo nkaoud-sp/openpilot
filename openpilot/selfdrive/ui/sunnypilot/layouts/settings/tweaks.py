@@ -105,14 +105,14 @@ class TweaksLayout(Widget):
 
     self._vision_lane_change_risk = toggle_item_sp(
       title=lambda: tr("Vision Lane Change Warning"),
-      description=lambda: tr("Use an experimental camera-only common-frame tracker to warn before a lane change " +
+      description=lambda: tr("Use an experimental camera-only processed-frame tracker to warn before a lane change " +
                             "when persistent activity is seen in the intended side zone. Assistive warning only."),
       param="VisionLaneChangeRisk",
     )
 
     self._vision_lane_change_risk_debug = toggle_item_sp(
-      title=lambda: tr("Vision Lane Change Debug Frames"),
-      description=lambda: tr("Save one annotated grayscale tracking PNG per second while driving for calibration. " +
+      title=lambda: tr("Vision Lane Change Debug Capture"),
+      description=lambda: tr("Save processed tracking PNGs and a short debug video while driving for calibration. " +
                             "Files are stored in /data/media/0/vision_lane_change_risk_debug and this resets after " +
                             "the route."),
       param="VisionLaneChangeRiskDebug",
