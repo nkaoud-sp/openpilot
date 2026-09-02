@@ -82,6 +82,19 @@ MAX_TRACK_MISSES = 4
 MAX_OBJECT_TRACKS = 12
 TRACK_COLOR = np.array([64, 220, 255], dtype=np.uint8)
 TRACK_RISK_COLOR = np.array([255, 96, 64], dtype=np.uint8)
+TEXT_BG_COLOR = np.array([0, 0, 0], dtype=np.uint8)
+DIGIT_FONT = {
+  "0": ("111", "101", "101", "101", "111"),
+  "1": ("010", "110", "010", "010", "111"),
+  "2": ("111", "001", "111", "100", "111"),
+  "3": ("111", "001", "111", "001", "111"),
+  "4": ("101", "101", "111", "001", "001"),
+  "5": ("111", "100", "111", "001", "111"),
+  "6": ("111", "100", "111", "101", "111"),
+  "7": ("111", "001", "010", "010", "010"),
+  "8": ("111", "101", "111", "101", "111"),
+  "9": ("111", "101", "111", "001", "111"),
+}
 
 
 def region_pixels(region: Region, width: int, height: int) -> tuple[int, int, int, int]:
@@ -421,6 +434,39 @@ def _draw_box(rgb: np.ndarray, x0: int, y0: int, x1: int, y1: int, color: np.nda
   rgb[y0:y1, x1 - thickness:x1] = color
 
 
+def _draw_digit(rgb: np.ndarray, digit: str, x: int, y: int, color: np.ndarray, scale: int = 3) -> None:
+  glyph = DIGIT_FONT.get(digit)
+  if glyph is None:
+    return
+
+  for gy, row in enumerate(glyph):
+    for gx, cell in enumerate(row):
+      if cell != "1":
+        continue
+      x0 = x + gx * scale
+      y0 = y + gy * scale
+      x1 = min(rgb.shape[1], x0 + scale)
+      y1 = min(rgb.shape[0], y0 + scale)
+      if x0 < rgb.shape[1] and y0 < rgb.shape[0]:
+        rgb[y0:y1, x0:x1] = color
+
+
+def _draw_track_id(rgb: np.ndarray, track: TrackedObject, color: np.ndarray) -> None:
+  text = str(max(0, track.track_id))
+  scale = 3
+  digit_w = 3 * scale
+  digit_h = 5 * scale
+  spacing = scale
+  label_w = len(text) * digit_w + max(0, len(text) - 1) * spacing + 4
+  label_h = digit_h + 4
+  x = max(0, min(rgb.shape[1] - label_w, track.x0 * DEBUG_SCALE))
+  y = max(0, min(rgb.shape[0] - label_h, track.y0 * DEBUG_SCALE - label_h - 2))
+
+  rgb[y:y + label_h, x:x + label_w] = TEXT_BG_COLOR
+  for i, digit in enumerate(text):
+    _draw_digit(rgb, digit, x + 2 + i * (digit_w + spacing), y + 2, color, scale)
+
+
 def debug_frame_rgb(
   frame: np.ndarray,
   left_risk: bool,
@@ -453,6 +499,8 @@ def debug_frame_rgb(
       color,
       thickness=3,
     )
+    if track.track_id >= 0:
+      _draw_track_id(rgb, track, color)
 
   # Tiny confidence bars along the top edge: left on the left, right on the right.
   bar_h = 4

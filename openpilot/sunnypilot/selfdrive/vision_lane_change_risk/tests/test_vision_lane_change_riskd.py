@@ -123,6 +123,26 @@ def test_debug_rgb_and_yuv420_include_track_overlay():
   assert np.any(np.all(rgb == np.array([255, 96, 64], dtype=np.uint8), axis=2))
 
 
+def test_debug_rgb_draws_track_id_label():
+  frame = np.full((GRID_H, GRID_W), 80, dtype=np.uint8)
+  tracker = CommonFrameMotionTracker()
+  tracker.update(frame)
+  for _ in range(3):
+    frame = np.full((GRID_H, GRID_W), 80, dtype=np.uint8)
+    frame[250:330, 1180:1340] = 145
+    tracker.update(frame)
+
+  tracks = tracker.tracks
+  assert tracks
+
+  rgb = debug_frame_rgb(frame, False, False, 0.0, 0.0, tracks)
+  track = tracks[0]
+  label_roi = rgb[max(0, track.y0 - 22):track.y0, track.x0:track.x0 + 40]
+
+  assert np.any(np.all(label_roi == np.array([0, 0, 0], dtype=np.uint8), axis=2))
+  assert np.any(np.all(label_roi == np.array([255, 96, 64], dtype=np.uint8), axis=2))
+
+
 def test_compose_raw_strip_uses_left_dm_wide_right_dm():
   cabin = np.zeros((4, 8), dtype=np.uint8)
   cabin[:, :4] = 40
