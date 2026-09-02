@@ -24,6 +24,7 @@ from openpilot.sunnypilot.selfdrive.vision_lane_change_risk.common_frame_tracker
   compose_tuned_frame,
   debug_frame_rgb,
   rgb_to_yuv420,
+  write_rgb_png,
   write_debug_png,
 )
 
@@ -38,6 +39,8 @@ DEBUG_DUMP_INTERVAL = 1.0
 DEBUG_DUMP_DIR = "/data/media/0/vision_lane_change_risk_debug"
 VIDEO_DUMP_FPS = 10
 VIDEO_DUMP_SECONDS = 180
+PNG_FALLBACK_FPS = 2
+CAPTURE_STATUS_PATH = os.path.join(DEBUG_DUMP_DIR, "vlcr_capture_status.txt")
 STREAM_SERVER_NAME = "vision_lane_change_riskd"
 STREAM_TYPE = VisionStreamType.VISION_STREAM_MAP
 STREAM_CONFIGS = {
@@ -126,16 +129,21 @@ class ProcessedFrameStreamer:
 
 
 class DebugVideoRecorder:
-  def __init__(self, prefix: str) -> None:
+  def __init__(self, prefix: str, png_fallback: bool = False) -> None:
     self.proc: subprocess.Popen | None = None
     self.prefix = prefix
+    self.png_fallback = png_fallback
     self.output_path = ""
+    self.fallback_dir = ""
     self.started_t = 0.0
     self.last_frame_t = 0.0
+    self.last_png_t = 0.0
+    self.frame_count = 0
     self.unavailable = False
 
   def update(self, rgb: np.ndarray, now: float) -> None:
     if self.unavailable:
+      self._write_png_fallback(rgb, now)
       return
     if self.proc is not None and VIDEO_DUMP_SECONDS > 0 and now - self.started_t > VIDEO_DUMP_SECONDS:
       self.close()
@@ -143,6 +151,7 @@ class DebugVideoRecorder:
     if now - self.last_frame_t < 1.0 / VIDEO_DUMP_FPS:
       return
     if self.proc is None and not self._start():
+      self._write_png_fallback(rgb, now)
       return
 
     try:
@@ -154,6 +163,7 @@ class DebugVideoRecorder:
       cloudlog.exception("vision_lane_change_riskd debug video writer failed")
       self.close()
       self.unavailable = True
+      self._write_png_fallback(rgb, now)
 
   def update_enabled(self, enabled: bool, rgb: np.ndarray, now: float) -> None:
     if enabled:
@@ -165,6 +175,7 @@ class DebugVideoRecorder:
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
       cloudlog.warning("vision_lane_change_riskd debug video disabled: ffmpeg not found")
+      self._write_status("ffmpeg not found; using PNG fallback" if self.png_fallback else "ffmpeg not found")
       self.unavailable = True
       return False
 
@@ -187,12 +198,40 @@ class DebugVideoRecorder:
     try:
       self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
       self.started_t = time.monotonic()
+      self.frame_count = 0
       cloudlog.warning(f"vision_lane_change_riskd video recording {self.output_path}")
+      self._write_status(f"recording {self.output_path}")
       return True
     except OSError:
       cloudlog.exception("vision_lane_change_riskd debug video failed to start")
+      self._write_status("ffmpeg start failed; using PNG fallback" if self.png_fallback else "ffmpeg start failed")
       self.unavailable = True
       return False
+
+  def _write_png_fallback(self, rgb: np.ndarray, now: float) -> None:
+    if not self.png_fallback:
+      return
+    if now - self.last_png_t < 1.0 / PNG_FALLBACK_FPS:
+      return
+
+    os.makedirs(DEBUG_DUMP_DIR, exist_ok=True)
+    if not self.fallback_dir:
+      self.fallback_dir = os.path.join(DEBUG_DUMP_DIR, f"{self.prefix}_frames_{int(time.time())}")
+      os.makedirs(self.fallback_dir, exist_ok=True)
+      self._write_status(f"writing PNG fallback frames to {self.fallback_dir}")
+
+    path = os.path.join(self.fallback_dir, f"{self.prefix}_{self.frame_count:06d}.png")
+    write_rgb_png(path, rgb)
+    self.frame_count += 1
+    self.last_png_t = now
+
+  def _write_status(self, status: str) -> None:
+    try:
+      os.makedirs(DEBUG_DUMP_DIR, exist_ok=True)
+      with open(CAPTURE_STATUS_PATH, "w") as f:
+        f.write(f"{self.prefix}: {status}\n")
+    except OSError:
+      cloudlog.exception("vision_lane_change_riskd failed to write capture status")
 
   def close(self) -> None:
     if self.proc is None:
@@ -204,6 +243,8 @@ class DebugVideoRecorder:
     except (OSError, subprocess.TimeoutExpired):
       self.proc.kill()
     finally:
+      if self.output_path:
+        self._write_status(f"closed {self.output_path}")
       self.proc = None
 
 
@@ -221,20 +262,31 @@ def clean_frame_rgb(frame: np.ndarray) -> np.ndarray:
   return np.repeat(frame[:, :, None], 3, axis=2).astype(np.uint8)
 
 
+def write_capture_status(status: str) -> None:
+  try:
+    os.makedirs(DEBUG_DUMP_DIR, exist_ok=True)
+    with open(CAPTURE_STATUS_PATH, "w") as f:
+      f.write(f"{status}\n")
+  except OSError:
+    cloudlog.exception("vision_lane_change_riskd failed to write capture status")
+
+
 def main() -> None:
   config_realtime_process(4, Priority.CTRL_LOW)
   params = Params()
+  write_capture_status("vision_lane_change_riskd starting")
   pm = messaging.PubMaster(["visionLaneChangeRisk"])
   sm = messaging.SubMaster(["carState", "modelV2"])
   clients = connect_cameras()
   tracker = CommonFrameMotionTracker()
   streamer = ProcessedFrameStreamer()
   overlay_video_recorder = DebugVideoRecorder("vlcr_tracks")
-  clean_video_recorder = DebugVideoRecorder("vlcr_stream")
+  clean_video_recorder = DebugVideoRecorder("vlcr_stream", png_fallback=True)
   atexit.register(overlay_video_recorder.close)
   atexit.register(clean_video_recorder.close)
   last_debug_dump_t = 0.0
   rk = Ratekeeper(MODEL_RATE, print_delay_threshold=None)
+  write_capture_status("vision_lane_change_riskd started")
 
   while True:
     now = time.monotonic()
