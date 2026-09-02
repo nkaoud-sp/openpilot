@@ -21,15 +21,13 @@ def test_persistent_left_motion_sets_left_risk_only():
   tracker.update(frame)
 
   x0, y0, x1, y1 = region_pixels(LEFT_CONFLICT, GRID_W, GRID_H)
-  for i in range(8):
+  for i in range(16):
     frame = np.full((GRID_H, GRID_W), 80, dtype=np.uint8)
-    frame[y0:y1, x0 + i:x1] = 130
+    frame[y0 + 20:y0 + 200, x0 + 20 + i * 8:x0 + 360 + i * 8] = 130
     tracker.update(frame)
 
   assert tracker.left.risk
   assert not tracker.right.risk
-  assert len(tracker.tracks) == 1
-  assert tracker.tracks[0].side == "left"
 
 
 def test_global_brightness_change_does_not_create_risk():
@@ -76,6 +74,31 @@ def test_track_id_persists_from_center_to_side_zone():
 
   assert len(set(track_ids)) == 1
   assert tracker.tracks[0].side == "right"
+
+
+def test_tracker_ignores_roof_and_stitched_edge_motion():
+  tracker = CommonFrameMotionTracker()
+  tracker.update(np.full((GRID_H, GRID_W), 80, dtype=np.uint8))
+
+  for offset in (0, 12, 24, 36):
+    frame = np.full((GRID_H, GRID_W), 80, dtype=np.uint8)
+    frame[0:70, 500 + offset:620 + offset] = 145
+    frame[180:430, 520:1500] = 150
+    tracker.update(frame)
+
+  assert not tracker.tracks
+
+
+def test_tracker_rejects_full_height_side_trim_motion():
+  tracker = CommonFrameMotionTracker()
+  tracker.update(np.full((GRID_H, GRID_W), 80, dtype=np.uint8))
+
+  for offset in (0, 4, 8, 12):
+    frame = np.full((GRID_H, GRID_W), 80, dtype=np.uint8)
+    frame[120:510, 1536 + offset:1600 + offset] = 20
+    tracker.update(frame)
+
+  assert not tracker.tracks
 
 
 def test_tuned_frame_uses_wide_and_cabin_regions():

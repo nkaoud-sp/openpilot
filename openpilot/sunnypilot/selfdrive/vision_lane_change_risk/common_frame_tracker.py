@@ -68,6 +68,10 @@ class MotionTrack:
 
 LEFT_CONFLICT = Region(0.02, 0.42, 0.30, 0.90)
 RIGHT_CONFLICT = Region(0.70, 0.42, 0.98, 0.90)
+LEFT_TRACK_REGION = Region(0.02, 0.32, 0.30, 0.90)
+FRONT_TRACK_REGION = Region(0.26, 0.34, 0.74, 0.82)
+RIGHT_TRACK_REGION = Region(0.70, 0.32, 0.98, 0.90)
+TRACK_REGIONS = (LEFT_TRACK_REGION, FRONT_TRACK_REGION, RIGHT_TRACK_REGION)
 DEBUG_SCALE = 1
 TUNED_LEFT_PANEL_CENTER = (367, 425)
 TUNED_RIGHT_PANEL_CENTER = (1703, 409)
@@ -77,6 +81,14 @@ MOTION_THRESHOLD = 8.0
 MIN_TRACK_PIXELS = 120
 COMPONENT_CELL_SIZE = 8
 MIN_COMPONENT_CELLS = 6
+MIN_OBJECT_WIDTH = 18
+MIN_OBJECT_HEIGHT = 14
+MAX_OBJECT_WIDTH = 420
+MAX_OBJECT_HEIGHT = 190
+MAX_OBJECT_AREA = 70000
+MIN_OBJECT_DENSITY = 0.025
+MIN_TRACKABLE_LUMA = 12
+MAX_TRACKABLE_LUMA = 245
 MAX_TRACK_MATCH_DISTANCE = 190.0
 MAX_TRACK_MISSES = 4
 MAX_OBJECT_TRACKS = 12
@@ -200,6 +212,36 @@ class CommonFrameMotionTracker:
     return score, bbox
 
   @staticmethod
+  def _tracking_mask(frame: np.ndarray) -> np.ndarray:
+    mask = np.zeros(frame.shape, dtype=bool)
+    h, w = frame.shape
+    for region in TRACK_REGIONS:
+      x0, y0, x1, y1 = region_pixels(region, w, h)
+      mask[y0:y1, x0:x1] = True
+
+    # White canvas and near-black stitched borders create persistent false
+    # motion, especially around rotated DM panels and windshield edges.
+    return mask & (frame >= MIN_TRACKABLE_LUMA) & (frame <= MAX_TRACKABLE_LUMA)
+
+  @staticmethod
+  def _component_is_vehicle_sized(bbox: tuple[int, int, int, int], pixels: int) -> bool:
+    x0, y0, x1, y1 = bbox
+    width = x1 - x0
+    height = y1 - y0
+    area = width * height
+    if width < MIN_OBJECT_WIDTH or height < MIN_OBJECT_HEIGHT:
+      return False
+    if width > MAX_OBJECT_WIDTH or height > MAX_OBJECT_HEIGHT or area > MAX_OBJECT_AREA:
+      return False
+
+    aspect = width / max(1, height)
+    if aspect < 0.20 or aspect > 7.0:
+      return False
+
+    density = pixels / max(1, area)
+    return density >= MIN_OBJECT_DENSITY
+
+  @staticmethod
   def _motion_components(motion_mask: np.ndarray) -> list[tuple[tuple[int, int, int, int], float]]:
     cell = COMPONENT_CELL_SIZE
     h, w = motion_mask.shape
@@ -238,8 +280,11 @@ class CommonFrameMotionTracker:
       pixels = int(np.count_nonzero(motion_mask[y0:y1, x0:x1]))
       if pixels < MIN_TRACK_PIXELS:
         continue
+      bbox = (x0, y0, x1, y1)
+      if not CommonFrameMotionTracker._component_is_vehicle_sized(bbox, pixels):
+        continue
       confidence = float(np.clip(pixels / 6000.0, 0.05, 1.0))
-      components.append(((x0, y0, x1, y1), confidence))
+      components.append((bbox, confidence))
 
     return sorted(components, key=lambda item: (item[0][2] - item[0][0]) * (item[0][3] - item[0][1]), reverse=True)
 
@@ -300,6 +345,7 @@ class CommonFrameMotionTracker:
     diff = np.abs(frame_f - self.background)
     global_motion = float(np.percentile(diff, 50))
     motion_mask = np.maximum(diff - global_motion, 0.0) > MOTION_THRESHOLD
+    motion_mask &= self._tracking_mask(frame)
     left_score, left_bbox = self._region_motion(diff, global_motion, LEFT_CONFLICT)
     right_score, right_bbox = self._region_motion(diff, global_motion, RIGHT_CONFLICT)
     self.left.update(left_score, left_bbox)
