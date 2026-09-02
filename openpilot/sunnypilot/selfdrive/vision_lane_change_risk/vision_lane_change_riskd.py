@@ -126,8 +126,9 @@ class ProcessedFrameStreamer:
 
 
 class DebugVideoRecorder:
-  def __init__(self) -> None:
+  def __init__(self, prefix: str) -> None:
     self.proc: subprocess.Popen | None = None
+    self.prefix = prefix
     self.output_path = ""
     self.started_t = 0.0
     self.last_frame_t = 0.0
@@ -162,7 +163,7 @@ class DebugVideoRecorder:
       return False
 
     os.makedirs(DEBUG_DUMP_DIR, exist_ok=True)
-    self.output_path = os.path.join(DEBUG_DUMP_DIR, f"vlcr_tracks_{int(time.time())}.mp4")
+    self.output_path = os.path.join(DEBUG_DUMP_DIR, f"{self.prefix}_{int(time.time())}.mp4")
     cmd = [
       ffmpeg,
       "-y",
@@ -180,7 +181,7 @@ class DebugVideoRecorder:
     try:
       self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
       self.started_t = time.monotonic()
-      cloudlog.warning(f"vision_lane_change_riskd debug video recording {self.output_path}")
+      cloudlog.warning(f"vision_lane_change_riskd video recording {self.output_path}")
       return True
     except OSError:
       cloudlog.exception("vision_lane_change_riskd debug video failed to start")
@@ -210,6 +211,10 @@ def build_reason(tracker: CommonFrameMotionTracker, direction: int) -> str:
   return ""
 
 
+def clean_frame_rgb(frame: np.ndarray) -> np.ndarray:
+  return np.repeat(frame[:, :, None], 3, axis=2).astype(np.uint8)
+
+
 def main() -> None:
   config_realtime_process(4, Priority.CTRL_LOW)
   params = Params()
@@ -218,8 +223,10 @@ def main() -> None:
   clients = connect_cameras()
   tracker = CommonFrameMotionTracker()
   streamer = ProcessedFrameStreamer()
-  video_recorder = DebugVideoRecorder()
-  atexit.register(video_recorder.close)
+  overlay_video_recorder = DebugVideoRecorder("vlcr_tracks")
+  clean_video_recorder = DebugVideoRecorder("vlcr_stream")
+  atexit.register(overlay_video_recorder.close)
+  atexit.register(clean_video_recorder.close)
   last_debug_dump_t = 0.0
   rk = Ratekeeper(MODEL_RATE, print_delay_threshold=None)
 
@@ -266,8 +273,14 @@ def main() -> None:
         os.getenv("VLCR_DEBUG_PNGS") == "1" or
         params.get_bool("VisionLaneChangeRiskDebug")
       )
+      clean_video_enabled = (
+        os.getenv("VLCR_STREAM_VIDEO") == "1" or
+        params.get_bool("VisionLaneChangeRiskStreamVideo")
+      )
       if debug_enabled:
-        video_recorder.update(overlay, now)
+        overlay_video_recorder.update(overlay, now)
+      if clean_video_enabled:
+        clean_video_recorder.update(clean_frame_rgb(frame), now)
       if debug_enabled and now - last_debug_dump_t >= DEBUG_DUMP_INTERVAL:
         filename = f"vlcr_{frame_id:08d}_{timestamp_sof}_processed.png"
         path = os.path.join(DEBUG_DUMP_DIR, filename)

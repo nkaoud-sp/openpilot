@@ -119,6 +119,15 @@ class TweaksLayout(Widget):
       enabled=lambda: self._vision_lane_change_risk.action_item.get_state(),
     )
 
+    self._vision_lane_change_risk_stream_video = toggle_item_sp(
+      title=lambda: tr("Vision Lane Change Clean Video Capture"),
+      description=lambda: tr("Save a short stitched virtual-frame video without tracking boxes or guide rectangles. " +
+                            "Files are stored in /data/media/0/vision_lane_change_risk_debug and this resets after " +
+                            "the route."),
+      param="VisionLaneChangeRiskStreamVideo",
+      enabled=lambda: self._vision_lane_change_risk.action_item.get_state(),
+    )
+
     self._force_onroad_mode = toggle_item_sp(
       title=lambda: tr("Force Onroad Mode"),
       description=lambda: tr("Temporarily start onroad processes without real ignition for bench testing camera " +
@@ -146,6 +155,7 @@ class TweaksLayout(Widget):
       self._reverse_cruise,
       self._vision_lane_change_risk,
       self._vision_lane_change_risk_debug,
+      self._vision_lane_change_risk_stream_video,
       self._force_onroad_mode,
       self._auto_lock_button,
     ]
@@ -192,3 +202,6 @@ class TweaksLayout(Widget):
     self._launch_assist_button.action_item.set_enabled(self._launch_assist.action_item.get_state())
     self._park_assist_button.action_item.set_enabled(self._park_assist.action_item.get_state())
     self._vision_lane_change_risk_debug.action_item.set_enabled(self._vision_lane_change_risk.action_item.get_state())
+    self._vision_lane_change_risk_stream_video.action_item.set_enabled(
+      self._vision_lane_change_risk.action_item.get_state()
+    )
