@@ -114,34 +114,48 @@ void PandaSafety::maybeSendOffroadCan(bool is_onroad) {
     return;
   }
 
-  // Space the frames out: send at most one per OFFROAD_CAN_GAP_NS.
+  // Send policy is chosen from the frame at the head of the queue. Diagnostic frames to the
+  // combination meter (0x7C0 - the turn-signal active test) are drained FAST: the whole command is
+  // sent back-to-back in a single pass with one ELM327 flip, so pulse edges are tight and
+  // consistent. Everything else (e.g. body ECU 0x750, used by auto-lock) keeps the 200 ms spacing
+  // and one-frame-per-gap cadence, because that ECU drops back-to-back diagnostic frames.
+  uint16_t head_addr = ((uint8_t)offroad_records_.front()[0] << 8) | (uint8_t)offroad_records_.front()[1];
+  const bool fast = (head_addr == 0x7C0U);
+
   uint64_t now = nanos_since_boot();
-  if (now - last_offroad_send_ns_ < OFFROAD_CAN_GAP_NS) {
+  if (!fast && (now - last_offroad_send_ns_ < OFFROAD_CAN_GAP_NS)) {
     return;
   }
   last_offroad_send_ns_ = now;
 
-  std::string rec = offroad_records_.front();
-  offroad_records_.erase(offroad_records_.begin());
-
-  uint16_t addr = ((uint8_t)rec[0] << 8) | (uint8_t)rec[1];
-  uint8_t bus = (uint8_t)rec[2];
-  uint8_t dlc = std::min((uint8_t)rec[3], (uint8_t)8);
-
-  // 0x750 is a UDS diagnostic address; ELM327 (no OBD multiplexing) is the least-privilege mode
-  // that allows transmitting it. The offroad health loop re-asserts NO_OUTPUT afterwards.
+  // Hold ELM327 for the whole batch (one flip), send, then revert to NO_OUTPUT.
   panda_->set_safety_model(cereal::CarParams::SafetyModel::ELM327, 1U);
 
-  MessageBuilder msg;
-  auto evt = msg.initEvent();
-  auto sendcan = evt.initSendcan(1);
-  sendcan[0].setAddress(addr);
-  sendcan[0].setDat(kj::arrayPtr((const uint8_t *)rec.data() + 4, dlc));
-  sendcan[0].setSrc(bus);
-  panda_->can_send(sendcan.asReader());
+  int sent = 0;
+  const int max_batch = fast ? 8 : 1;  // fast: whole command per pass; else one frame per gap
+  while (!offroad_records_.empty() && sent < max_batch) {
+    const std::string &front = offroad_records_.front();
+    uint16_t addr = ((uint8_t)front[0] << 8) | (uint8_t)front[1];
+    if (sent > 0 && (addr == 0x7C0U) != fast) {
+      break;  // don't mix fast/slow addresses in one batch
+    }
+    uint8_t bus = (uint8_t)front[2];
+    uint8_t dlc = std::min((uint8_t)front[3], (uint8_t)8);
+
+    MessageBuilder msg;
+    auto evt = msg.initEvent();
+    auto sendcan = evt.initSendcan(1);
+    sendcan[0].setAddress(addr);
+    sendcan[0].setDat(kj::arrayPtr((const uint8_t *)front.data() + 4, dlc));
+    sendcan[0].setSrc(bus);
+    panda_->can_send(sendcan.asReader());
+
+    offroad_records_.erase(offroad_records_.begin());
+    sent++;
+  }
 
   // Revert immediately; don't leave the panda in an output-capable mode.
   panda_->set_safety_model(cereal::CarParams::SafetyModel::NO_OUTPUT);
 
-  LOGW("OffroadCan: sent frame 0x%x on bus %d via ELM327 (%zu queued)", addr, bus, offroad_records_.size());
+  LOGW("OffroadCan: sent %d frame(s) to 0x%x via ELM327 (%zu queued)", sent, head_addr, offroad_records_.size());
 }
