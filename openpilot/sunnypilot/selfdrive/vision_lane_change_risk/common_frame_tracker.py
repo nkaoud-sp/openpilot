@@ -77,8 +77,11 @@ TUNED_LEFT_PANEL_CENTER = (367, 425)
 TUNED_RIGHT_PANEL_CENTER = (1703, 409)
 TUNED_LEFT_ROTATION_DEG = -36.0
 TUNED_RIGHT_ROTATION_DEG = 36.0
+MODEL_LEAD_PROB_MIN = 0.35
 MOTION_THRESHOLD = 8.0
+APPEARANCE_EDGE_THRESHOLD = 22
 MIN_TRACK_PIXELS = 120
+MIN_APPEARANCE_PIXELS = 45
 COMPONENT_CELL_SIZE = 8
 MIN_COMPONENT_CELLS = 6
 MIN_OBJECT_WIDTH = 18
@@ -87,6 +90,7 @@ MAX_OBJECT_WIDTH = 420
 MAX_OBJECT_HEIGHT = 190
 MAX_OBJECT_AREA = 70000
 MIN_OBJECT_DENSITY = 0.025
+MIN_APPEARANCE_DENSITY = 0.010
 MIN_TRACKABLE_LUMA = 12
 MAX_TRACKABLE_LUMA = 245
 MAX_TRACK_MATCH_DISTANCE = 190.0
@@ -128,12 +132,53 @@ def bbox_intersects_region(bbox: tuple[int, int, int, int], region: Region, widt
   return x0 < rx1 and x1 > rx0 and y0 < ry1 and y1 > ry0
 
 
+def bbox_iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
+  ax0, ay0, ax1, ay1 = a
+  bx0, by0, bx1, by1 = b
+  ix0 = max(ax0, bx0)
+  iy0 = max(ay0, by0)
+  ix1 = min(ax1, bx1)
+  iy1 = min(ay1, by1)
+  iw = max(0, ix1 - ix0)
+  ih = max(0, iy1 - iy0)
+  intersection = iw * ih
+  area_a = max(0, ax1 - ax0) * max(0, ay1 - ay0)
+  area_b = max(0, bx1 - bx0) * max(0, by1 - by0)
+  union = area_a + area_b - intersection
+  return intersection / union if union > 0 else 0.0
+
+
 def bbox_side(bbox: tuple[int, int, int, int], width: int, height: int) -> str:
   if bbox_intersects_region(bbox, LEFT_CONFLICT, width, height):
     return "left"
   if bbox_intersects_region(bbox, RIGHT_CONFLICT, width, height):
     return "right"
   return "center"
+
+
+def model_lead_detections(model_v2) -> list[tuple[tuple[int, int, int, int], float]]:
+  detections: list[tuple[tuple[int, int, int, int], float]] = []
+  front_x0 = GRID_W // 4
+  front_x1 = GRID_W * 3 // 4
+
+  for lead in model_v2.leadsV3[:2]:
+    if lead.prob < MODEL_LEAD_PROB_MIN or len(lead.x) == 0 or len(lead.y) == 0:
+      continue
+
+    distance = max(1.0, float(lead.x[0]))
+    lateral = float(lead.y[0])
+    center_x = GRID_W * 0.5 - lateral * 70.0
+    center_y = float(np.clip(190.0 + 1600.0 / (distance + 8.0), 215.0, 380.0))
+    box_w = float(np.clip(2600.0 / (distance + 4.0), 28.0, 160.0))
+    box_h = float(np.clip(box_w * 0.55, 20.0, 90.0))
+
+    x0 = int(np.clip(center_x - box_w * 0.5, front_x0, front_x1 - 1))
+    x1 = int(np.clip(center_x + box_w * 0.5, x0 + 1, front_x1))
+    y0 = int(np.clip(center_y - box_h * 0.5, 0, GRID_H - 1))
+    y1 = int(np.clip(center_y + box_h * 0.5, y0 + 1, GRID_H))
+    detections.append(((x0, y0, x1, y1), float(lead.prob)))
+
+  return detections
 
 
 class SideTracker:
@@ -224,7 +269,21 @@ class CommonFrameMotionTracker:
     return mask & (frame >= MIN_TRACKABLE_LUMA) & (frame <= MAX_TRACKABLE_LUMA)
 
   @staticmethod
-  def _component_is_vehicle_sized(bbox: tuple[int, int, int, int], pixels: int) -> bool:
+  def _appearance_mask(frame: np.ndarray) -> np.ndarray:
+    frame_i = frame.astype(np.int16)
+    edges = np.zeros(frame.shape, dtype=bool)
+    edges[:, 1:] |= np.abs(frame_i[:, 1:] - frame_i[:, :-1]) > APPEARANCE_EDGE_THRESHOLD
+    edges[1:, :] |= np.abs(frame_i[1:, :] - frame_i[:-1, :]) > APPEARANCE_EDGE_THRESHOLD
+
+    grown = edges.copy()
+    grown[1:, :] |= edges[:-1, :]
+    grown[:-1, :] |= edges[1:, :]
+    grown[:, 1:] |= edges[:, :-1]
+    grown[:, :-1] |= edges[:, 1:]
+    return grown & CommonFrameMotionTracker._tracking_mask(frame)
+
+  @staticmethod
+  def _component_is_vehicle_sized(bbox: tuple[int, int, int, int], pixels: int, min_density: float) -> bool:
     x0, y0, x1, y1 = bbox
     width = x1 - x0
     height = y1 - y0
@@ -239,15 +298,20 @@ class CommonFrameMotionTracker:
       return False
 
     density = pixels / max(1, area)
-    return density >= MIN_OBJECT_DENSITY
+    return density >= min_density
 
   @staticmethod
-  def _motion_components(motion_mask: np.ndarray) -> list[tuple[tuple[int, int, int, int], float]]:
+  def _components_from_mask(
+    mask: np.ndarray,
+    min_pixels: int,
+    min_density: float,
+    confidence_divisor: float,
+  ) -> list[tuple[tuple[int, int, int, int], float]]:
     cell = COMPONENT_CELL_SIZE
-    h, w = motion_mask.shape
+    h, w = mask.shape
     cell_h = h // cell
     cell_w = w // cell
-    trimmed = motion_mask[:cell_h * cell, :cell_w * cell]
+    trimmed = mask[:cell_h * cell, :cell_w * cell]
     cell_mask = trimmed.reshape((cell_h, cell, cell_w, cell)).any(axis=(1, 3))
     seen = np.zeros_like(cell_mask, dtype=bool)
     components: list[tuple[tuple[int, int, int, int], float]] = []
@@ -277,16 +341,37 @@ class CommonFrameMotionTracker:
       y0 = max(0, min(ys) * cell)
       x1 = min(w, (max(xs) + 1) * cell)
       y1 = min(h, (max(ys) + 1) * cell)
-      pixels = int(np.count_nonzero(motion_mask[y0:y1, x0:x1]))
-      if pixels < MIN_TRACK_PIXELS:
+      pixels = int(np.count_nonzero(mask[y0:y1, x0:x1]))
+      if pixels < min_pixels:
         continue
       bbox = (x0, y0, x1, y1)
-      if not CommonFrameMotionTracker._component_is_vehicle_sized(bbox, pixels):
+      if not CommonFrameMotionTracker._component_is_vehicle_sized(bbox, pixels, min_density):
         continue
-      confidence = float(np.clip(pixels / 6000.0, 0.05, 1.0))
+      confidence = float(np.clip(pixels / confidence_divisor, 0.05, 1.0))
       components.append((bbox, confidence))
 
     return sorted(components, key=lambda item: (item[0][2] - item[0][0]) * (item[0][3] - item[0][1]), reverse=True)
+
+  @staticmethod
+  def _dedupe_detections(
+    detections: list[tuple[tuple[int, int, int, int], float]]
+  ) -> list[tuple[tuple[int, int, int, int], float]]:
+    kept: list[tuple[tuple[int, int, int, int], float]] = []
+    for bbox, confidence in sorted(detections, key=lambda item: item[1], reverse=True):
+      if any(bbox_iou(bbox, kept_bbox) > 0.35 for kept_bbox, _ in kept):
+        continue
+      kept.append((bbox, confidence))
+    return kept
+
+  @classmethod
+  def _motion_components(cls, motion_mask: np.ndarray) -> list[tuple[tuple[int, int, int, int], float]]:
+    return cls._components_from_mask(motion_mask, MIN_TRACK_PIXELS, MIN_OBJECT_DENSITY, 6000.0)
+
+  @classmethod
+  def _appearance_components(cls, frame: np.ndarray) -> list[tuple[tuple[int, int, int, int], float]]:
+    return cls._components_from_mask(
+      cls._appearance_mask(frame), MIN_APPEARANCE_PIXELS, MIN_APPEARANCE_DENSITY, 1800.0
+    )
 
   def _update_object_tracks(self, detections: list[tuple[tuple[int, int, int, int], float]]) -> None:
     assigned_tracks: set[int] = set()
@@ -334,12 +419,14 @@ class CommonFrameMotionTracker:
       self._tracks, key=lambda track: (track.age, track.confidence), reverse=True
     )[:MAX_OBJECT_TRACKS]
 
-  def update(self, frame: np.ndarray) -> None:
+  def update(self, frame: np.ndarray, detections: list[tuple[tuple[int, int, int, int], float]] | None = None) -> None:
     frame_f = frame.astype(np.float32)
     if self.background is None or self.background.shape != frame.shape:
       self.background = frame_f
       self.left.update(0.0, None)
       self.right.update(0.0, None)
+      if detections:
+        self._update_object_tracks(self._dedupe_detections(detections))
       return
 
     diff = np.abs(frame_f - self.background)
@@ -350,7 +437,8 @@ class CommonFrameMotionTracker:
     right_score, right_bbox = self._region_motion(diff, global_motion, RIGHT_CONFLICT)
     self.left.update(left_score, left_bbox)
     self.right.update(right_score, right_bbox)
-    self._update_object_tracks(self._motion_components(motion_mask))
+    frame_detections = self._motion_components(motion_mask) + self._appearance_components(frame) + (detections or [])
+    self._update_object_tracks(self._dedupe_detections(frame_detections))
     self.background = 0.95 * self.background + 0.05 * frame_f
 
   @property
