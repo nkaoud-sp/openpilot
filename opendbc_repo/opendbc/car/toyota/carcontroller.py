@@ -1,6 +1,7 @@
 import math
 import numpy as np
 from opendbc.car import Bus, make_tester_present_msg, rate_limit, structs, ACCELERATION_DUE_TO_GRAVITY, DT_CTRL
+from opendbc.car.can_definitions import CanData
 from opendbc.car.lateral import apply_meas_steer_torque_limits, apply_std_steer_angle_limits, common_fault_avoidance
 from opendbc.car.carlog import carlog
 from opendbc.car.common.filter_simple import FirstOrderFilter, HighPassFilter
@@ -36,6 +37,18 @@ MAX_STEER_RATE_FRAMES = 17  # tx control frames needed before torque can be cut
 # EPS allows user torque above threshold for 50 frames before permanently faulting
 MAX_USER_TORQUE = 500
 
+TOYOTA_TURN_SIGNAL_ADDR = 0x7C0
+TOYOTA_TURN_SIGNAL_BUS = 0
+TOYOTA_TURN_SIGNAL_PARAM = "ToyotaTurnSignalCommand"
+TOYOTA_TURN_SIGNAL_BITS = {
+  "left": 0x10,
+  "right": 0x08,
+  "hazard": 0x18,
+}
+TOYOTA_TURN_SIGNAL_OFF_MASK = 0x18
+TOYOTA_EXTENDED_DIAGNOSTIC_SESSION = bytes.fromhex("1003")
+TOYOTA_RETURN_TURN_SIGNAL_CONTROL = bytes.fromhex("2F291100")
+
 
 def get_long_tune(CP, params):
   if CP.flags & ToyotaFlags.TSS2:
@@ -48,6 +61,55 @@ def get_long_tune(CP, params):
   return PIDController(0.0, (kiBP, kiV), k_f=1.0,
                        pos_limit=params.ACCEL_MAX, neg_limit=params.ACCEL_MIN,
                        rate=1 / (DT_CTRL * 3))
+
+
+def toyota_turn_signal_payload(command: str) -> bytes:
+  state = bytearray(8)
+  if command == "none":
+    state[7] = TOYOTA_TURN_SIGNAL_OFF_MASK
+  else:
+    bits = TOYOTA_TURN_SIGNAL_BITS[command]
+    state[3] = bits
+    state[7] = bits
+  return bytes.fromhex("2F291103") + bytes(state)
+
+
+def toyota_turn_signal_isotp_frames(command: str) -> list[bytes]:
+  payload = toyota_turn_signal_payload(command)
+  return [
+    bytes([0x10 | (len(payload) >> 8), len(payload) & 0xFF]) + payload[:6],
+    (bytes([0x21]) + payload[6:]).ljust(8, b"\x00"),
+  ]
+
+
+def toyota_turn_signal_single_frame(payload: bytes) -> bytes:
+  return (bytes([len(payload)]) + payload).ljust(8, b"\x00")
+
+
+def toyota_turn_signal_sequence(command: str, was_active: bool) -> list[bytes]:
+  frames = toyota_turn_signal_isotp_frames(command)
+  if command == "none":
+    return frames + [toyota_turn_signal_single_frame(TOYOTA_RETURN_TURN_SIGNAL_CONTROL)] if was_active else []
+  return ([toyota_turn_signal_single_frame(TOYOTA_EXTENDED_DIAGNOSTIC_SESSION)] if not was_active else []) + frames
+
+
+def get_turn_signal_command(CC_SP: structs.CarControlSP) -> str:
+  command = str(CC_SP.turnSignalCommand)
+
+  for param in CC_SP.params:
+    if param.key == TOYOTA_TURN_SIGNAL_PARAM:
+      command = param.value.decode(errors="ignore").strip().lower()
+      break
+
+  if command in ("off", "0"):
+    return "none"
+  if command in ("1", "left"):
+    return "left"
+  if command in ("2", "right"):
+    return "right"
+  if command in ("3", "hazard", "hazards"):
+    return "hazard"
+  return "none"
 
 
 class CarController(CarControllerBase, GasInterceptorCarController):
@@ -80,6 +142,8 @@ class CarController(CarControllerBase, GasInterceptorCarController):
     self.secoc_lta_message_counter = 0
     self.secoc_acc_message_counter = 0
     self.secoc_prev_reset_counter = 0
+    self.last_turn_signal_command = "none"
+    self.turn_signal_frames: list[bytes] = []
 
   def update(self, CC, CC_SP, CS, now_nanos):
     actuators = CC.actuators
@@ -94,6 +158,15 @@ class CarController(CarControllerBase, GasInterceptorCarController):
 
     # *** control msgs ***
     can_sends = []
+
+    turn_signal_command = get_turn_signal_command(CC_SP)
+    if turn_signal_command != self.last_turn_signal_command:
+      was_turn_signal_active = self.last_turn_signal_command != "none"
+      self.last_turn_signal_command = turn_signal_command
+      self.turn_signal_frames = toyota_turn_signal_sequence(turn_signal_command, was_turn_signal_active)
+
+    if self.turn_signal_frames:
+      can_sends.append(CanData(TOYOTA_TURN_SIGNAL_ADDR, self.turn_signal_frames.pop(0), TOYOTA_TURN_SIGNAL_BUS))
 
     # *** handle secoc reset counter increase ***
     if self.CP.flags & ToyotaFlags.SECOC.value:

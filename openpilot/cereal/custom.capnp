@@ -382,6 +382,7 @@ struct CarControlSP @0xa5cd762cd951a455 {
   leadOne @2 :LeadData;
   leadTwo @3 :LeadData;
   intelligentCruiseButtonManagement @4 :IntelligentCruiseButtonManagement;
+  turnSignalCommand @5 :TurnSignalCommand;
 
   struct Param {
     key @0 :Text;
@@ -399,6 +400,13 @@ struct CarControlSP @0xa5cd762cd951a455 {
     time @4;
     json @5;
     bytes @6;
+  }
+
+  enum TurnSignalCommand {
+    none @0;
+    left @1;
+    right @2;
+    hazard @3;
   }
 }
 

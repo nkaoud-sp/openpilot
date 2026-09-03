@@ -11,6 +11,7 @@ from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.dynam
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.launch_assist_settings import LaunchAssistSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.park_assist_settings import ParkAssistSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.speed_assist_settings import SpeedAssistSettingsLayout
+from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.turn_signal_test_settings import TurnSignalTestSettingsLayout
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.sunnypilot.widgets.list_view import simple_button_item_sp, toggle_item_sp
@@ -25,6 +26,7 @@ class PanelType(IntEnum):
   DYNAMIC_FOLLOW = 3
   SPEED_ASSIST = 4
   AUTO_LOCK = 5
+  TURN_SIGNAL_TEST = 6
 
 
 class TweaksLayout(Widget):
@@ -37,6 +39,7 @@ class TweaksLayout(Widget):
     self._park_layout = ParkAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._speed_assist_layout = SpeedAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._auto_lock_layout = AutoLockSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
+    self._turn_signal_test_layout = TurnSignalTestSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
 
     items = self._initialize_items()
     self._scroller = Scroller(items, line_separator=True, spacing=0)
@@ -108,6 +111,11 @@ class TweaksLayout(Widget):
       button_width=800,
       callback=lambda: self._set_current_panel(PanelType.AUTO_LOCK),
     )
+    self._turn_signal_test_button = simple_button_item_sp(
+      button_text=lambda: tr("Turn Signal Test"),
+      button_width=800,
+      callback=lambda: self._set_current_panel(PanelType.TURN_SIGNAL_TEST),
+    )
 
     return [
       self._remember_experimental_mode,
@@ -120,6 +128,7 @@ class TweaksLayout(Widget):
       self._speed_assist_button,
       self._reverse_cruise,
       self._auto_lock_button,
+      self._turn_signal_test_button,
     ]
 
   def _on_reverse_cruise(self, state: bool):
@@ -138,6 +147,8 @@ class TweaksLayout(Widget):
       self._speed_assist_layout.render(rect)
     elif self._current_panel == PanelType.AUTO_LOCK:
       self._auto_lock_layout.render(rect)
+    elif self._current_panel == PanelType.TURN_SIGNAL_TEST:
+      self._turn_signal_test_layout.render(rect)
     else:
       self._scroller.render(rect)
 
@@ -157,6 +168,8 @@ class TweaksLayout(Widget):
       self._speed_assist_layout.show_event()
     elif panel == PanelType.AUTO_LOCK:
       self._auto_lock_layout.show_event()
+    elif panel == PanelType.TURN_SIGNAL_TEST:
+      self._turn_signal_test_layout.show_event()
 
   def _update_state(self):
     super()._update_state()

@@ -17,6 +17,7 @@ from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
 from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
 from openpilot.sunnypilot.selfdrive.controls.lib.blinker_pause_lateral import BlinkerPauseLateral
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v0 import LatControlTorque as LatControlTorqueV0
+from openpilot.sunnypilot.selfdrive.controls.turn_signal_test import TurnSignalTestController
 
 
 class ControlsExt(ModelStateBase):
@@ -26,6 +27,7 @@ class ControlsExt(ModelStateBase):
     self.params = params
     self._param_update_time: float = 0.0
     self.blinker_pause_lateral = BlinkerPauseLateral()
+    self.turn_signal_test = TurnSignalTestController()
 
     cloudlog.info("controlsd_ext is waiting for CarParamsSP")
     self.CP_SP = messaging.log_from_bytes(params.get("CarParamsSP", block=True), custom.CarParamsSP)
@@ -67,6 +69,9 @@ class ControlsExt(ModelStateBase):
     # MADS not available, use stock state to engage
     return bool(sm['selfdriveState'].active)
 
+  def _update_turn_signal_test(self) -> str:
+    return self.turn_signal_test.update(self.params, time.monotonic())
+
   @staticmethod
   def get_lead_data(_lead, src: log.RadarState.LeadData) -> None:
     _lead.dRel = src.dRel
@@ -87,6 +92,7 @@ class ControlsExt(ModelStateBase):
 
   def state_control_ext(self, sm: messaging.SubMaster) -> custom.CarControlSP:
     CC_SP = custom.CarControlSP.new_message()
+    CC_SP.turnSignalCommand = self._update_turn_signal_test()
 
     self.get_lead_data(CC_SP.leadOne, sm['radarState'].leadOne)
     self.get_lead_data(CC_SP.leadTwo, sm['radarState'].leadTwo)

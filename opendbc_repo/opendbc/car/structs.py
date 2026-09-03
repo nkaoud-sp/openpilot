@@ -144,6 +144,7 @@ class CarControlSP:
   leadOne: 'LeadData' = field(default_factory=lambda: LeadData())
   leadTwo: 'LeadData' = field(default_factory=lambda: LeadData())
   intelligentCruiseButtonManagement: 'IntelligentCruiseButtonManagement' = field(default_factory=lambda: IntelligentCruiseButtonManagement())
+  turnSignalCommand: 'CarControlSP.TurnSignalCommand' = field(default_factory=lambda: CarControlSP.TurnSignalCommand.none)
 
   @auto_dataclass
   class Param:
@@ -161,6 +162,12 @@ class CarControlSP:
     time = auto()
     json = auto()
     bytes = auto()
+
+  class TurnSignalCommand(StrEnum):
+    none = auto()
+    left = auto()
+    right = auto()
+    hazard = auto()
 
 
 @auto_dataclass
