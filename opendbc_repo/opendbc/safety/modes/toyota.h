@@ -4,8 +4,6 @@
 
 // Stock longitudinal
 #define TOYOTA_BASE_TX_MSGS \
-  //{0x191, 0, 8, .check_relay = true}, {0x412, 0, 8, .check_relay = true}, {0x1D2, 0, 8, .check_relay = false},  /* LKAS + LTA + PCM cancel cmd */  \
-// adding turn signal to normal panda transmission, and removing it from safty
   {0x191, 0, 8, .check_relay = true}, {0x412, 0, 8, .check_relay = true}, {0x1D2, 0, 8, .check_relay = false}, {0x7C0, 0, 8, .check_relay = false}, /* LKAS + LTA + PCM + Turn Signals */  \
 
 #define TOYOTA_COMMON_TX_MSGS \
