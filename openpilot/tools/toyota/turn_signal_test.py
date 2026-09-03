@@ -260,10 +260,10 @@ def main() -> None:
   p.add_argument("--enqueue", action="store_true",
                  help="on-device offroad path: write Params OffroadCanQueue for pandad to drain (no panda claim)")
   p.add_argument("--bits", type=lambda x: int(x, 0), default=0x08, help="bit value for --byte/--sweep (default 0x08)")
-  p.add_argument("--durations", type=float, nargs="+", default=[2.0, 1.0, 0.5],
-                 help="turn-signal on-times per refreshed pulse (default: 2 1 0.5)")
-  p.add_argument("--single-shot", type=float, default=0.8,
-                 help="first pulse: send one on message, hold this long without refresh (0 disables)")
+  p.add_argument("--durations", type=float, nargs="+", default=[1.0, 1.0, 1.0, 1.0],
+                 help="turn-signal on-time per pulse in seconds (default: 1 1 1 1)")
+  p.add_argument("--single-shot", type=float, default=0.0,
+                 help="optional extra leading pulse: one on message held this long (0 disables)")
   p.add_argument("--gap", type=float, default=1.5, help="off time between pulses (default 1.5s)")
   p.add_argument("--duration", type=float, default=5.0, help="seconds to hold --payload/--byte (default 5)")
   p.add_argument("--dwell", type=float, default=2.0, help="seconds per byte in --sweep (default 2)")

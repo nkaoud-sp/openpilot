@@ -47,11 +47,10 @@ RETURN_CONTROL = bytes.fromhex("2F291100")  # InputOutputControl -> returnContro
 # (which releases the IO control) and re-enter the extended session before the next pulse.
 FRAME_S = 0.3
 
-# Default test: three refreshed pulses (2 s, 1 s, 0.5 s), then a fourth single-shot pulse that
-# sends ONE on message and holds without refreshing to see whether the ECU latches it.
-DEFAULT_ON_DURATIONS = (2.0, 1.0, 0.5)
-DEFAULT_GAP_S = 1.5        # off time between pulses (wide, so any turn-off latency is visible)
-DEFAULT_SINGLE_SHOT_S = 0.8  # single-message pulse hold (0 disables)
+# Default test: four 1-second flashes with an off gap between each.
+DEFAULT_ON_DURATIONS = (1.0, 1.0, 1.0, 1.0)
+DEFAULT_GAP_S = 1.5          # off time between pulses
+DEFAULT_SINGLE_SHOT_S = 0.0  # extra leading single-message pulse (0 disables)
 
 
 def active_test_payload(bit: int, on: bool = True) -> bytes:
