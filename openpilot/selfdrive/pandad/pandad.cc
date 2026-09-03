@@ -408,8 +408,11 @@ void pandad_run(Panda *panda) {
       always_offroad = panda_safety.getOffroadMode();
       process_panda_state(panda, &pm, engaged, engaged_mads, is_onroad, spoofing_started, always_offroad);
       panda_safety.configureSafetyMode(is_onroad);
-      panda_safety.maybeSendOffroadCan(is_onroad);
     }
+
+    // Drain offroad diagnostic CAN every loop (100 Hz), not at 10 Hz, so a queued frame is picked
+    // up within ~10 ms instead of up to ~100 ms - keeps turn-signal pulse edges tight.
+    panda_safety.maybeSendOffroadCan(is_onroad);
 
     // Send out peripheralState at 2Hz
     if (rk.frame() % 50 == 0) {

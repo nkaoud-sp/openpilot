@@ -6,9 +6,11 @@ See the LICENSE.md file in the root directory for more details.
 """
 import datetime
 import os
-import threading
+import subprocess
+import sys
 from pathlib import Path
 
+from openpilot.common.basedir import BASEDIR
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.selfdrive.ui.layouts.settings.developer import DeveloperLayout
 from openpilot.common.hardware import PC
@@ -20,7 +22,6 @@ from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog
 from openpilot.system.ui.widgets.list_view import button_item
 
 from openpilot.sunnypilot.autolock_commands import frame_record, LOCK_CMD, UNLOCK_CMD
-from openpilot.sunnypilot.turn_signal_commands import run_pulse_sequence
 from openpilot.system.ui.sunnypilot.widgets.html_render import HtmlModalSP
 from openpilot.system.ui.sunnypilot.widgets.list_view import toggle_item_sp
 
@@ -134,14 +135,18 @@ class DeveloperLayoutSP(DeveloperLayout):
     gui_app.push_widget(dialog)
 
   def _start_turn_signal(self, side: str):
-    # Real-time driver on a background thread: it only writes OffroadCanQueue (pandad does the CAN),
-    # so the on-times are clock-driven and consistent. Ignore presses while one is already running.
+    # Real-time driver in its OWN subprocess (not a UI thread): an idle process gets precise
+    # time.sleep, so the on-times don't jitter from the render loop holding the GIL. It only writes
+    # the OffroadCanQueue param (pandad does the CAN), so no panda claim. Ignore repeat presses
+    # while one is still running.
     if not ui_state.is_offroad():
       return
-    if getattr(self, "_ts_thread", None) is not None and self._ts_thread.is_alive():
+    if getattr(self, "_ts_proc", None) is not None and self._ts_proc.poll() is None:
       return
-    self._ts_thread = threading.Thread(target=run_pulse_sequence, args=(side,), daemon=True)
-    self._ts_thread.start()
+    self._ts_proc = subprocess.Popen(
+      [sys.executable, "-m", "openpilot.tools.toyota.turn_signal_test", "--enqueue", f"--{side}"],
+      cwd=BASEDIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+    )
 
   def _on_error_log_clicked(self):
     text = ""
