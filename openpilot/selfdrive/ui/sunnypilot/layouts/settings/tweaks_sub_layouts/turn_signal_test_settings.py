@@ -4,15 +4,21 @@ import time
 
 import pyray as rl
 from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.sunnypilot.widgets.list_view import button_item_sp, multiple_button_item_sp, option_item_sp
-from openpilot.system.ui.widgets import Widget
+from openpilot.system.ui.widgets import DialogResult, Widget
+from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog, alert_dialog
 from openpilot.system.ui.widgets.network import NavButton
 from openpilot.system.ui.widgets.scroller_tici import Scroller
 
 
 SIGNALS = ("left", "right", "hazard")
 SIGNAL_LABELS = (lambda: tr("Left"), lambda: tr("Right"), lambda: tr("Hazard"))
+
+PROBE_REQUEST_PARAM = "TurnSignalProbeRequest"
+PROBE_STATUS_PARAM = "TurnSignalProbeStatus"
+PROBE_ACTIVE_STATES = ("baseline", "running")
 
 
 def _toyota_available() -> bool:
@@ -27,6 +33,7 @@ class TurnSignalTestSettingsLayout(Widget):
     self._back_button.set_click_callback(back_btn_callback)
     self._selected_signal = 0
     self._status = ""
+    self._probe_status: dict = {}
 
     items = self._initialize_items()
     self._scroller = Scroller(items, line_separator=True, spacing=0)
@@ -60,10 +67,51 @@ class TurnSignalTestSettingsLayout(Widget):
     )
     self._run_test.set_right_value(lambda: self._status)
 
+    # --- Signal command discovery probe (offroad) ------------------------------------------------
+    self._probe_shortlist = button_item_sp(
+      title=lambda: tr("Signal Discovery Probe"),
+      button_text=lambda: tr("RUN"),
+      description=lambda: tr("Offroad only. Sends candidate body-ECU commands and watches the car's blinker state " +
+                             "to find one that lights the signals without the speed-locked diagnostic test. Try " +
+                             "this shortlist first; it takes about a minute."),
+      callback=self._run_shortlist,
+      enabled=lambda: self._probe_enabled(),
+    )
+    self._probe_shortlist.set_right_value(lambda: self._probe_summary())
+
+    self._probe_full = button_item_sp(
+      title=lambda: tr("Full Sweep"),
+      button_text=lambda: tr("SWEEP"),
+      description=lambda: tr("If the shortlist finds nothing: a blind sweep of every body-ECU output. Park EMPTY " +
+                             "with ALL WINDOWS DOWN and stay clear of the mirrors. Takes up to ~90 minutes."),
+      callback=self._confirm_full,
+      enabled=lambda: self._probe_enabled(),
+    )
+
+    self._probe_stop = button_item_sp(
+      title=lambda: tr("Stop Probe"),
+      button_text=lambda: tr("STOP"),
+      description=lambda: tr("Stop a running probe."),
+      callback=self._stop_probe,
+      enabled=lambda: self._probe_running(),
+    )
+
+    self._probe_result = button_item_sp(
+      title=lambda: tr("Probe Result"),
+      button_text=lambda: tr("VIEW"),
+      description=lambda: tr("Show the last probe's result and any commands that worked."),
+      callback=self._show_result,
+      enabled=lambda: bool(self._probe_status),
+    )
+
     return [
       self._direction,
       self._duration,
       self._run_test,
+      self._probe_shortlist,
+      self._probe_full,
+      self._probe_stop,
+      self._probe_result,
     ]
 
   def _set_signal(self, selected_signal: int):
@@ -84,6 +132,80 @@ class TurnSignalTestSettingsLayout(Widget):
     })
     self._status = tr("Queued")
 
+  # --- probe controls ----------------------------------------------------------------------------
+  def _probe_enabled(self) -> bool:
+    # Opposite of the active test: the probe path only works offroad, and never while one is running.
+    return ui_state.is_offroad() and _toyota_available() and not self._probe_running()
+
+  def _probe_running(self) -> bool:
+    return self._probe_status.get("state") in PROBE_ACTIVE_STATES
+
+  def _start_probe(self, mode: str):
+    ui_state.params.put(PROBE_REQUEST_PARAM, {"mode": mode, "requestId": time.monotonic_ns()})
+    # Show immediate feedback until the daemon publishes its first status.
+    self._probe_status = {"state": "baseline", "message": tr("Starting..."), "hits": []}
+
+  def _run_shortlist(self):
+    if self._probe_enabled():
+      self._start_probe("shortlist")
+
+  def _confirm_full(self):
+    if not self._probe_enabled():
+      return
+
+    def on_result(result: DialogResult):
+      if result == DialogResult.CONFIRM:
+        self._start_probe("full")
+
+    dialog = ConfirmDialog(
+      tr("Full sweep pokes every body-ECU output blindly. Make sure the car is EMPTY, ALL WINDOWS " +
+         "are DOWN, and nobody is near the mirrors. Continue?"),
+      tr("Start Sweep"),
+      callback=on_result,
+    )
+    gui_app.push_widget(dialog)
+
+  def _stop_probe(self):
+    ui_state.params.remove(PROBE_REQUEST_PARAM)
+
+  def _show_result(self):
+    if not self._probe_status:
+      return
+    hits = self._probe_status.get("hits", [])
+    if hits:
+      body = tr("Commands that lit the signals:") + "\n\n" + "\n".join(hits)
+    else:
+      msg = self._probe_status.get("message", "")
+      body = tr("No command lit the signals.") + (f"\n\n{msg}" if msg else "")
+    gui_app.push_widget(alert_dialog(body))
+
+  def _probe_summary(self) -> str:
+    state = self._probe_status.get("state")
+    if state is None:
+      return ""
+    if state == "baseline":
+      return tr("Baseline...")
+    if state == "running":
+      idx, total = self._probe_status.get("index", 0), self._probe_status.get("total", 0)
+      hits = len(self._probe_status.get("hits", []))
+      return f"{idx}/{total}" + (f" • {hits} hit" if hits else "")
+    if state == "done":
+      hits = len(self._probe_status.get("hits", []))
+      return tr("Found {}").format(hits) if hits else tr("None found")
+    if state == "aborted":
+      return tr("Stopped")
+    if state == "error":
+      return tr("Error")
+    return ""
+
+  def _refresh_probe_status(self):
+    # The daemon publishes progress/results here; it clears the request when done but leaves the
+    # status, so a finished run's result stays visible. get() decodes the JSON param to a dict (or
+    # None when unset); keep the last value when it's empty.
+    status = ui_state.params.get(PROBE_STATUS_PARAM)
+    if isinstance(status, dict):
+      self._probe_status = status
+
   def _render(self, rect):
     self._back_button.set_position(self._rect.x, self._rect.y + 20)
     self._back_button.render()
@@ -92,8 +214,13 @@ class TurnSignalTestSettingsLayout(Widget):
                                 rect.width, rect.height - self._back_button.rect.height - 40)
     self._scroller.render(content_rect)
 
+  def _update_state(self):
+    super()._update_state()
+    self._refresh_probe_status()
+
   def show_event(self):
     self._status = ""
+    self._refresh_probe_status()
     self._scroller.show_event()
 
   def hide_event(self):

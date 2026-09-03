@@ -33,6 +33,7 @@ Usage (on device, offroad):
 import argparse
 import sys
 import time
+from collections.abc import Callable
 
 import openpilot.cereal.messaging as messaging
 from openpilot.common.params import Params
@@ -130,7 +131,7 @@ class TurnSignalProbe:
       return False
     self.detector.set_baseline(turn, hazard)
     if turn in (1, 2) or hazard:
-      cloudlog.warning(f"turn_signal_probe: baseline is NOT idle (turn={turn} hazard={hazard}); "
+      cloudlog.warning(f"turn_signal_probe: baseline is NOT idle (turn={turn} hazard={hazard}); " +
                        "turn the signals off before probing")
     return True
 
@@ -148,6 +149,52 @@ class TurnSignalProbe:
     return hit
 
 
+# Probe states, shared with the daemon and reported through TurnSignalProbeStatus.
+STATE_BASELINE = "baseline"
+STATE_RUNNING = "running"
+STATE_DONE = "done"
+STATE_ABORTED = "aborted"
+STATE_ERROR = "error"
+
+
+def make_status(state: str, index: int, total: int, hits: list[Candidate],
+                message: str = "", last_candidate: str = "") -> dict:
+  """The JSON status the UI reads: coarse state, progress, the current candidate, and any hits."""
+  return {
+    "state": state,
+    "index": index,
+    "total": total,
+    "message": message,
+    "lastCandidate": last_candidate,
+    "hits": [str(h) for h in hits],
+  }
+
+
+def run_probe(probe: "TurnSignalProbe", candidates: list[Candidate],
+              report: Callable[[dict], None] | None = None,
+              should_abort: Callable[[], bool] | None = None) -> list[Candidate]:
+  """Send each candidate and watch for a signal actuation. Shared by the CLI and the daemon.
+
+  `report` receives a status dict per candidate (and on finish/abort); `should_abort` is polled
+  between candidates so a caller can stop the run (car went onroad, user pressed Stop).
+  """
+  hits: list[Candidate] = []
+  total = len(candidates)
+  for i, cand in enumerate(candidates):
+    if should_abort is not None and should_abort():
+      if report is not None:
+        report(make_status(STATE_ABORTED, i, total, hits, "aborted", str(cand)))
+      return hits
+    hit = probe.probe_one(cand)
+    if hit:
+      hits.append(cand)
+    if report is not None:
+      report(make_status(STATE_RUNNING, i + 1, total, hits, "hit" if hit else "", str(cand)))
+  if report is not None:
+    report(make_status(STATE_DONE, total, total, hits, "done"))
+  return hits
+
+
 def run(candidates: list[Candidate], dbc: str, dry_run: bool) -> int:
   if dry_run:
     print(f"# dry run: {len(candidates)} candidate(s), DBC={dbc}, nothing sent\n")
@@ -158,34 +205,32 @@ def run(candidates: list[Candidate], dbc: str, dry_run: bool) -> int:
   probe = TurnSignalProbe(dbc)
 
   if not probe._offroad:
-    print("REFUSING: car is not offroad. The OffroadCanQueue path is a no-op onroad "
+    print("REFUSING: car is not offroad. The OffroadCanQueue path is a no-op onroad " +
           "(pandad clears it and the Toyota safety mode blocks 0x750). Switch the car off and retry.")
     return 2
 
   print(f"turn_signal_probe: DBC={dbc}, {len(candidates)} candidate(s)")
   print("capturing idle baseline from BLINKERS_STATE (0x614)...")
   if not probe.capture_baseline():
-    print("REFUSING: no BLINKERS_STATE (0x614) seen on bus 0. The body bus is asleep -- open the "
+    print("REFUSING: no BLINKERS_STATE (0x614) seen on bus 0. The body bus is asleep -- open the " +
           "driver door (or probe right after switch-off) so the BCM broadcasts, then retry.")
     return 2
 
-  hits: list[Candidate] = []
   with open(RESULTS_PATH, "w") as f:
     f.write(f"# turn_signal_probe results  dbc={dbc}  candidates={len(candidates)}\n")
     f.flush()
-    for i, cand in enumerate(candidates):
-      # Bail out if the car comes back onroad mid-run; we must not keep poking the bus while driving.
-      if not probe._offroad:
-        print("\nSTOP: car went onroad mid-sweep; aborting.")
-        break
-      hit = probe.probe_one(cand)
-      mark = "  <<< HIT" if hit else ""
-      line = f"[{i + 1:>4}/{len(candidates)}] {cand}{mark}"
+
+    def report(status: dict) -> None:
+      if status["state"] != STATE_RUNNING:
+        return
+      cand, hit = status["lastCandidate"], status["message"] == "hit"
+      line = f"[{status['index']:>4}/{status['total']}] {cand}{'  <<< HIT' if hit else ''}"
       print(line)
       f.write(line + "\n")
       f.flush()
-      if hit:
-        hits.append(cand)
+
+    # Bail out if the car comes back onroad mid-run; we must not keep poking the bus while driving.
+    hits = run_probe(probe, candidates, report=report, should_abort=lambda: not probe._offroad)
 
   print("\n" + "=" * 60)
   if hits:
@@ -212,8 +257,8 @@ def main() -> int:
   args = p.parse_args()
 
   if args.full and not args.yes:
-    print("--full is a blind sweep that can actuate body outputs other than the lamps "
-          "(horn, alarm, trunk, and -- with --include-motion -- windows/mirrors).\n"
+    print("--full is a blind sweep that can actuate body outputs other than the lamps " +
+          "(horn, alarm, trunk, and -- with --include-motion -- windows/mirrors).\n" +
           "Park empty, put every window fully DOWN, keep clear, then re-run with --yes.")
     return 2
 

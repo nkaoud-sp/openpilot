@@ -68,6 +68,11 @@ def only_offroad(started: bool, params: Params, CP: car.CarParams) -> bool:
 def auto_door_lock(started: bool, params: Params, CP: car.CarParams) -> bool:
   return (not started) and params.get_bool("AutoDoorLock")
 
+def turn_signal_probe(started: bool, params: Params, CP: car.CarParams) -> bool:
+  # Offroad-only discovery tool; runs only while the UI has a probe request pending, and stops
+  # itself once the daemon clears the request.
+  return (not started) and params.get("TurnSignalProbeRequest") is not None
+
 def livestream(started: bool, params: Params, CP: car.CarParams) -> bool:
   return params.get_bool("IsLiveStreaming")
 
@@ -186,6 +191,9 @@ procs += [
 
   # auto door lock
   PythonProcess("autolockd", "openpilot.sunnypilot.autolockd", auto_door_lock),
+
+  # turn signal command discovery probe (offroad, UI-triggered)
+  PythonProcess("turn_signal_probed", "openpilot.sunnypilot.turn_signal_probed", turn_signal_probe),
 ]
 
 if os.path.exists("../../sunnypilot/sunnylink/uploader.py"):
