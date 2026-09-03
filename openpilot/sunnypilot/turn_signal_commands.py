@@ -111,7 +111,7 @@ def _single_shot_records(payload: bytes, hold: float) -> bytes:
   return recs
 
 
-def build_hazard_blink_records(side: str = "hazard", hold: float = 0.8) -> bytes:
+def build_hazard_blink_records(side: str = "hazard", hold: float = 1.0) -> bytes:
   """
   Static OffroadCanQueue records for a single lamp flash: enter extended session, energise once
   (the lamp latches), hold with tester-present, then release + default session to turn it off.

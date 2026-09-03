@@ -40,7 +40,7 @@ class AutoLockSettingsLayout(Widget):
     )
     self._auto_hazard = toggle_item_sp(
       title=lambda: tr("Blink Hazards After Locking"),
-      description=lambda: tr("Flash the hazard lights once after locking to confirm."),
+      description=lambda: tr("Flash the hazard lights once (~1 s) after locking to confirm."),
       param="AutoDoorLockHazard",
     )
     return [
