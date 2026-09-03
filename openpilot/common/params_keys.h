@@ -12,6 +12,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"AutoDoorLock", {PERSISTENT | BACKUP, BOOL}},
     {"AutoDoorLockCloseWindows", {PERSISTENT | BACKUP, BOOL}},
     {"AutoDoorLockFoldMirrors", {PERSISTENT | BACKUP, BOOL}},
+    {"AutoDoorLockHazard", {PERSISTENT | BACKUP, BOOL}},
     {"ApiCache_Device", {PERSISTENT, STRING}},
     {"ApiCache_FirehoseStats", {PERSISTENT, JSON}},
     {"AssistNowToken", {PERSISTENT, STRING}},

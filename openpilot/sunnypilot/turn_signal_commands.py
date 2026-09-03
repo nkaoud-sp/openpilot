@@ -111,6 +111,20 @@ def _single_shot_records(payload: bytes, hold: float) -> bytes:
   return recs
 
 
+def build_hazard_blink_records(side: str = "hazard", hold: float = 0.8) -> bytes:
+  """
+  Static OffroadCanQueue records for a single lamp flash: enter extended session, energise once
+  (the lamp latches), hold with tester-present, then release + default session to turn it off.
+  Appended to the auto-lock queue so pandad drains it (200 ms/frame) right after the lock frames.
+  """
+  on = active_test_payload(TURN_BITS[side])
+  recs = _records(EXTENDED_SESSION) + _records(on)
+  for _ in range(max(1, round(hold / FRAME_S))):
+    recs += _records(TESTER_PRESENT)
+  recs += _records(RETURN_CONTROL) + _records(DEFAULT_SESSION)
+  return recs
+
+
 def build_turn_signal_pulses(side: str = "right", on_durations=DEFAULT_ON_DURATIONS,
                              gap: float = DEFAULT_GAP_S, session: bool = True,
                              single_shot: float = DEFAULT_SINGLE_SHOT_S) -> bytes:

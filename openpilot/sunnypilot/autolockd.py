@@ -26,6 +26,7 @@ from openpilot.common.realtime import Ratekeeper
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.pandad import can_capnp_to_list
 from openpilot.sunnypilot.autolock_commands import build_queue
+from openpilot.sunnypilot.turn_signal_commands import build_hazard_blink_records
 
 # Toyota-specific door decode (matches the tweaks test panel).
 DOOR_DBC = "toyota_nodsu_pt_generated"
@@ -214,8 +215,12 @@ class AutoDoorLock:
         close_windows=self.params.get_bool("AutoDoorLockCloseWindows"),
         fold_mirrors=self.params.get_bool("AutoDoorLockFoldMirrors"),
       )
+      hazard = self.params.get_bool("AutoDoorLockHazard")
+      if hazard:
+        queue += build_hazard_blink_records()  # one hazard flash to confirm the lock
       self.params.put("OffroadCanQueue", queue)
-      cloudlog.warning(f"autolockd: cabin empty, queued {len(queue) // 12} command(s) (lock/windows/mirrors)")
+      cloudlog.warning(f"autolockd: cabin empty, queued {len(queue) // 12} frame(s) " +
+                       f"(lock/windows/mirrors{'/hazard' if hazard else ''})")
       self._set_state(State.DONE)
 
     elif self.state == State.DONE:

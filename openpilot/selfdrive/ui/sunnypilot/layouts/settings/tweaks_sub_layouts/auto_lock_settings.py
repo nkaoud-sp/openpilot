@@ -38,10 +38,16 @@ class AutoLockSettingsLayout(Widget):
       description=lambda: tr("Also fold the side mirrors before locking."),
       param="AutoDoorLockFoldMirrors",
     )
+    self._auto_hazard = toggle_item_sp(
+      title=lambda: tr("Blink Hazards After Locking"),
+      description=lambda: tr("Flash the hazard lights once after locking to confirm."),
+      param="AutoDoorLockHazard",
+    )
     return [
       self._auto_door_lock,
       self._auto_close_windows,
       self._auto_fold_mirrors,
+      self._auto_hazard,
     ]
 
   def _render(self, rect):
@@ -54,10 +60,11 @@ class AutoLockSettingsLayout(Widget):
 
   def _update_state(self):
     super()._update_state()
-    # The window/mirror options only matter when auto door lock is enabled.
+    # The window/mirror/hazard options only matter when auto door lock is enabled.
     auto_lock_on = self._auto_door_lock.action_item.get_state()
     self._auto_close_windows.action_item.set_enabled(auto_lock_on)
     self._auto_fold_mirrors.action_item.set_enabled(auto_lock_on)
+    self._auto_hazard.action_item.set_enabled(auto_lock_on)
 
   def show_event(self):
     self._scroller.show_event()
