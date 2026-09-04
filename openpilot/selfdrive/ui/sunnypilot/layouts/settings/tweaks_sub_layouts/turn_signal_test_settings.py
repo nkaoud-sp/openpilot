@@ -23,6 +23,9 @@ PROBE_REQUEST_PARAM = "TurnSignalProbeRequest"
 PROBE_STATUS_PARAM = "TurnSignalProbeStatus"
 PROBE_ACTIVE_STATES = ("baseline", "running")
 
+# Rough wall-clock per candidate (SEND_DRAIN_S + OBSERVE_S in turn_signal_probe.py), for the ETA.
+PROBE_PER_CANDIDATE_S = 3.5
+
 
 def _toyota_available() -> bool:
   return ui_state.CP is not None and ui_state.CP.brand == "toyota"
@@ -114,6 +117,7 @@ class TurnSignalTestSettingsLayout(Widget):
       callback=self._confirm_full,
       enabled=lambda: self._probe_enabled(),
     )
+    self._probe_full.set_right_value(lambda: self._probe_summary())
 
     self._probe_stop = button_item_sp(
       title=lambda: tr("Stop Probe"),
@@ -232,7 +236,14 @@ class TurnSignalTestSettingsLayout(Widget):
     if state == "running":
       idx, total = self._probe_status.get("index", 0), self._probe_status.get("total", 0)
       hits = len(self._probe_status.get("hits", []))
-      return f"{idx}/{total}" + (f" • {hits} hit" if hits else "")
+      pct = int(idx * 100 / total) if total else 0
+      summary = f"{idx}/{total} ({pct}%)"
+      eta = self._format_eta((total - idx) * PROBE_PER_CANDIDATE_S)
+      if eta:
+        summary += f" • {eta} left"
+      if hits:
+        summary += f" • {hits} hit"
+      return summary
     if state == "done":
       hits = len(self._probe_status.get("hits", []))
       return tr("Found {}").format(hits) if hits else tr("None found")
@@ -241,6 +252,15 @@ class TurnSignalTestSettingsLayout(Widget):
     if state == "error":
       return tr("Error")
     return ""
+
+  @staticmethod
+  def _format_eta(seconds: float) -> str:
+    # Only show an ETA worth showing; the tiny shortlist finishes before it matters.
+    seconds = int(seconds)
+    if seconds < 60:
+      return ""
+    minutes = seconds // 60
+    return f"~{minutes}m"
 
   def _refresh_probe_status(self):
     # The daemon publishes progress/results here; it clears the request when done but leaves the
