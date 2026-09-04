@@ -53,7 +53,7 @@ DEFAULT_DBC = "toyota_nodsu_pt_generated"  # same default autolockd uses; overâ€
 
 SEND_DRAIN_S = 1.0        # time to let pandad clock the queued frame out (gap is 200ms)
 OBSERVE_S = 2.5           # watch BLINKERS_STATE this long after each command
-BASELINE_S = 1.0          # capture the idle baseline over this long before probing
+BASELINE_S = 3.0          # capture the idle baseline over this long before probing (0x614 is bursty)
 RESULTS_PATH = "/data/turn_signal_probe_results.txt"
 
 
@@ -80,7 +80,6 @@ class TurnSignalProbe:
   def __init__(self, dbc: str):
     self.params = Params()
     self.can_sock = messaging.sub_sock("can", conflate=False, timeout=0)
-    self.sm = messaging.SubMaster(["pandaStates"])
 
     from opendbc.can import CANParser
     self.parser = CANParser(dbc, [(BLINKERS_MSG, 0)], BLINKERS_BUS)
@@ -99,11 +98,11 @@ class TurnSignalProbe:
 
   @property
   def _offroad(self) -> bool:
-    self.sm.update(0)
-    if not self.sm.alive["pandaStates"]:
-      return False
-    # Offroad == no ignition. The OffroadCanQueue path is a no-op onroad.
-    return not any(ps.ignitionLine or ps.ignitionCan for ps in self.sm["pandaStates"])
+    # IsOffroad is the authoritative offroad flag the manager writes on every onroad/offroad
+    # transition. Reading it is immediate and needs no SubMaster warm-up (a fresh SubMaster hasn't
+    # received pandaStates yet, so checking ignition here would spuriously read "onroad"). The
+    # OffroadCanQueue path is a no-op onroad regardless.
+    return self.params.get_bool("IsOffroad")
 
   # --- probe steps -----------------------------------------------------------
   def _observe(self, duration: float) -> tuple[bool, int, int]:
