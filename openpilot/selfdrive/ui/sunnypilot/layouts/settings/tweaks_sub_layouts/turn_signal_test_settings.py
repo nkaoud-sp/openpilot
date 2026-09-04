@@ -6,11 +6,14 @@ import pyray as rl
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr
+from openpilot.sunnypilot.autolock_commands import LOCK_CMD, UNLOCK_CMD, frame_record
 from openpilot.system.ui.sunnypilot.widgets.list_view import button_item_sp, multiple_button_item_sp, option_item_sp
 from openpilot.system.ui.widgets import DialogResult, Widget
 from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog, alert_dialog
 from openpilot.system.ui.widgets.network import NavButton
 from openpilot.system.ui.widgets.scroller_tici import Scroller
+
+OFFROAD_CAN_QUEUE_PARAM = "OffroadCanQueue"
 
 
 SIGNALS = ("left", "right", "hazard")
@@ -33,6 +36,7 @@ class TurnSignalTestSettingsLayout(Widget):
     self._back_button.set_click_callback(back_btn_callback)
     self._selected_signal = 0
     self._status = ""
+    self._send_status = ""
     self._probe_status: dict = {}
 
     items = self._initialize_items()
@@ -66,6 +70,29 @@ class TurnSignalTestSettingsLayout(Widget):
       enabled=lambda: not ui_state.is_offroad() and _toyota_available(),
     )
     self._run_test.set_right_value(lambda: self._status)
+
+    # --- Send-path check (offroad) ---------------------------------------------------------------
+    # A known-good control: fire the exact door lock/unlock command the auto-lock feature uses,
+    # through the same OffroadCanQueue -> pandad -> ELM327 path the probe uses. If the door locks,
+    # the send path works, so a probe that finds nothing means the signal command isn't in the
+    # swept range -- not that the plumbing is broken.
+    self._lock_test = button_item_sp(
+      title=lambda: tr("Send-Path Check"),
+      button_text=lambda: tr("LOCK"),
+      description=lambda: tr("Offroad only. Sends the known door-lock command through the same path the probe " +
+                             "uses. If the door locks, the send path works."),
+      callback=self._test_lock,
+      enabled=lambda: self._probe_enabled(),
+    )
+    self._lock_test.set_right_value(lambda: self._send_status)
+
+    self._unlock_test = button_item_sp(
+      title=lambda: tr("Send-Path Check"),
+      button_text=lambda: tr("UNLOCK"),
+      description=lambda: tr("Sends the known door-unlock command through the same path."),
+      callback=self._test_unlock,
+      enabled=lambda: self._probe_enabled(),
+    )
 
     # --- Signal command discovery probe (offroad) ------------------------------------------------
     self._probe_shortlist = button_item_sp(
@@ -108,6 +135,8 @@ class TurnSignalTestSettingsLayout(Widget):
       self._direction,
       self._duration,
       self._run_test,
+      self._lock_test,
+      self._unlock_test,
       self._probe_shortlist,
       self._probe_full,
       self._probe_stop,
@@ -131,6 +160,21 @@ class TurnSignalTestSettingsLayout(Widget):
       "requestId": time.monotonic_ns(),
     })
     self._status = tr("Queued")
+
+  # --- send-path check ---------------------------------------------------------------------------
+  def _send_offroad_frame(self, record: bytes, label: str):
+    if not self._probe_enabled():
+      self._send_status = tr("Unavailable")
+      return
+    # pandad drains OffroadCanQueue one frame at a time offroad via ELM327. A single record is enough.
+    ui_state.params.put(OFFROAD_CAN_QUEUE_PARAM, record)
+    self._send_status = tr("Sent {}").format(label)
+
+  def _test_lock(self):
+    self._send_offroad_frame(frame_record(LOCK_CMD), tr("Lock"))
+
+  def _test_unlock(self):
+    self._send_offroad_frame(frame_record(UNLOCK_CMD), tr("Unlock"))
 
   # --- probe controls ----------------------------------------------------------------------------
   def _probe_enabled(self) -> bool:
@@ -220,6 +264,7 @@ class TurnSignalTestSettingsLayout(Widget):
 
   def show_event(self):
     self._status = ""
+    self._send_status = ""
     self._refresh_probe_status()
     self._scroller.show_event()
 
