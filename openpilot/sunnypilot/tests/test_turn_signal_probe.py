@@ -84,3 +84,55 @@ def test_detector_needs_change_from_active_baseline():
   det.set_baseline(turn_signals=1, hazard=0)
   assert not det.is_hit(turn_signals=1, hazard=0)
   assert det.is_hit(turn_signals=2, hazard=0)
+
+
+class _FakeProbe:
+  """Minimal stand-in for TurnSignalProbe: the candidate at hit_index reads as a hit."""
+  def __init__(self, hit_index: int | None = None):
+    self.hit_index = hit_index
+    self.sent: list[int] = []
+
+  def probe_one(self, cand) -> bool:
+    idx = len(self.sent)
+    self.sent.append(idx)
+    return idx == self.hit_index
+
+
+def _run(probe, candidates, **kwargs):
+  from openpilot.sunnypilot.turn_signal_probe import run_probe
+  statuses: list[dict] = []
+  hits = run_probe(probe, candidates, report=statuses.append, **kwargs)
+  return hits, statuses
+
+
+def test_run_probe_start_skips_and_reports_absolute_index():
+  cands = shortlist()
+  probe = _FakeProbe()
+  hits, statuses = _run(probe, cands, start=3)
+  # Only candidates from index 3 onward are actually sent.
+  assert len(probe.sent) == len(cands) - 3
+  # Progress is absolute: first running report is 4/len, final done is len/len.
+  running = [s for s in statuses if s["state"] == "running"]
+  assert running[0]["index"] == 4
+  assert running[0]["total"] == len(cands)
+  assert statuses[-1]["state"] == "done"
+  assert statuses[-1]["index"] == len(cands)
+
+
+def test_run_probe_carries_prior_hits_across_sessions():
+  cands = shortlist()
+  probe = _FakeProbe(hit_index=0)  # first sent candidate (index 2) hits
+  hits, statuses = _run(probe, cands, start=2, prior_hits=["earlier-session-hit"])
+  assert hits[0] == "earlier-session-hit"      # prior hit is preserved
+  assert len(hits) == 2                          # plus the one found this session
+  assert statuses[-1]["hits"][0] == "earlier-session-hit"
+
+
+def test_run_probe_abort_reports_reached_index():
+  cands = shortlist()
+  probe = _FakeProbe()
+  hits, statuses = _run(probe, cands, should_abort=lambda: True)
+  # Aborts before sending anything; the abort status carries the resume index (0 here).
+  assert probe.sent == []
+  assert statuses[-1]["state"] == "aborted"
+  assert statuses[-1]["index"] == 0

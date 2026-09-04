@@ -27,6 +27,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.turn_signal_probe_commands import full_sweep, shortlist
 from openpilot.sunnypilot.turn_signal_probe import (
   STATE_BASELINE,
+  STATE_DONE,
   STATE_ERROR,
   TurnSignalProbe,
   make_status,
@@ -36,6 +37,8 @@ from openpilot.sunnypilot.turn_signal_probe import (
 
 REQUEST_PARAM = "TurnSignalProbeRequest"
 STATUS_PARAM = "TurnSignalProbeStatus"
+START_INDEX_PARAM = "TurnSignalProbeStartIndex"
+HITS_PARAM = "TurnSignalProbeHits"
 
 
 def _read_request(params: Params) -> dict | None:
@@ -55,10 +58,20 @@ def main() -> None:
 
   request_id = request.get("requestId")
   mode = request.get("mode", "shortlist")
+  # Resume support (full sweep only): start from a saved index and carry hits across sessions.
+  start = int(request.get("start", 0)) if mode == "full" else 0
+
+  # progress tracks the last reported index/state so we can save a resume point on abort.
+  progress = {"index": start, "state": None}
 
   def publish(status: dict) -> None:
     status["requestId"] = request_id
+    progress["index"] = status.get("index", progress["index"])
+    progress["state"] = status.get("state")
     params.put(STATUS_PARAM, status)  # JSON param: put serializes the dict
+    # Persist accumulated hits (full sweep) so a resumed session keeps earlier finds.
+    if mode == "full" and status.get("message") in ("hit", "done", "aborted"):
+      params.put(HITS_PARAM, status.get("hits", []))
 
   def request_gone() -> bool:
     # Stop if the UI cleared the request or queued a different one.
@@ -91,11 +104,27 @@ def main() -> None:
     return
 
   candidates = list(full_sweep()) if mode == "full" else shortlist()
-  cloudlog.warning(f"turn_signal_probed: mode={mode} candidates={len(candidates)}")
+  total = len(candidates)
+  start = max(0, min(start, total))
+
+  # Seed hits from earlier sessions when resuming a sweep; start fresh otherwise.
+  prior_hits: list[str] = []
+  if mode == "full" and start > 0:
+    existing = params.get(HITS_PARAM)
+    if isinstance(existing, list):
+      prior_hits = existing
+  elif mode == "full":
+    params.remove(HITS_PARAM)
+
+  cloudlog.warning(f"turn_signal_probed: mode={mode} candidates={total} start={start} prior_hits={len(prior_hits)}")
 
   # Abort between candidates if the user stops the run or the car goes onroad.
-  run_probe(probe, candidates, report=publish,
+  run_probe(probe, candidates, report=publish, start=start, prior_hits=prior_hits,
             should_abort=lambda: request_gone() or not probe._offroad)
+
+  # Save the resume point: on a clean finish reset to 0, otherwise remember where we stopped.
+  if mode == "full":
+    params.put(START_INDEX_PARAM, 0 if progress["state"] == STATE_DONE else progress["index"])
 
   cloudlog.warning("turn_signal_probed: done")
   clear_request()

@@ -156,7 +156,7 @@ STATE_ABORTED = "aborted"
 STATE_ERROR = "error"
 
 
-def make_status(state: str, index: int, total: int, hits: list[Candidate],
+def make_status(state: str, index: int, total: int, hits: list,
                 message: str = "", last_candidate: str = "") -> dict:
   """The JSON status the UI reads: coarse state, progress, the current candidate, and any hits."""
   return {
@@ -171,22 +171,27 @@ def make_status(state: str, index: int, total: int, hits: list[Candidate],
 
 def run_probe(probe: "TurnSignalProbe", candidates: list[Candidate],
               report: Callable[[dict], None] | None = None,
-              should_abort: Callable[[], bool] | None = None) -> list[Candidate]:
+              should_abort: Callable[[], bool] | None = None,
+              start: int = 0, prior_hits: list[str] | None = None) -> list[str]:
   """Send each candidate and watch for a signal actuation. Shared by the CLI and the daemon.
 
   `report` receives a status dict per candidate (and on finish/abort); `should_abort` is polled
-  between candidates so a caller can stop the run (car went onroad, user pressed Stop).
+  between candidates so a caller can stop the run (car went onroad, user pressed Stop). `start`
+  skips the first N candidates (resume a long sweep across sessions) while still reporting absolute
+  index/total; `prior_hits` seeds the hit list with hits carried over from an earlier session.
   """
-  hits: list[Candidate] = []
+  hits: list[str] = list(prior_hits) if prior_hits else []
   total = len(candidates)
-  for i, cand in enumerate(candidates):
+  start = max(0, min(start, total))
+  for i in range(start, total):
+    cand = candidates[i]
     if should_abort is not None and should_abort():
       if report is not None:
         report(make_status(STATE_ABORTED, i, total, hits, "aborted", str(cand)))
       return hits
     hit = probe.probe_one(cand)
     if hit:
-      hits.append(cand)
+      hits.append(str(cand))
     if report is not None:
       report(make_status(STATE_RUNNING, i + 1, total, hits, "hit" if hit else "", str(cand)))
   if report is not None:

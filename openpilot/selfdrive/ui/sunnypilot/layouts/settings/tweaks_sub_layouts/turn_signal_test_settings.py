@@ -7,6 +7,7 @@ from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.sunnypilot.autolock_commands import LOCK_CMD, UNLOCK_CMD, frame_record
+from openpilot.sunnypilot.turn_signal_probe_commands import full_sweep
 from openpilot.system.ui.sunnypilot.widgets.list_view import ListItemSP, button_item_sp, multiple_button_item_sp, option_item_sp
 from openpilot.system.ui.widgets import DialogResult, Widget
 from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog, alert_dialog
@@ -21,6 +22,7 @@ SIGNAL_LABELS = (lambda: tr("Left"), lambda: tr("Right"), lambda: tr("Hazard"))
 
 PROBE_REQUEST_PARAM = "TurnSignalProbeRequest"
 PROBE_STATUS_PARAM = "TurnSignalProbeStatus"
+PROBE_START_INDEX_PARAM = "TurnSignalProbeStartIndex"
 PROBE_ACTIVE_STATES = ("baseline", "running")
 
 # Rough wall-clock per candidate (SEND_DRAIN_S + OBSERVE_S in turn_signal_probe.py), for the ETA.
@@ -41,6 +43,7 @@ class TurnSignalTestSettingsLayout(Widget):
     self._status = ""
     self._send_status = ""
     self._probe_status: dict = {}
+    self._sweep_total = sum(1 for _ in full_sweep())  # candidate count, for the start-index range
 
     items = self._initialize_items()
     self._scroller = Scroller(items, line_separator=True, spacing=0)
@@ -108,6 +111,18 @@ class TurnSignalTestSettingsLayout(Widget):
       enabled=lambda: self._probe_enabled(),
     )
 
+    self._sweep_start = option_item_sp(
+      title=lambda: tr("Sweep Start Index"),
+      description=lambda: tr("Where the sweep begins, so a long run can be split across sessions. It resumes here " +
+                             "automatically after a stop, and resets to 0 when a full sweep finishes."),
+      param=PROBE_START_INDEX_PARAM,
+      min_value=0,
+      max_value=self._sweep_total,
+      value_change_step=50,
+      label_callback=lambda value: f"{value} / {self._sweep_total}",
+      inline=True,
+    )
+
     self._probe_full = button_item_sp(
       title=lambda: tr("Full Sweep"),
       button_text=lambda: tr("SWEEP"),
@@ -144,6 +159,7 @@ class TurnSignalTestSettingsLayout(Widget):
       self._lock_test,
       self._unlock_test,
       self._probe_shortlist,
+      self._sweep_start,
       self._probe_full,
       self._probe_progress,
       self._probe_stop,
@@ -192,7 +208,11 @@ class TurnSignalTestSettingsLayout(Widget):
     return self._probe_status.get("state") in PROBE_ACTIVE_STATES
 
   def _start_probe(self, mode: str):
-    ui_state.params.put(PROBE_REQUEST_PARAM, {"mode": mode, "requestId": time.monotonic_ns()})
+    request = {"mode": mode, "requestId": time.monotonic_ns()}
+    if mode == "full":
+      # Read the saved index fresh (the daemon may have advanced it past what the control shows).
+      request["start"] = int(ui_state.params.get(PROBE_START_INDEX_PARAM, return_default=True))
+    ui_state.params.put(PROBE_REQUEST_PARAM, request)
     # Show immediate feedback until the daemon publishes its first status.
     self._probe_status = {"state": "baseline", "message": tr("Starting..."), "hits": []}
 
@@ -258,7 +278,13 @@ class TurnSignalTestSettingsLayout(Widget):
 
   def _probe_progress_text(self) -> str:
     summary = self._probe_summary()
-    return tr("Probe: {}").format(summary) if summary else tr("Probe: idle")
+    if summary:
+      return tr("Probe: {}").format(summary)
+    # Idle: surface the saved sweep resume point (read live, so it reflects the daemon's last stop).
+    start = int(ui_state.params.get(PROBE_START_INDEX_PARAM, return_default=True))
+    if start > 0:
+      return tr("Probe: idle (sweep resumes at {}/{})").format(start, self._sweep_total)
+    return tr("Probe: idle")
 
   @staticmethod
   def _format_eta(seconds: float) -> str:
@@ -293,6 +319,9 @@ class TurnSignalTestSettingsLayout(Widget):
     self._status = ""
     self._send_status = ""
     self._refresh_probe_status()
+    # OptionControlSP reads its param only at construction, so re-sync the start index from the param
+    # here; the daemon advances it after a stopped or finished sweep.
+    self._sweep_start.action_item.current_value = int(ui_state.params.get(PROBE_START_INDEX_PARAM, return_default=True))
     self._scroller.show_event()
 
   def hide_event(self):
