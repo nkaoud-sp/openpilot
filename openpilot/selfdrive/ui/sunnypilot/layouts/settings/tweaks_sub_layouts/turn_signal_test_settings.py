@@ -134,6 +134,9 @@ class TurnSignalTestSettingsLayout(Widget):
       callback=self._signal_right_cb,
       enabled=lambda: self._probe_enabled(),
     )
+    # set_right_value never renders on a button row, so carry the send/inject feedback in a plain
+    # title row that does render every frame.
+    self._send_status_row = ListItemSP(title=lambda: self._send_status_text())
 
     # --- Signal command discovery probe (offroad) ------------------------------------------------
     self._probe_shortlist = button_item_sp(
@@ -206,6 +209,7 @@ class TurnSignalTestSettingsLayout(Widget):
       self._flash_hazards,
       self._signal_left,
       self._signal_right,
+      self._send_status_row,
       self._probe_shortlist,
       self._probe_lattice,
       self._sweep_start,
@@ -233,14 +237,22 @@ class TurnSignalTestSettingsLayout(Widget):
     })
     self._status = tr("Queued")
 
+  def _send_status_text(self) -> str:
+    return tr("Last send: {}").format(self._send_status) if self._send_status else tr("Last send: none")
+
   # --- send-path check ---------------------------------------------------------------------------
-  def _send_offroad_frame(self, record: bytes, label: str):
+  def _send_offroad_frame(self, record: bytes, label: str, repeat: int = 1):
     if not self._probe_enabled():
-      self._send_status = tr("Unavailable")
+      self._send_status = tr("unavailable (need offroad + Toyota)")
       return
-    # pandad drains OffroadCanQueue one frame at a time offroad via ELM327. A single record is enough.
-    ui_state.params.put(OFFROAD_CAN_QUEUE_PARAM, record)
-    self._send_status = tr("Sent {}").format(label)
+    # pandad drains OffroadCanQueue one frame per ~200ms via ELM327. A diagnostic one-shot (lock)
+    # needs one record; a broadcast command has to be repeated to be a sustained cyclic message, so
+    # queue `repeat` copies (~200ms apart). Show the exact address+bytes so a non-effect can be told
+    # apart from a non-send.
+    addr = (record[0] << 8) | record[1]
+    ui_state.params.put(OFFROAD_CAN_QUEUE_PARAM, record * max(1, repeat))
+    suffix = f" x{repeat}" if repeat > 1 else ""
+    self._send_status = f"{label} 0x{addr:X} [{record[4:].hex()}]{suffix}"
 
   def _test_lock(self):
     self._send_offroad_frame(frame_record(LOCK_CMD), tr("Lock"))
@@ -249,13 +261,14 @@ class TurnSignalTestSettingsLayout(Widget):
     self._send_offroad_frame(frame_record(UNLOCK_CMD), tr("Unlock"))
 
   def _flash_hazard(self):
-    self._send_offroad_frame(hazard_record(), tr("Hazards"))
+    # Broadcast commands are cyclic; a single frame is ignored. Send a ~5 s burst (~25 x 200 ms).
+    self._send_offroad_frame(hazard_record(), tr("Hazards"), repeat=25)
 
   def _signal_left_cb(self):
-    self._send_offroad_frame(blinker_record(BLINKER_D3_LEFT), tr("Left"))
+    self._send_offroad_frame(blinker_record(BLINKER_D3_LEFT), tr("Left"), repeat=25)
 
   def _signal_right_cb(self):
-    self._send_offroad_frame(blinker_record(BLINKER_D3_RIGHT), tr("Right"))
+    self._send_offroad_frame(blinker_record(BLINKER_D3_RIGHT), tr("Right"), repeat=25)
 
   # --- probe controls ----------------------------------------------------------------------------
   def _probe_enabled(self) -> bool:
