@@ -7,6 +7,12 @@ from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.sunnypilot.autolock_commands import LOCK_CMD, UNLOCK_CMD, frame_record
+from openpilot.sunnypilot.broadcast_lighting_commands import (
+  BLINKER_D3_LEFT,
+  BLINKER_D3_RIGHT,
+  blinker_record,
+  hazard_record,
+)
 from openpilot.sunnypilot.turn_signal_probe_commands import full_sweep
 from openpilot.system.ui.sunnypilot.widgets.list_view import ListItemSP, button_item_sp, multiple_button_item_sp, option_item_sp
 from openpilot.system.ui.widgets import DialogResult, Widget
@@ -100,6 +106,35 @@ class TurnSignalTestSettingsLayout(Widget):
       enabled=lambda: self._probe_enabled(),
     )
 
+    # --- Broadcast lighting (operational frames, from Austin Fisk's 2023 RAV4 write-up) -----------
+    # These are ordinary bus-0 broadcast frames, not the 0x750 diagnostic path -- so they are not
+    # speed-gated. 0x623 is Fisk's demonstrated hazard flash; the 0x614 left/right frames are
+    # experimental (that address is normally broadcast by the body ECU itself).
+    self._flash_hazards = button_item_sp(
+      title=lambda: tr("Broadcast Lighting"),
+      button_text=lambda: tr("HAZARDS"),
+      description=lambda: tr("Offroad only. Injects the known-good 0x623 hazard-flash frame. If the hazards " +
+                             "flash, operational lighting injection works on your car -- the whole point."),
+      callback=self._flash_hazard,
+      enabled=lambda: self._probe_enabled(),
+    )
+    self._flash_hazards.set_right_value(lambda: self._send_status)
+
+    self._signal_left = button_item_sp(
+      title=lambda: tr("Broadcast Lighting"),
+      button_text=lambda: tr("LEFT?"),
+      description=lambda: tr("Experimental: injects 0x614 with Fisk's left-turn direction nibble."),
+      callback=self._signal_left_cb,
+      enabled=lambda: self._probe_enabled(),
+    )
+    self._signal_right = button_item_sp(
+      title=lambda: tr("Broadcast Lighting"),
+      button_text=lambda: tr("RIGHT?"),
+      description=lambda: tr("Experimental: injects 0x614 with Fisk's right-turn direction nibble."),
+      callback=self._signal_right_cb,
+      enabled=lambda: self._probe_enabled(),
+    )
+
     # --- Signal command discovery probe (offroad) ------------------------------------------------
     self._probe_shortlist = button_item_sp(
       title=lambda: tr("Signal Discovery Probe"),
@@ -168,6 +203,9 @@ class TurnSignalTestSettingsLayout(Widget):
       self._run_test,
       self._lock_test,
       self._unlock_test,
+      self._flash_hazards,
+      self._signal_left,
+      self._signal_right,
       self._probe_shortlist,
       self._probe_lattice,
       self._sweep_start,
@@ -209,6 +247,15 @@ class TurnSignalTestSettingsLayout(Widget):
 
   def _test_unlock(self):
     self._send_offroad_frame(frame_record(UNLOCK_CMD), tr("Unlock"))
+
+  def _flash_hazard(self):
+    self._send_offroad_frame(hazard_record(), tr("Hazards"))
+
+  def _signal_left_cb(self):
+    self._send_offroad_frame(blinker_record(BLINKER_D3_LEFT), tr("Left"))
+
+  def _signal_right_cb(self):
+    self._send_offroad_frame(blinker_record(BLINKER_D3_RIGHT), tr("Right"))
 
   # --- probe controls ----------------------------------------------------------------------------
   def _probe_enabled(self) -> bool:

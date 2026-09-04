@@ -178,3 +178,31 @@ def test_run_probe_abort_reports_reached_index():
   assert probe.sent == []
   assert statuses[-1]["state"] == "aborted"
   assert statuses[-1]["index"] == 0
+
+
+def test_fisk_hazard_frame_matches_writeup_and_is_elm327_injectable():
+  from openpilot.sunnypilot.broadcast_lighting_commands import (
+    HAZARD_FLASH_ADDR, HAZARD_FLASH_ONCE, HAZARD_FLASH_TWICE, hazard_record,
+  )
+  # Exact bytes from Fisk's 2023 RAV4 write-up.
+  assert HAZARD_FLASH_ONCE.hex() == "1980000000000020"
+  assert HAZARD_FLASH_TWICE.hex() == "1980000000000040"
+  # 0x623 is in the 0x600-0x6FF range elm327_tx_hook permits, at length 8.
+  assert (HAZARD_FLASH_ADDR & 0x1FFFFF00) == 0x600
+  rec = hazard_record()
+  assert len(rec) == 12
+  assert (rec[0] << 8 | rec[1]) == HAZARD_FLASH_ADDR
+  assert rec[2] == 0  # bus 0
+  assert rec[3] == 8  # dlc
+
+
+def test_fisk_blinker_frame_direction_nibble():
+  from openpilot.sunnypilot.broadcast_lighting_commands import (
+    BLINKER_ADDR, BLINKER_D3_LEFT, BLINKER_D3_RIGHT, blinker_frame, blinker_record,
+  )
+  # Fisk idle template with data[3] carrying the direction.
+  assert blinker_frame(0x30).hex() == "298062300001725c"
+  assert blinker_frame(BLINKER_D3_LEFT)[3] == 0x10
+  assert blinker_frame(BLINKER_D3_RIGHT)[3] == 0x20
+  assert (BLINKER_ADDR & 0x1FFFFF00) == 0x600  # also ELM327-injectable
+  assert (blinker_record(BLINKER_D3_LEFT)[0] << 8 | blinker_record(BLINKER_D3_LEFT)[1]) == BLINKER_ADDR
