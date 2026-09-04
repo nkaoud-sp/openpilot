@@ -12,12 +12,15 @@ from openpilot.sunnypilot.autolock_commands import LOCK_CMD, UNLOCK_CMD, CMD_ADD
 from openpilot.sunnypilot.turn_signal_probe_commands import (
   BODY_ECU_SUB_ADDR,
   KNOWN_VALUE_BITS,
+  LID_LATTICE_OFFSET,
+  LID_LATTICE_STRIDE,
   LOCK_LID,
   MOTION_LIDS,
   Candidate,
   SignalDetector,
   full_sweep,
   shortlist,
+  structured_sweep,
 )
 
 
@@ -56,6 +59,45 @@ def test_full_sweep_skips_known_bits_and_motion_lids_by_default():
   # The two known lock/unlock bits are skipped on the lock LID so the sweep can't lock the car.
   lock_lid_vals = {c.value for c in cands if c.lid == LOCK_LID}
   assert lock_lid_vals.isdisjoint(KNOWN_VALUE_BITS)
+
+
+def test_full_sweep_order_is_stable():
+  # A saved sweep resume index refers to a position in this list, so its length and ordering must not
+  # drift. If this fails, every user's saved start index now points at a different command.
+  cands = list(full_sweep())
+  assert len(cands) == 2030
+  assert (cands[0].lid, cands[0].value) == (0x00, 0x01)
+  assert (cands[-1].lid, cands[-1].value) == (0xFF, 0x80)
+  # The observed rear-sunshade LID sits where we decoded it from the reported probe number.
+  assert cands[195].lid == 0x19
+  assert cands[196].lid == 0x19
+
+
+def test_structured_sweep_walks_only_the_stride_8_lattice():
+  cands = list(structured_sweep())
+  assert cands, "lattice must not be empty"
+  # Every known actuating LID (windows 0x01, locks 0x11, sunshade 0x19, mirrors 0x21) is 1 mod 8.
+  assert all(c.lid % LID_LATTICE_STRIDE == LID_LATTICE_OFFSET for c in cands)
+  assert all(c.lid not in MOTION_LIDS for c in cands)
+  # The known sunshade LID is on the lattice and therefore covered.
+  assert 0x19 in {c.lid for c in cands}
+  # Doesn't re-fire lock/unlock.
+  assert {c.value for c in cands if c.lid == LOCK_LID}.isdisjoint(KNOWN_VALUE_BITS)
+
+
+def test_structured_sweep_is_far_cheaper_than_full_sweep():
+  # The whole point: same LID coverage of the lattice at roughly an eighth of the probes.
+  assert len(list(structured_sweep())) * 6 < len(list(full_sweep()))
+
+
+def test_structured_sweep_uses_the_body_ecu_frame_shape():
+  # Locks and the sunshade both answered on sub 0x40 with len=0x05 / p1=0x00; keep that shape.
+  for cand in list(structured_sweep())[:5]:
+    payload = cand.payload
+    assert payload[0] == BODY_ECU_SUB_ADDR
+    assert payload[1] == 0x05
+    assert payload[2] == 0x30
+    assert payload[4] == 0x00
 
 
 def test_full_sweep_can_include_motion_lids_when_asked():

@@ -111,6 +111,16 @@ class TurnSignalTestSettingsLayout(Widget):
       enabled=lambda: self._probe_enabled(),
     )
 
+    self._probe_lattice = button_item_sp(
+      title=lambda: tr("Lattice Probe"),
+      button_text=lambda: tr("LATTICE"),
+      description=lambda: tr("Every body-ECU function found so far sits on a LID where lid mod 8 == 1 (windows " +
+                             "0x01, locks 0x11, sunshade 0x19, mirrors 0x21). This probes only that lattice, " +
+                             "covering the whole LID range in ~14 minutes instead of ~90. Park EMPTY."),
+      callback=self._confirm_lattice,
+      enabled=lambda: self._probe_enabled(),
+    )
+
     self._sweep_start = option_item_sp(
       title=lambda: tr("Sweep Start Index"),
       description=lambda: tr("Where the sweep begins, so a long run can be split across sessions. It resumes here " +
@@ -159,6 +169,7 @@ class TurnSignalTestSettingsLayout(Widget):
       self._lock_test,
       self._unlock_test,
       self._probe_shortlist,
+      self._probe_lattice,
       self._sweep_start,
       self._probe_full,
       self._probe_progress,
@@ -220,21 +231,28 @@ class TurnSignalTestSettingsLayout(Widget):
     if self._probe_enabled():
       self._start_probe("shortlist")
 
-  def _confirm_full(self):
+  def _confirm_blind_probe(self, mode: str, confirm_text: str):
+    """Both blind modes poke unknown body outputs, so both go behind the same empty-car confirm."""
     if not self._probe_enabled():
       return
 
     def on_result(result: DialogResult):
       if result == DialogResult.CONFIRM:
-        self._start_probe("full")
+        self._start_probe(mode)
 
     dialog = ConfirmDialog(
-      tr("Full sweep pokes every body-ECU output blindly. Make sure the car is EMPTY, ALL WINDOWS " +
-         "are DOWN, and nobody is near the mirrors. Continue?"),
-      tr("Start Sweep"),
+      tr("This pokes body-ECU outputs blindly. Make sure the car is EMPTY, ALL WINDOWS are DOWN, " +
+         "and nobody is near the mirrors. Continue?"),
+      confirm_text,
       callback=on_result,
     )
     gui_app.push_widget(dialog)
+
+  def _confirm_full(self):
+    self._confirm_blind_probe("full", tr("Start Sweep"))
+
+  def _confirm_lattice(self):
+    self._confirm_blind_probe("structured", tr("Start Lattice"))
 
   def _stop_probe(self):
     ui_state.params.remove(PROBE_REQUEST_PARAM)

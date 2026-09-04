@@ -24,7 +24,7 @@ manager also stops it once the request param is gone.
 """
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
-from openpilot.sunnypilot.turn_signal_probe_commands import full_sweep, shortlist
+from openpilot.sunnypilot.turn_signal_probe_commands import full_sweep, shortlist, structured_sweep
 from openpilot.sunnypilot.turn_signal_probe import (
   STATE_BASELINE,
   STATE_DONE,
@@ -103,7 +103,12 @@ def main() -> None:
     clear_request()
     return
 
-  candidates = list(full_sweep()) if mode == "full" else shortlist()
+  if mode == "full":
+    candidates = list(full_sweep())
+  elif mode == "structured":
+    candidates = list(structured_sweep())
+  else:
+    candidates = shortlist()
   total = len(candidates)
   start = max(0, min(start, total))
 

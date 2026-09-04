@@ -50,6 +50,15 @@ REMAINING_BITS: tuple[int, ...] = (0x20, 0x04, 0x02, 0x01)
 # unattended sweep can't roll a window onto something. Overridable on the command line.
 MOTION_LIDS = {0x01, 0x21}
 
+# Every local identifier observed to actuate anything on this ECU family is congruent to 1 mod 8:
+#   windows 0x01, locks 0x11, rear sunshade 0x19, mirrors 0x21.
+# So the IOControl table looks like a stride-8 lattice rather than a dense range. structured_sweep()
+# walks only that lattice, which covers the whole 0x00-0xFF LID space in ~240 probes instead of ~2030.
+LID_LATTICE_STRIDE = 8
+LID_LATTICE_OFFSET = 1
+
+VALUE_BITS: tuple[int, ...] = (0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80)
+
 
 @dataclass(frozen=True)
 class Candidate:
@@ -89,14 +98,29 @@ def full_sweep(sub_addr: int = BODY_ECU_SUB_ADDR, skip_motion: bool = True,
   Skips the LOCK_LID bits already covered by the shortlist, the two known lock/unlock bits, and (by
   default) the window/mirror LIDs that move physical parts.
   """
-  value_bits = (0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80)
   for lid in range(0x100):
     if skip_motion and lid in MOTION_LIDS:
       continue
-    for value in value_bits:
+    for value in VALUE_BITS:
       if lid == LOCK_LID and skip_known_bits and value in KNOWN_VALUE_BITS:
         continue
       yield Candidate(sub_addr, lid, value, "sweep")
+
+
+def structured_sweep(sub_addr: int = BODY_ECU_SUB_ADDR, skip_motion: bool = True,
+                     skip_known_bits: bool = True) -> Iterator[Candidate]:
+  """Only the LIDs on the stride-8 lattice (lid % 8 == 1), where every known function lives.
+
+  Same frame shape as the lock/sunshade commands, which both answer on sub 0x40. Covers the entire
+  LID space at ~1/8th the cost of full_sweep, so it is the cheap way to test the upper half.
+  """
+  for lid in range(LID_LATTICE_OFFSET, 0x100, LID_LATTICE_STRIDE):
+    if skip_motion and lid in MOTION_LIDS:
+      continue
+    for value in VALUE_BITS:
+      if lid == LOCK_LID and skip_known_bits and value in KNOWN_VALUE_BITS:
+        continue
+      yield Candidate(sub_addr, lid, value, "lattice")
 
 
 class SignalDetector:
