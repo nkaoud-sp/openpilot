@@ -7,7 +7,7 @@ from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.sunnypilot.autolock_commands import LOCK_CMD, UNLOCK_CMD, frame_record
-from openpilot.system.ui.sunnypilot.widgets.list_view import button_item_sp, multiple_button_item_sp, option_item_sp
+from openpilot.system.ui.sunnypilot.widgets.list_view import ListItemSP, button_item_sp, multiple_button_item_sp, option_item_sp
 from openpilot.system.ui.widgets import DialogResult, Widget
 from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog, alert_dialog
 from openpilot.system.ui.widgets.network import NavButton
@@ -107,7 +107,6 @@ class TurnSignalTestSettingsLayout(Widget):
       callback=self._run_shortlist,
       enabled=lambda: self._probe_enabled(),
     )
-    self._probe_shortlist.set_right_value(lambda: self._probe_summary())
 
     self._probe_full = button_item_sp(
       title=lambda: tr("Full Sweep"),
@@ -117,7 +116,10 @@ class TurnSignalTestSettingsLayout(Widget):
       callback=self._confirm_full,
       enabled=lambda: self._probe_enabled(),
     )
-    self._probe_full.set_right_value(lambda: self._probe_summary())
+
+    # A button row draws its action on the right, so set_right_value never renders there; carry the
+    # live progress in this dedicated row's title instead (titles are resolved and drawn each frame).
+    self._probe_progress = ListItemSP(title=lambda: self._probe_progress_text())
 
     self._probe_stop = button_item_sp(
       title=lambda: tr("Stop Probe"),
@@ -143,6 +145,7 @@ class TurnSignalTestSettingsLayout(Widget):
       self._unlock_test,
       self._probe_shortlist,
       self._probe_full,
+      self._probe_progress,
       self._probe_stop,
       self._probe_result,
     ]
@@ -252,6 +255,10 @@ class TurnSignalTestSettingsLayout(Widget):
     if state == "error":
       return tr("Error")
     return ""
+
+  def _probe_progress_text(self) -> str:
+    summary = self._probe_summary()
+    return tr("Probe: {}").format(summary) if summary else tr("Probe: idle")
 
   @staticmethod
   def _format_eta(seconds: float) -> str:
