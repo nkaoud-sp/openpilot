@@ -29,7 +29,7 @@ SIGNAL_LABELS = (lambda: tr("Left"), lambda: tr("Right"), lambda: tr("Hazard"))
 PROBE_REQUEST_PARAM = "TurnSignalProbeRequest"
 PROBE_STATUS_PARAM = "TurnSignalProbeStatus"
 PROBE_START_INDEX_PARAM = "TurnSignalProbeStartIndex"
-PROBE_ACTIVE_STATES = ("baseline", "running")
+PROBE_ACTIVE_STATES = ("baseline", "running", "active")
 
 # Rough wall-clock per candidate (SEND_DRAIN_S + OBSERVE_S in turn_signal_probe.py), for the ETA.
 PROBE_PER_CANDIDATE_S = 3.5
@@ -49,6 +49,7 @@ class TurnSignalTestSettingsLayout(Widget):
     self._status = ""
     self._send_status = ""
     self._probe_status: dict = {}
+    self._probe_mode = ""  # last mode started, so the summary/result can word capture vs probe
     self._sweep_total = sum(1 for _ in full_sweep())  # candidate count, for the start-index range
 
     items = self._initialize_items()
@@ -138,6 +139,16 @@ class TurnSignalTestSettingsLayout(Widget):
     # title row that does render every frame.
     self._send_status_row = ListItemSP(title=lambda: self._send_status_text())
 
+    self._capture = button_item_sp(
+      title=lambda: tr("Capture Lighting Frames"),
+      button_text=lambda: tr("CAPTURE"),
+      description=lambda: tr("Offroad only. Records the idle body-ECU bus for 5 s, then for 30 s flags any frame " +
+                             "that changes. Press CAPTURE, wait for 'operate...', then work the hazard button, " +
+                             "turn stalk and fob lock. VIEW shows the frames that moved. Find your car's own command."),
+      callback=self._run_capture,
+      enabled=lambda: self._probe_enabled(),
+    )
+
     # --- Signal command discovery probe (offroad) ------------------------------------------------
     self._probe_shortlist = button_item_sp(
       title=lambda: tr("Signal Discovery Probe"),
@@ -210,6 +221,7 @@ class TurnSignalTestSettingsLayout(Widget):
       self._signal_left,
       self._signal_right,
       self._send_status_row,
+      self._capture,
       self._probe_shortlist,
       self._probe_lattice,
       self._sweep_start,
@@ -279,6 +291,7 @@ class TurnSignalTestSettingsLayout(Widget):
     return self._probe_status.get("state") in PROBE_ACTIVE_STATES
 
   def _start_probe(self, mode: str):
+    self._probe_mode = mode
     request = {"mode": mode, "requestId": time.monotonic_ns()}
     if mode == "full":
       # Read the saved index fresh (the daemon may have advanced it past what the control shows).
@@ -290,6 +303,10 @@ class TurnSignalTestSettingsLayout(Widget):
   def _run_shortlist(self):
     if self._probe_enabled():
       self._start_probe("shortlist")
+
+  def _run_capture(self):
+    if self._probe_enabled():
+      self._start_probe("capture")
 
   def _confirm_blind_probe(self, mode: str, confirm_text: str):
     """Both blind modes poke unknown body outputs, so both go behind the same empty-car confirm."""
@@ -321,7 +338,12 @@ class TurnSignalTestSettingsLayout(Widget):
     if not self._probe_status:
       return
     hits = self._probe_status.get("hits", [])
-    if hits:
+    if self._probe_mode == "capture":
+      if hits:
+        body = tr("Frames that changed (bus addr data):") + "\n\n" + "\n".join(hits)
+      else:
+        body = tr("No frames changed. Make sure the bus was awake and you operated the controls.")
+    elif hits:
       body = tr("Commands that lit the signals:") + "\n\n" + "\n".join(hits)
     else:
       msg = self._probe_status.get("message", "")
@@ -333,7 +355,9 @@ class TurnSignalTestSettingsLayout(Widget):
     if state is None:
       return ""
     if state == "baseline":
-      return tr("Baseline...")
+      return tr("Idle baseline...") if self._probe_mode == "capture" else tr("Baseline...")
+    if state == "active":
+      return tr("Recording: {} changed").format(self._probe_status.get("index", 0))
     if state == "running":
       idx, total = self._probe_status.get("index", 0), self._probe_status.get("total", 0)
       hits = len(self._probe_status.get("hits", []))
@@ -347,6 +371,8 @@ class TurnSignalTestSettingsLayout(Widget):
       return summary
     if state == "done":
       hits = len(self._probe_status.get("hits", []))
+      if self._probe_mode == "capture":
+        return tr("{} changed").format(hits) if hits else tr("Nothing changed")
       return tr("Found {}").format(hits) if hits else tr("None found")
     if state == "aborted":
       return tr("Stopped")

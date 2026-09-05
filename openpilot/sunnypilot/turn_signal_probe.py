@@ -92,6 +92,15 @@ class TurnSignalProbe:
     if raw and self.parser.update(can_capnp_to_list(raw)):
       self.saw_blinkers = True
 
+  def drain_frames(self) -> list[tuple[int, int, bytes]]:
+    """Raw (bus, addr, data) frames since the last call, for the diff capture."""
+    out: list[tuple[int, int, bytes]] = []
+    raw = messaging.drain_sock_raw(self.can_sock)
+    for _, frames in can_capnp_to_list(raw):
+      for addr, dat, src in frames:
+        out.append((int(src), int(addr), bytes(dat)))
+    return out
+
   def _read_signals(self) -> tuple[int, int]:
     vl = self.parser.vl[BLINKERS_MSG]
     return int(vl["TURN_SIGNALS"]), int(vl["HAZARD_LIGHT"])
@@ -151,9 +160,16 @@ class TurnSignalProbe:
 # Probe states, shared with the daemon and reported through TurnSignalProbeStatus.
 STATE_BASELINE = "baseline"
 STATE_RUNNING = "running"
+STATE_ACTIVE = "active"      # capture: recording while the user operates the controls
 STATE_DONE = "done"
 STATE_ABORTED = "aborted"
 STATE_ERROR = "error"
+
+# Diff-capture: watch the body-ECU broadcast range where lighting/lock/window frames live.
+CAPTURE_ADDR_LO = 0x600
+CAPTURE_ADDR_HI = 0x6FF
+CAPTURE_NOISE_THRESHOLD = 4  # an addr with more distinct idle payloads than this is a counter; skip
+CAPTURE_MAX_PAYLOADS_PER_ADDR = 4  # cap how many distinct new payloads we list per address
 
 
 def make_status(state: str, index: int, total: int, hits: list,
@@ -197,6 +213,69 @@ def run_probe(probe: "TurnSignalProbe", candidates: list[Candidate],
   if report is not None:
     report(make_status(STATE_DONE, total, total, hits, "done"))
   return hits
+
+
+def run_capture(probe: "TurnSignalProbe", report: Callable[[dict], None],
+                should_abort: Callable[[], bool] | None = None,
+                baseline_s: float = 5.0, active_s: float = 30.0) -> list[str]:
+  """Diff-capture the body-ECU broadcast range: learn the idle bus, then flag frames that change.
+
+  Records every distinct payload per (bus, addr) in 0x600-0x6FF while idle, then during an active
+  window flags addresses that take a payload not seen at idle. Addresses that were already cycling
+  through many payloads at idle (counters) are dropped as noise; a lamp command shows up either as a
+  brand-new address or a new value on an otherwise-stable one.
+  """
+  baseline: dict[tuple[int, int], set[str]] = {}
+  t_end = time.monotonic() + baseline_s
+  report(make_status(STATE_BASELINE, 0, 0, [], "Hold still - recording the idle bus..."))
+  while time.monotonic() < t_end:
+    if should_abort is not None and should_abort():
+      report(make_status(STATE_ABORTED, 0, 0, [], "aborted"))
+      return []
+    for bus, addr, dat in probe.drain_frames():
+      if CAPTURE_ADDR_LO <= addr <= CAPTURE_ADDR_HI:
+        baseline.setdefault((bus, addr), set()).add(dat.hex())
+    time.sleep(0.005)
+
+  # Counters/cyclic messages churn through many idle payloads; ignore them.
+  noisy = {k for k, v in baseline.items() if len(v) > CAPTURE_NOISE_THRESHOLD}
+
+  changes: dict[tuple[int, int], set[str]] = {}
+  t_end = time.monotonic() + active_s
+  report(make_status(STATE_ACTIVE, 0, 0, [], "Now operate hazards / turn stalk / fob lock..."))
+  while time.monotonic() < t_end:
+    if should_abort is not None and should_abort():
+      break
+    for bus, addr, dat in probe.drain_frames():
+      key = (bus, addr)
+      if not (CAPTURE_ADDR_LO <= addr <= CAPTURE_ADDR_HI) or key in noisy:
+        continue
+      h = dat.hex()
+      seen = baseline.get(key)
+      if seen is None or h not in seen:
+        changes.setdefault(key, set()).add(h)
+    report(make_status(STATE_ACTIVE, len(changes), 0, _capture_lines(changes, baseline),
+                       "recording"))
+    time.sleep(0.02)
+
+  lines = _capture_lines(changes, baseline)
+  report(make_status(STATE_DONE, len(changes), 0, lines, "done"))
+  return lines
+
+
+def _capture_lines(changes: dict[tuple[int, int], set[str]],
+                   baseline: dict[tuple[int, int], set[str]]) -> list[str]:
+  """Format the diff, brand-new addresses first (the strongest command candidates)."""
+  def sort_key(item):
+    (bus, addr), _ = item
+    return (0 if (bus, addr) not in baseline else 1, bus, addr)
+
+  lines: list[str] = []
+  for (bus, addr), payloads in sorted(changes.items(), key=sort_key):
+    tag = "NEW-ID" if (bus, addr) not in baseline else "NEW-VAL"
+    for h in sorted(payloads)[:CAPTURE_MAX_PAYLOADS_PER_ADDR]:
+      lines.append(f"b{bus} 0x{addr:X} {h} [{tag}]")
+  return lines
 
 
 def run(candidates: list[Candidate], dbc: str, dry_run: bool) -> int:

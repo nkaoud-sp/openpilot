@@ -32,6 +32,7 @@ from openpilot.sunnypilot.turn_signal_probe import (
   TurnSignalProbe,
   make_status,
   resolve_dbc,
+  run_capture,
   run_probe,
 )
 
@@ -93,6 +94,14 @@ def main() -> None:
 
   if not probe._offroad:
     publish(make_status(STATE_ERROR, 0, 0, [], "Car is not offroad; cannot probe."))
+    clear_request()
+    return
+
+  # Diff capture reads the bus rather than injecting; no candidate list, no blinker baseline.
+  if mode == "capture":
+    cloudlog.warning("turn_signal_probed: capture mode")
+    run_capture(probe, report=publish, should_abort=lambda: request_gone() or not probe._offroad)
+    cloudlog.warning("turn_signal_probed: capture done")
     clear_request()
     return
 

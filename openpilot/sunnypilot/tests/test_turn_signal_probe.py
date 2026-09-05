@@ -206,3 +206,16 @@ def test_fisk_blinker_frame_direction_nibble():
   assert blinker_frame(BLINKER_D3_RIGHT)[3] == 0x20
   assert (BLINKER_ADDR & 0x1FFFFF00) == 0x600  # also ELM327-injectable
   assert (blinker_record(BLINKER_D3_LEFT)[0] << 8 | blinker_record(BLINKER_D3_LEFT)[1]) == BLINKER_ADDR
+
+
+def test_capture_lines_flags_new_ids_first():
+  from openpilot.sunnypilot.turn_signal_probe import _capture_lines
+  baseline = {(0, 0x620): {"aa"}, (0, 0x614): {"01", "02"}}
+  changes = {
+    (0, 0x614): {"09"},          # new value on a known id
+    (0, 0x623): {"1980000000000020"},  # brand-new id -- the strongest candidate
+  }
+  lines = _capture_lines(changes, baseline)
+  # Brand-new id sorts first and is tagged NEW-ID.
+  assert lines[0] == "b0 0x623 1980000000000020 [NEW-ID]"
+  assert any("0x614" in ln and "NEW-VAL" in ln for ln in lines)
