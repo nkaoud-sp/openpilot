@@ -144,9 +144,9 @@ class TurnSignalTestSettingsLayout(Widget):
     self._capture = button_item_sp(
       title=lambda: tr("Capture Lighting Frames"),
       button_text=lambda: tr("CAPTURE"),
-      description=lambda: tr("Offroad only. Records the idle body-ECU bus for 5 s, then for 30 s flags any frame " +
-                             "that changes. Press CAPTURE, wait for 'operate...', then work the hazard button, " +
-                             "turn stalk and fob lock. VIEW shows the frames that moved. Find your car's own command."),
+      description=lambda: tr("Offroad only. Records the idle bus (all IDs 0x000-0x7FF) for 5 s, then for 30 s " +
+                             "flags any frame that changes. Press CAPTURE, wait for 'operate...', then FOB-LOCK " +
+                             "the car (the answer-back flash may expose a command). VIEW shows frames that moved."),
       callback=self._run_capture,
       enabled=lambda: self._probe_enabled(),
     )

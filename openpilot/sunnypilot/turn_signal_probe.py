@@ -165,11 +165,15 @@ STATE_DONE = "done"
 STATE_ABORTED = "aborted"
 STATE_ERROR = "error"
 
-# Diff-capture: watch the body-ECU broadcast range where lighting/lock/window frames live.
-CAPTURE_ADDR_LO = 0x600
-CAPTURE_ADDR_HI = 0x6FF
+# Diff-capture range: all standard 11-bit addresses (0x000-0x7FF), so it covers powertrain, body,
+# AND the diagnostic 0x7xx range (e.g. 0x750). High-churn powertrain IDs are dropped by the noise
+# filter below, leaving event-driven body/lighting frames. Widened from 0x600-0x6FF, which missed
+# anything on 0x7xx.
+CAPTURE_ADDR_LO = 0x000
+CAPTURE_ADDR_HI = 0x7FF
 CAPTURE_NOISE_THRESHOLD = 4  # an addr with more distinct idle payloads than this is a counter; skip
 CAPTURE_MAX_PAYLOADS_PER_ADDR = 4  # cap how many distinct new payloads we list per address
+CAPTURE_MAX_LINES = 40           # cap total reported lines so the result dialog stays readable
 
 
 def make_status(state: str, index: int, total: int, hits: list,
@@ -275,6 +279,9 @@ def _capture_lines(changes: dict[tuple[int, int], set[str]],
     tag = "NEW-ID" if (bus, addr) not in baseline else "NEW-VAL"
     for h in sorted(payloads)[:CAPTURE_MAX_PAYLOADS_PER_ADDR]:
       lines.append(f"b{bus} 0x{addr:X} {h} [{tag}]")
+  # NEW-IDs already sort first; cap so a result dialog whose OK button overlaps can't bury a hit.
+  if len(lines) > CAPTURE_MAX_LINES:
+    lines = lines[:CAPTURE_MAX_LINES] + [f"... (+{len(lines) - CAPTURE_MAX_LINES} more)"]
   return lines
 
 
