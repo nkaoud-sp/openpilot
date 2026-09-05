@@ -17,7 +17,7 @@ from openpilot.sunnypilot.broadcast_lighting_commands import (
 from openpilot.sunnypilot.turn_signal_probe_commands import full_sweep
 from openpilot.system.ui.sunnypilot.widgets.list_view import ListItemSP, button_item_sp, multiple_button_item_sp, option_item_sp
 from openpilot.system.ui.widgets import DialogResult, Widget
-from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog, alert_dialog
+from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog
 from openpilot.system.ui.widgets.network import NavButton
 from openpilot.system.ui.widgets.scroller_tici import Scroller
 
@@ -342,16 +342,19 @@ class TurnSignalTestSettingsLayout(Widget):
       return
     hits = self._probe_status.get("hits", [])
     if self._probe_mode == "capture":
-      if hits:
-        body = tr("Frames that changed (bus addr data):") + "\n\n" + "\n".join(hits)
-      else:
-        body = tr("No frames changed. Make sure the bus was awake and you operated the controls.")
-    elif hits:
-      body = tr("Commands that lit the signals:") + "\n\n" + "\n".join(hits)
+      header = tr("Frames that changed (bus addr data):")
+      empty = tr("No frames changed. Make sure the bus was awake and you operated the controls.")
     else:
+      header = tr("Commands that lit the signals:")
       msg = self._probe_status.get("message", "")
-      body = tr("No command lit the signals.") + (f"\n\n{msg}" if msg else "")
-    gui_app.push_widget(alert_dialog(body))
+      empty = tr("No command lit the signals.") + (f"<br><br>{msg}" if msg else "")
+    if hits:
+      # Rich mode renders through an HtmlRenderer inside a Scroller, so a long list scrolls instead
+      # of being clipped by the OK button. Join with <br> and escape any stray angle brackets.
+      body = header + "<br><br>" + "<br>".join(h.replace("<", "&lt;").replace(">", "&gt;") for h in hits)
+    else:
+      body = empty
+    gui_app.push_widget(ConfirmDialog(body, tr("OK"), cancel_text="", rich=True))
 
   def _probe_summary(self) -> str:
     state = self._probe_status.get("state")

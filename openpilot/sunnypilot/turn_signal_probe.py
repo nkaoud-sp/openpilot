@@ -173,7 +173,7 @@ CAPTURE_ADDR_LO = 0x000
 CAPTURE_ADDR_HI = 0x7FF
 CAPTURE_NOISE_THRESHOLD = 4  # an addr with more distinct idle payloads than this is a counter; skip
 CAPTURE_MAX_PAYLOADS_PER_ADDR = 4  # cap how many distinct new payloads we list per address
-CAPTURE_MAX_LINES = 40           # cap total reported lines so the result dialog stays readable
+CAPTURE_MAX_LINES = 150          # cap total reported lines (the result dialog scrolls to show them)
 
 
 def make_status(state: str, index: int, total: int, hits: list,
