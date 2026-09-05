@@ -200,9 +200,9 @@ def test_fisk_blinker_frame_direction_nibble():
   from openpilot.sunnypilot.broadcast_lighting_commands import (
     BLINKER_ADDR, BLINKER_D3_LEFT, BLINKER_D3_RIGHT, blinker_frame, blinker_record,
   )
-  # ESORICS-2024 Corolla format: 29 80 00 <dir> 00 00 00 00 (no counter/checksum).
-  assert blinker_frame(BLINKER_D3_LEFT).hex() == "2980001000000000"
-  assert blinker_frame(BLINKER_D3_RIGHT).hex() == "2980002000000000"
+  # ES350 captured format: 29 80 8a <dir> 00 00 02 ce.
+  assert blinker_frame(BLINKER_D3_LEFT).hex() == "29808a10000002ce"
+  assert blinker_frame(BLINKER_D3_RIGHT).hex() == "29808a20000002ce"
   assert blinker_frame(BLINKER_D3_LEFT)[3] == 0x10
   assert blinker_frame(BLINKER_D3_RIGHT)[3] == 0x20
   assert (BLINKER_ADDR & 0x1FFFFF00) == 0x600  # also ELM327-injectable

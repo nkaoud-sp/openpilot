@@ -8,10 +8,11 @@ from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.sunnypilot.autolock_commands import LOCK_CMD, UNLOCK_CMD, frame_record
 from openpilot.sunnypilot.broadcast_lighting_commands import (
+  BLINKER_D3_HAZARD,
   BLINKER_D3_LEFT,
   BLINKER_D3_RIGHT,
   blinker_record,
-  hazard_record,
+  signal_burst_record,
 )
 from openpilot.sunnypilot.turn_signal_probe_commands import full_sweep
 from openpilot.system.ui.sunnypilot.widgets.list_view import ListItemSP, button_item_sp, multiple_button_item_sp, option_item_sp
@@ -114,8 +115,8 @@ class TurnSignalTestSettingsLayout(Widget):
     self._flash_hazards = button_item_sp(
       title=lambda: tr("Broadcast Lighting"),
       button_text=lambda: tr("HAZARDS"),
-      description=lambda: tr("Offroad only. Injects the known-good 0x623 hazard-flash frame. If the hazards " +
-                             "flash, operational lighting injection works on your car -- the whole point."),
+      description=lambda: tr("Offroad only. Replays this car's own 0x614 hazard frame (29 80 8a 38 ...) as a " +
+                             "~5 s burst. If the hazards flash, operational lighting injection works here."),
       callback=self._flash_hazard,
       enabled=lambda: self._probe_enabled(),
     )
@@ -124,15 +125,15 @@ class TurnSignalTestSettingsLayout(Widget):
     self._signal_left = button_item_sp(
       title=lambda: tr("Broadcast Lighting"),
       button_text=lambda: tr("LEFT"),
-      description=lambda: tr("Injects the 0x614 left-signal command (29 80 00 10 ...), the format an ESORICS-2024 " +
-                             "study injected on a Toyota Corolla via an OBD dongle. Sent as a ~5 s burst."),
+      description=lambda: tr("Replays the captured 0x614 left frame (29 80 8a 10 ...) plus the 0x615 companion, " +
+                             "as a ~5 s burst. These are your ES350's own bytes from the capture."),
       callback=self._signal_left_cb,
       enabled=lambda: self._probe_enabled(),
     )
     self._signal_right = button_item_sp(
       title=lambda: tr("Broadcast Lighting"),
       button_text=lambda: tr("RIGHT"),
-      description=lambda: tr("Injects the 0x614 right-signal command (29 80 00 20 ...). Sent as a ~5 s burst."),
+      description=lambda: tr("Replays the captured 0x614 right frame (29 80 8a 20 ...) plus the 0x615 companion."),
       callback=self._signal_right_cb,
       enabled=lambda: self._probe_enabled(),
     )
@@ -274,14 +275,15 @@ class TurnSignalTestSettingsLayout(Widget):
     self._send_offroad_frame(frame_record(UNLOCK_CMD), tr("Unlock"))
 
   def _flash_hazard(self):
-    # Broadcast commands are cyclic; a single frame is ignored. Send a ~5 s burst (~25 x 200 ms).
-    self._send_offroad_frame(hazard_record(), tr("Hazards"), repeat=25)
+    # Replay the ES350's own 0x614 hazard frame as a ~5 s burst (~25 x 200 ms).
+    self._send_offroad_frame(blinker_record(BLINKER_D3_HAZARD), tr("Hazards"), repeat=25)
 
   def _signal_left_cb(self):
-    self._send_offroad_frame(blinker_record(BLINKER_D3_LEFT), tr("Left"), repeat=25)
+    # Replay the captured 0x614 left frame + the 0x615 companion, interleaved, as a burst.
+    self._send_offroad_frame(signal_burst_record(BLINKER_D3_LEFT), tr("Left"), repeat=13)
 
   def _signal_right_cb(self):
-    self._send_offroad_frame(blinker_record(BLINKER_D3_RIGHT), tr("Right"), repeat=25)
+    self._send_offroad_frame(signal_burst_record(BLINKER_D3_RIGHT), tr("Right"), repeat=13)
 
   # --- probe controls ----------------------------------------------------------------------------
   def _probe_enabled(self) -> bool:
