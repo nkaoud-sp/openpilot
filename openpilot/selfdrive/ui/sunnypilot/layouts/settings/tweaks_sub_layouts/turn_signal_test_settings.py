@@ -123,15 +123,16 @@ class TurnSignalTestSettingsLayout(Widget):
 
     self._signal_left = button_item_sp(
       title=lambda: tr("Broadcast Lighting"),
-      button_text=lambda: tr("LEFT?"),
-      description=lambda: tr("Experimental: injects 0x614 with Fisk's left-turn direction nibble."),
+      button_text=lambda: tr("LEFT"),
+      description=lambda: tr("Injects the 0x614 left-signal command (29 80 00 10 ...), the format an ESORICS-2024 " +
+                             "study injected on a Toyota Corolla via an OBD dongle. Sent as a ~5 s burst."),
       callback=self._signal_left_cb,
       enabled=lambda: self._probe_enabled(),
     )
     self._signal_right = button_item_sp(
       title=lambda: tr("Broadcast Lighting"),
-      button_text=lambda: tr("RIGHT?"),
-      description=lambda: tr("Experimental: injects 0x614 with Fisk's right-turn direction nibble."),
+      button_text=lambda: tr("RIGHT"),
+      description=lambda: tr("Injects the 0x614 right-signal command (29 80 00 20 ...). Sent as a ~5 s burst."),
       callback=self._signal_right_cb,
       enabled=lambda: self._probe_enabled(),
     )
