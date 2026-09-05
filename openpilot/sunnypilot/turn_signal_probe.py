@@ -221,13 +221,14 @@ def run_probe(probe: "TurnSignalProbe", candidates: list[Candidate],
 
 def run_capture(probe: "TurnSignalProbe", report: Callable[[dict], None],
                 should_abort: Callable[[], bool] | None = None,
-                baseline_s: float = 5.0, active_s: float = 30.0) -> list[str]:
-  """Diff-capture the body-ECU broadcast range: learn the idle bus, then flag frames that change.
+                baseline_s: float = 25.0, active_s: float = 30.0) -> list[str]:
+  """Diff-capture the bus: learn the idle bus, then flag frames that change.
 
-  Records every distinct payload per (bus, addr) in 0x600-0x6FF while idle, then during an active
-  window flags addresses that take a payload not seen at idle. Addresses that were already cycling
-  through many payloads at idle (counters) are dropped as noise; a lamp command shows up either as a
-  brand-new address or a new value on an otherwise-stable one.
+  Records every distinct payload per (bus, addr) in the capture range while idle, then during an
+  active window flags addresses that take a payload not seen at idle. A longer baseline sees more of
+  each cyclic message's natural variation, so fewer normal frames get mis-flagged as changes.
+  Addresses that were already cycling through many payloads at idle (counters) are dropped as noise;
+  a lamp command shows up either as a brand-new address or a new value on an otherwise-stable one.
   """
   baseline: dict[tuple[int, int], set[str]] = {}
   t_end = time.monotonic() + baseline_s
