@@ -400,16 +400,12 @@ static bool toyota_tx_hook(const CANPacket_t *msg) {
   return tx;
 }
 
-static int toyota_fwd_hook(int bus_num, int addr) {
-  int bus_fwd = -1;
-  if (bus_num == 0) bus_fwd = 2;
-  if (bus_num == 2) bus_fwd = 0;
-
+static bool toyota_fwd_hook(int bus_num, int addr) {
   // Permanently drop factory turn signal for testing
   if (addr == 0x614) {
-    bus_fwd = -1;
+    return false; // assumin Drop 
   }
-  return bus_fwd;
+  return true; // assuming Pass
 }
 
 static safety_config toyota_init(uint16_t param) {
