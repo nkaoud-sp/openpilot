@@ -35,3 +35,13 @@ def test_lighting_candidates_do_not_trigger_the_diagnostic_turn_signal_path():
     assert toyota_turn_signal_sequence(get_turn_signal_command(control_sp), was_active=False) == []
   # The prime suspect is the 2-byte 0x367 = 08 80 frame.
   assert TOYOTA_LIGHTING_CANDIDATES["cand367"] == (0x367, b"\x08\x80")
+
+
+def test_blinker_state_mitm_frame_bytes():
+  from opendbc.car.toyota.carcontroller import (
+    TOYOTA_BLINKER_STATE_DIR, toyota_blinker_state_frame,
+  )
+  # Captured ES350 0x614 format: 29 80 8a <dir> 00 00 02 ce.
+  assert toyota_blinker_state_frame(TOYOTA_BLINKER_STATE_DIR["left"]).hex() == "29808a10000002ce"
+  assert toyota_blinker_state_frame(TOYOTA_BLINKER_STATE_DIR["right"]).hex() == "29808a20000002ce"
+  assert toyota_blinker_state_frame(TOYOTA_BLINKER_STATE_DIR["hazard"]).hex() == "29808a38000002ce"

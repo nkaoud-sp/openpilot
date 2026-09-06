@@ -60,6 +60,16 @@ TOYOTA_LIGHTING_CANDIDATES = {
 }
 TOYOTA_LIGHTING_CANDIDATE_RATE = 10
 
+# Turn signal MITM test: replay the captured ES350 BLINKERS_STATE (0x614 = 29 80 8a <dir> 00 00 02 ce)
+# with the direction nibble. Paired with the toyota.h fwd hook that drops the factory 0x614, so our
+# frame is the only one the far side of the relay sees. dir: 0x10 left, 0x20 right, 0x38 hazard.
+TOYOTA_BLINKER_STATE_ADDR = 0x614
+TOYOTA_BLINKER_STATE_DIR = {"left": 0x10, "right": 0x20, "hazard": 0x38}
+
+
+def toyota_blinker_state_frame(data3: int) -> bytes:
+  return bytes([0x29, 0x80, 0x8A, data3, 0x00, 0x00, 0x02, 0xCE])
+
 
 def get_long_tune(CP, params):
   if CP.flags & ToyotaFlags.TSS2:
@@ -185,6 +195,12 @@ class CarController(CarControllerBase, GasInterceptorCarController):
     if lighting_candidate is not None and self.frame % TOYOTA_LIGHTING_CANDIDATE_RATE == 0:
       cand_addr, cand_payload = lighting_candidate
       can_sends.append(CanData(cand_addr, cand_payload, TOYOTA_TURN_SIGNAL_BUS))
+
+    # Turn signal MITM test: emit our own 0x614 for left/right/hazard (the factory 0x614 is dropped
+    # by the fwd hook). turn_signal_command is already left/right/hazard/none from get_turn_signal_command.
+    blinker_dir = TOYOTA_BLINKER_STATE_DIR.get(turn_signal_command)
+    if blinker_dir is not None and self.frame % TOYOTA_LIGHTING_CANDIDATE_RATE == 0:
+      can_sends.append(CanData(TOYOTA_BLINKER_STATE_ADDR, toyota_blinker_state_frame(blinker_dir), TOYOTA_TURN_SIGNAL_BUS))
 
     # *** handle secoc reset counter increase ***
     if self.CP.flags & ToyotaFlags.SECOC.value:

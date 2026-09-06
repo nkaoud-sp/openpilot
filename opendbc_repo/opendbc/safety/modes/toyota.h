@@ -5,6 +5,7 @@
 // Stock longitudinal
 #define TOYOTA_BASE_TX_MSGS \
   {0x191, 0, 8, .check_relay = true}, {0x412, 0, 8, .check_relay = true}, {0x1D2, 0, 8, .check_relay = false}, {0x7C0, 0, 8, .check_relay = false}, /* LKAS + LTA + PCM + Turn Signals */  \
+  {0x614, 0, 8, .check_relay = false}, /* BLINKERS_STATE injection (turn signal MITM test) */  \
   {0x367, 0, 2, .check_relay = false}, {0x361, 0, 8, .check_relay = false}, {0x2D8, 0, 8, .check_relay = false}, /* lighting broadcast-candidate test */  \
 
 #define TOYOTA_COMMON_TX_MSGS \
@@ -401,6 +402,13 @@ static bool toyota_tx_hook(const CANPacket_t *msg) {
   return tx;
 }
 
+static bool toyota_fwd_hook(int bus_num, int addr) {
+  SAFETY_UNUSED(bus_num);
+  // Drop the factory BLINKERS_STATE from the relay so our injected 0x614 is the only one the far
+  // side sees (turn signal MITM test). Returns true to block forwarding in both directions.
+  return addr == 0x614;
+}
+
 static safety_config toyota_init(uint16_t param) {
   static const CanMsg TOYOTA_TX_MSGS[] = {
     TOYOTA_COMMON_TX_MSGS
@@ -571,6 +579,7 @@ const safety_hooks toyota_hooks = {
   .init = toyota_init,
   .rx = toyota_rx_hook,
   .tx = toyota_tx_hook,
+  .fwd = toyota_fwd_hook,
   .get_checksum = toyota_get_checksum,
   .compute_checksum = toyota_compute_checksum,
   .get_quality_flag_valid = toyota_get_quality_flag_valid,
