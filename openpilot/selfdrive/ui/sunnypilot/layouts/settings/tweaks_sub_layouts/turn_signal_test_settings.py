@@ -85,6 +85,33 @@ class TurnSignalTestSettingsLayout(Widget):
     )
     self._run_test.set_right_value(lambda: self._status)
 
+    # --- Onroad broadcast-candidate test ---------------------------------------------------------
+    # Replays captured sub-0x600 body frames through the carcontroller (Toyota safety, onroad only).
+    # ONROAD ONLY -- Always Offroad won't work, the car must actually be started/driving.
+    self._cand_367 = button_item_sp(
+      title=lambda: tr("Candidate 0x367"),
+      button_text=lambda: tr("TEST"),
+      description=lambda: tr("Onroad only. Emits 0x367 = 08 80 at ~10 Hz for the Duration above. Watch for the " +
+                             "turn signals. The car must be onroad (not Always Offroad)."),
+      callback=lambda: self._run_candidate("cand367"),
+      enabled=lambda: not ui_state.is_offroad() and _toyota_available(),
+    )
+    self._cand_367.set_right_value(lambda: self._send_status_text())
+    self._cand_361 = button_item_sp(
+      title=lambda: tr("Candidate 0x361"),
+      button_text=lambda: tr("TEST"),
+      description=lambda: tr("Onroad only. Emits 0x361 = 00 17 00 00 16 00 00 7f at ~10 Hz for the Duration."),
+      callback=lambda: self._run_candidate("cand361"),
+      enabled=lambda: not ui_state.is_offroad() and _toyota_available(),
+    )
+    self._cand_2d8 = button_item_sp(
+      title=lambda: tr("Candidate 0x2D8"),
+      button_text=lambda: tr("TEST"),
+      description=lambda: tr("Onroad only. Emits 0x2D8 = 00 02 40 00 00 0a 00 00 at ~10 Hz for the Duration."),
+      callback=lambda: self._run_candidate("cand2d8"),
+      enabled=lambda: not ui_state.is_offroad() and _toyota_available(),
+    )
+
     # --- Send-path check (offroad) ---------------------------------------------------------------
     # A known-good control: fire the exact door lock/unlock command the auto-lock feature uses,
     # through the same OffroadCanQueue -> pandad -> ELM327 path the probe uses. If the door locks,
@@ -217,6 +244,9 @@ class TurnSignalTestSettingsLayout(Widget):
       self._direction,
       self._duration,
       self._run_test,
+      self._cand_367,
+      self._cand_361,
+      self._cand_2d8,
       self._lock_test,
       self._unlock_test,
       self._flash_hazards,
@@ -250,6 +280,20 @@ class TurnSignalTestSettingsLayout(Widget):
       "requestId": time.monotonic_ns(),
     })
     self._status = tr("Queued")
+
+  def _run_candidate(self, cand: str):
+    # Onroad broadcast-candidate test: reuses the turn-signal-test param, so it flows through
+    # controlsd_ext -> CC_SP.turnSignalCommand -> the Toyota carcontroller (which emits the frame).
+    if ui_state.is_offroad() or not _toyota_available():
+      self._send_status = tr("unavailable (need ONROAD + Toyota)")
+      return
+    duration_ms = int(ui_state.params.get("ToyotaTurnSignalTestDurationMs", return_default=True))
+    ui_state.params.put("ToyotaTurnSignalTestRequest", {
+      "signal": cand,
+      "durationMs": duration_ms,
+      "requestId": time.monotonic_ns(),
+    })
+    self._send_status = tr("queued {} (onroad)").format(cand)
 
   def _send_status_text(self) -> str:
     return tr("Last send: {}").format(self._send_status) if self._send_status else tr("Last send: none")

@@ -1,5 +1,7 @@
 TURN_SIGNAL_TEST_PARAM = "ToyotaTurnSignalTestRequest"
-TURN_SIGNAL_TEST_COMMANDS = {"left", "right", "hazard"}
+# left/right/hazard drive the 0x7C0 diagnostic path; cand* are onroad broadcast-candidate replays
+# (see TOYOTA_LIGHTING_CANDIDATES in the Toyota carcontroller).
+TURN_SIGNAL_TEST_COMMANDS = {"left", "right", "hazard", "cand367", "cand361", "cand2d8"}
 
 
 class TurnSignalTestController:

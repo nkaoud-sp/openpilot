@@ -49,6 +49,17 @@ TOYOTA_TURN_SIGNAL_OFF_MASK = 0x18
 TOYOTA_EXTENDED_DIAGNOSTIC_SESSION = bytes.fromhex("1003")
 TOYOTA_RETURN_TURN_SIGNAL_CONTROL = bytes.fromhex("2F291100")
 
+# Onroad broadcast-candidate test: body frames captured from a 2020 Lexus ES350 that changed when the
+# turn stalk was operated. These are below 0x600 so they cannot be injected via the offroad ELM327
+# path; emit them here (Toyota safety, needs the addresses in the TX allowlist) to test whether the
+# body ECU actually acts on any of them. Command string -> (addr, payload). ~10 Hz (frame % 10).
+TOYOTA_LIGHTING_CANDIDATES = {
+  "cand367": (0x367, b"\x08\x80"),
+  "cand361": (0x361, bytes.fromhex("001700001600007f")),
+  "cand2d8": (0x2D8, bytes.fromhex("00024000000a0000")),
+}
+TOYOTA_LIGHTING_CANDIDATE_RATE = 10
+
 
 def get_long_tune(CP, params):
   if CP.flags & ToyotaFlags.TSS2:
@@ -167,6 +178,13 @@ class CarController(CarControllerBase, GasInterceptorCarController):
 
     if self.turn_signal_frames:
       can_sends.append(CanData(TOYOTA_TURN_SIGNAL_ADDR, self.turn_signal_frames.pop(0), TOYOTA_TURN_SIGNAL_BUS))
+
+    # Onroad broadcast-candidate test: replay a captured body frame to probe whether the BCM acts on
+    # it. get_turn_signal_command() returns "none" for these, so the 0x7C0 path above stays inactive.
+    lighting_candidate = TOYOTA_LIGHTING_CANDIDATES.get(str(CC_SP.turnSignalCommand))
+    if lighting_candidate is not None and self.frame % TOYOTA_LIGHTING_CANDIDATE_RATE == 0:
+      cand_addr, cand_payload = lighting_candidate
+      can_sends.append(CanData(cand_addr, cand_payload, TOYOTA_TURN_SIGNAL_BUS))
 
     # *** handle secoc reset counter increase ***
     if self.CP.flags & ToyotaFlags.SECOC.value:

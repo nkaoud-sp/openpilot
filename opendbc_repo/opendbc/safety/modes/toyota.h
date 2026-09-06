@@ -5,6 +5,7 @@
 // Stock longitudinal
 #define TOYOTA_BASE_TX_MSGS \
   {0x191, 0, 8, .check_relay = true}, {0x412, 0, 8, .check_relay = true}, {0x1D2, 0, 8, .check_relay = false}, {0x7C0, 0, 8, .check_relay = false}, /* LKAS + LTA + PCM + Turn Signals */  \
+  {0x367, 0, 2, .check_relay = false}, {0x361, 0, 8, .check_relay = false}, {0x2D8, 0, 8, .check_relay = false}, /* lighting broadcast-candidate test */  \
 
 #define TOYOTA_COMMON_TX_MSGS \
   TOYOTA_BASE_TX_MSGS \
