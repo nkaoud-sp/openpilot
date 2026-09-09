@@ -30,10 +30,13 @@ SIGNAL_LABELS = (lambda: tr("Left"), lambda: tr("Right"), lambda: tr("Hazard"))
 PROBE_REQUEST_PARAM = "TurnSignalProbeRequest"
 PROBE_STATUS_PARAM = "TurnSignalProbeStatus"
 PROBE_START_INDEX_PARAM = "TurnSignalProbeStartIndex"
+SWEEP2_START_INDEX_PARAM = "TurnSignalSweep2StartIndex"
 PROBE_ACTIVE_STATES = ("baseline", "running", "active")
 
 # Rough wall-clock per candidate (SEND_DRAIN_S + OBSERVE_S in turn_signal_probe.py), for the ETA.
 PROBE_PER_CANDIDATE_S = 3.5
+# Sweep 2.0 is much faster per candidate (send-settle + response window, no lamp observe window).
+SWEEP2_PER_CANDIDATE_S = 0.55
 
 
 def _toyota_available() -> bool:
@@ -220,6 +223,18 @@ class TurnSignalTestSettingsLayout(Widget):
       enabled=lambda: self._probe_enabled(),
     )
 
+    self._sweep2 = button_item_sp(
+      title=lambda: tr("Sweep 2.0"),
+      button_text=lambda: tr("SWEEP2"),
+      description=lambda: tr("Different search space: UDS service 0x2F with a 16-bit DID on the body ECU " +
+                             "(0x750), the service Techstream uses for the turn test -- but here on 0x750, not " +
+                             "the speed-gated 0x7C0. DISCOVERY ONLY: it asks which DIDs exist (ReturnControlToECU), " +
+                             "actuates nothing, and lists the live ones. The 0x29xx block runs first (~90 s); the " +
+                             "full space is resumable across sessions. Offroad; open the driver door to wake the bus."),
+      callback=self._confirm_sweep2,
+      enabled=lambda: self._probe_enabled(),
+    )
+
     # A button row draws its action on the right, so set_right_value never renders there; carry the
     # live progress in this dedicated row's title instead (titles are resolved and drawn each frame).
     self._probe_progress = ListItemSP(title=lambda: self._probe_progress_text())
@@ -258,6 +273,7 @@ class TurnSignalTestSettingsLayout(Widget):
       self._probe_lattice,
       self._sweep_start,
       self._probe_full,
+      self._sweep2,
       self._probe_progress,
       self._probe_stop,
       self._probe_result,
@@ -340,9 +356,12 @@ class TurnSignalTestSettingsLayout(Widget):
   def _start_probe(self, mode: str):
     self._probe_mode = mode
     request = {"mode": mode, "requestId": time.monotonic_ns()}
+    # Resumable sweeps read their saved index fresh (the daemon may have advanced it past what any
+    # control shows); each sweep keeps its own index param so the two never collide.
     if mode == "full":
-      # Read the saved index fresh (the daemon may have advanced it past what the control shows).
       request["start"] = int(ui_state.params.get(PROBE_START_INDEX_PARAM, return_default=True))
+    elif mode == "sweep2":
+      request["start"] = int(ui_state.params.get(SWEEP2_START_INDEX_PARAM, return_default=True))
     ui_state.params.put(PROBE_REQUEST_PARAM, request)
     # Show immediate feedback until the daemon publishes its first status.
     self._probe_status = {"state": "baseline", "message": tr("Starting..."), "hits": []}
@@ -378,6 +397,24 @@ class TurnSignalTestSettingsLayout(Widget):
   def _confirm_lattice(self):
     self._confirm_blind_probe("structured", tr("Start Lattice"))
 
+  def _confirm_sweep2(self):
+    # Discovery only (ReturnControlToECU) -- it actuates nothing, so no empty-car warning. Just note
+    # that it is long and needs the body bus awake.
+    if not self._probe_enabled():
+      return
+
+    def on_result(result: DialogResult):
+      if result == DialogResult.CONFIRM:
+        self._start_probe("sweep2")
+
+    gui_app.push_widget(ConfirmDialog(
+      tr("Sweep 2.0 scans 0x2F DIDs on the body ECU and lists the ones it recognises. It actuates " +
+         "nothing. Open the driver door so the body bus is awake. The full space is long but resumable " +
+         "- Stop anytime and it continues from where it left off. Start?"),
+      tr("Start Sweep 2.0"),
+      callback=on_result,
+    ))
+
   def _stop_probe(self):
     ui_state.params.remove(PROBE_REQUEST_PARAM)
 
@@ -388,6 +425,10 @@ class TurnSignalTestSettingsLayout(Widget):
     if self._probe_mode == "capture":
       header = tr("Frames that changed (bus addr data):")
       empty = tr("No frames changed. Make sure the bus was awake and you operated the controls.")
+    elif self._probe_mode == "sweep2":
+      header = tr("Live 0x2F DIDs on the body ECU (test these one at a time, parked):")
+      msg = self._probe_status.get("message", "")
+      empty = tr("No DID answered.") + (f"<br><br>{msg}" if msg else "")
     else:
       header = tr("Commands that lit the signals:")
       msg = self._probe_status.get("message", "")
@@ -413,7 +454,8 @@ class TurnSignalTestSettingsLayout(Widget):
       hits = len(self._probe_status.get("hits", []))
       pct = int(idx * 100 / total) if total else 0
       summary = f"{idx}/{total} ({pct}%)"
-      eta = self._format_eta((total - idx) * PROBE_PER_CANDIDATE_S)
+      per_candidate = SWEEP2_PER_CANDIDATE_S if self._probe_mode == "sweep2" else PROBE_PER_CANDIDATE_S
+      eta = self._format_eta((total - idx) * per_candidate)
       if eta:
         summary += f" • {eta} left"
       if hits:
@@ -435,6 +477,9 @@ class TurnSignalTestSettingsLayout(Widget):
     if summary:
       return tr("Probe: {}").format(summary)
     # Idle: surface the saved sweep resume point (read live, so it reflects the daemon's last stop).
+    sweep2_start = int(ui_state.params.get(SWEEP2_START_INDEX_PARAM, return_default=True))
+    if sweep2_start > 0:
+      return tr("Probe: idle (Sweep 2.0 resumes at {})").format(sweep2_start)
     start = int(ui_state.params.get(PROBE_START_INDEX_PARAM, return_default=True))
     if start > 0:
       return tr("Probe: idle (sweep resumes at {}/{})").format(start, self._sweep_total)

@@ -268,6 +268,80 @@ def run_capture(probe: "TurnSignalProbe", report: Callable[[dict], None],
   return lines
 
 
+# --- Sweep 2.0: 0x2F InputOutputControl DID discovery on the body ECU (0x750 / 0x758) -----------
+# pandad clocks at most one offroad frame out every 200 ms, so wait a slot before reading the reply,
+# then watch a short window for the 0x758 response. ~0.55 s/DID; the 0x29xx head block is ~90 s.
+SWEEP2_SEND_SETTLE_S = 0.20
+SWEEP2_RESP_WINDOW_S = 0.35
+SWEEP2_SILENCE_LIMIT = 40  # this many DIDs with no 0x758 at all => ECU isn't answering; say so
+
+
+def _read_sweep2_response(probe: "TurnSignalProbe", window_s: float):
+  """Drain CAN for up to window_s and return the first parsed 0x758 reply, or None."""
+  from openpilot.sunnypilot.turn_signal_sweep2_commands import SWEEP2_RESP_ADDR, parse_2f_response
+  end = time.monotonic() + window_s
+  while time.monotonic() < end:
+    for _bus, addr, dat in probe.drain_frames():
+      if addr == SWEEP2_RESP_ADDR:
+        return parse_2f_response(dat)
+    time.sleep(0.01)
+  return None
+
+
+def run_sweep2(probe: "TurnSignalProbe", candidates: list,
+               report: Callable[[dict], None] | None = None,
+               should_abort: Callable[[], bool] | None = None,
+               start: int = 0, prior_hits: list[str] | None = None) -> list[str]:
+  """Discovery sweep: send each DID's non-actuating 0x2F request, read the 0x758 reply, collect the
+  DIDs the body ECU recognises (positive, or a "real but blocked" NRC). Nothing is actuated here.
+
+  Same resume contract as run_probe (`start`, `prior_hits`), so a long run splits across sessions.
+  """
+  from openpilot.sunnypilot.turn_signal_sweep2_commands import EXTENDED_SESSION_RECORD
+
+  hits: list[str] = list(prior_hits) if prior_hits else []
+  total = len(candidates)
+  start = max(0, min(start, total))
+
+  # Open an extended diagnostic session first (some ECUs gate 0x2F behind it), then drain its reply
+  # so it isn't misread as the first DID's.
+  probe.params.put("OffroadCanQueue", EXTENDED_SESSION_RECORD)
+  _read_sweep2_response(probe, SWEEP2_SEND_SETTLE_S + SWEEP2_RESP_WINDOW_S)
+
+  silence = 0
+  answered = False
+  for i in range(start, total):
+    cand = candidates[i]
+    if should_abort is not None and should_abort():
+      if report is not None:
+        report(make_status(STATE_ABORTED, i, total, hits, "aborted", str(cand)))
+      return hits
+
+    probe.params.put("OffroadCanQueue", cand.record)
+    time.sleep(SWEEP2_SEND_SETTLE_S)
+    resp = _read_sweep2_response(probe, SWEEP2_RESP_WINDOW_S)
+
+    if resp is None:
+      silence += 1
+    else:
+      answered = True
+      silence = 0
+      if resp.interesting:
+        hits.append(f"{cand}  {resp.description}")
+
+    msg = "hit" if (resp is not None and resp.interesting) else ""
+    # If nothing has answered after a while, the addressing/session is wrong or the body bus is
+    # asleep. Surface it once (keep sweeping; opening a door may wake the bus).
+    if not answered and silence == SWEEP2_SILENCE_LIMIT:
+      msg = "no 0x758 reply yet - open the driver door to wake the body bus"
+    if report is not None:
+      report(make_status(STATE_RUNNING, i + 1, total, hits, msg, str(cand)))
+
+  if report is not None:
+    report(make_status(STATE_DONE, total, total, hits, "done"))
+  return hits
+
+
 def _capture_lines(changes: dict[tuple[int, int], set[str]],
                    baseline: dict[tuple[int, int], set[str]]) -> list[str]:
   """Format the diff, brand-new addresses first (the strongest command candidates)."""
