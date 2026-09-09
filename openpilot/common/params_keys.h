@@ -210,7 +210,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"TurnSignalProbeStatus", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, JSON}},
     {"TurnSignalProbeStartIndex", {PERSISTENT | BACKUP, INT, "0"}},
     {"TurnSignalProbeHits", {PERSISTENT, JSON}},
-    {"TurnSignalSweep2StartIndex", {PERSISTENT | BACKUP, INT, "0"}},
+    {"TurnSignalSweep2StartDid", {PERSISTENT | BACKUP, INT, "0"}},
     {"TurnSignalSweep2Hits", {PERSISTENT, JSON}},
     {"TrueVEgoUI", {PERSISTENT | BACKUP, BOOL, "0"}},
 

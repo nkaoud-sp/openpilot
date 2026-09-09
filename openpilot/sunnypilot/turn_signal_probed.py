@@ -42,11 +42,8 @@ REQUEST_PARAM = "TurnSignalProbeRequest"
 STATUS_PARAM = "TurnSignalProbeStatus"
 START_INDEX_PARAM = "TurnSignalProbeStartIndex"
 HITS_PARAM = "TurnSignalProbeHits"
-SWEEP2_START_INDEX_PARAM = "TurnSignalSweep2StartIndex"
+SWEEP2_START_DID_PARAM = "TurnSignalSweep2StartDid"
 SWEEP2_HITS_PARAM = "TurnSignalSweep2Hits"
-
-# Modes that can split a long run across sessions (saved index + carried-over hits).
-RESUMABLE_MODES = ("full", "sweep2")
 
 
 def _read_request(params: Params) -> dict | None:
@@ -66,11 +63,11 @@ def main() -> None:
 
   request_id = request.get("requestId")
   mode = request.get("mode", "shortlist")
-  # Resume support (resumable modes only): start from a saved index and carry hits across sessions.
-  start = int(request.get("start", 0)) if mode in RESUMABLE_MODES else 0
-  # Sweep 2.0 keeps its own index/hits so its 16-bit DID progress never collides with the 0x30 sweep.
-  index_param = SWEEP2_START_INDEX_PARAM if mode == "sweep2" else START_INDEX_PARAM
+  # Resume: the 0x30 "full" sweep resumes by candidate index; sweep2 resumes by DID (own param below).
+  start = int(request.get("start", 0)) if mode == "full" else 0
+  # Both long sweeps carry hits across sessions; sweep2 keeps its own list so it never mixes with 0x30.
   hits_param = SWEEP2_HITS_PARAM if mode == "sweep2" else HITS_PARAM
+  persist_hits = mode in ("full", "sweep2")
 
   # progress tracks the last reported index/state so we can save a resume point on abort.
   progress = {"index": start, "state": None}
@@ -81,7 +78,7 @@ def main() -> None:
     progress["state"] = status.get("state")
     params.put(STATUS_PARAM, status)  # JSON param: put serializes the dict
     # Persist accumulated hits so a resumed session keeps earlier finds.
-    if mode in RESUMABLE_MODES and status.get("message") in ("hit", "done", "aborted"):
+    if persist_hits and status.get("message") in ("hit", "done", "aborted"):
       params.put(hits_param, status.get("hits", []))
 
   def request_gone() -> bool:
@@ -116,23 +113,28 @@ def main() -> None:
     return
 
   # Sweep 2.0 is response-based (reads 0x758), so it needs no BLINKERS_STATE baseline and does not
-  # actuate anything -- it just reports which 0x2F DIDs the body ECU recognises.
+  # actuate anything -- it just reports which 0x2F DIDs the body ECU recognises. It resumes by DID:
+  # sweep linearly from the requested start DID up to 0xFFFF, then save the next DID to resume at.
   if mode == "sweep2":
-    candidates = list(discover_sweep())
+    start_did = int(request.get("startDid", 0)) & 0xFFFF
+    candidates = list(discover_sweep(start_did))
     total = len(candidates)
-    start = max(0, min(start, total))
+    # Carry earlier hits only when resuming partway in; a run from 0x0000 starts the list fresh.
     prior_hits: list[str] = []
-    if start > 0:
+    if start_did > 0:
       existing = params.get(hits_param)
       if isinstance(existing, list):
         prior_hits = existing
     else:
       params.remove(hits_param)
-    cloudlog.warning(f"turn_signal_probed: sweep2 candidates={total} start={start} prior_hits={len(prior_hits)}")
-    run_sweep2(probe, candidates, report=publish, start=start, prior_hits=prior_hits,
+    cloudlog.warning(f"turn_signal_probed: sweep2 start_did=0x{start_did:04X} candidates={total} prior_hits={len(prior_hits)}")
+    run_sweep2(probe, candidates, report=publish, prior_hits=prior_hits,
                should_abort=lambda: request_gone() or not probe._offroad)
-    params.put(index_param, 0 if progress["state"] == STATE_DONE else progress["index"])
-    cloudlog.warning("turn_signal_probed: sweep2 done")
+    # progress["index"] counts DIDs processed this run. Resume at the next unscanned DID, or reset to
+    # 0 on a clean finish so the next run starts over.
+    next_did = 0 if progress["state"] == STATE_DONE else min(start_did + progress["index"], 0xFFFF)
+    params.put(SWEEP2_START_DID_PARAM, next_did)
+    cloudlog.warning(f"turn_signal_probed: sweep2 done, resume DID=0x{next_did:04X}")
     clear_request()
     return
 
@@ -169,7 +171,7 @@ def main() -> None:
 
   # Save the resume point: on a clean finish reset to 0, otherwise remember where we stopped.
   if mode == "full":
-    params.put(index_param, 0 if progress["state"] == STATE_DONE else progress["index"])
+    params.put(START_INDEX_PARAM, 0 if progress["state"] == STATE_DONE else progress["index"])
 
   cloudlog.warning("turn_signal_probed: done")
   clear_request()

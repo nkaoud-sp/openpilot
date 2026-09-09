@@ -291,17 +291,17 @@ def _read_sweep2_response(probe: "TurnSignalProbe", window_s: float):
 def run_sweep2(probe: "TurnSignalProbe", candidates: list,
                report: Callable[[dict], None] | None = None,
                should_abort: Callable[[], bool] | None = None,
-               start: int = 0, prior_hits: list[str] | None = None) -> list[str]:
+               prior_hits: list[str] | None = None) -> list[str]:
   """Discovery sweep: send each DID's non-actuating 0x2F request, read the 0x758 reply, collect the
   DIDs the body ECU recognises (positive, or a "real but blocked" NRC). Nothing is actuated here.
 
-  Same resume contract as run_probe (`start`, `prior_hits`), so a long run splits across sessions.
+  `candidates` already begins at the chosen resume DID, so this walks the whole list; `prior_hits`
+  seeds finds carried over from an earlier session.
   """
   from openpilot.sunnypilot.turn_signal_sweep2_commands import EXTENDED_SESSION_RECORD
 
   hits: list[str] = list(prior_hits) if prior_hits else []
   total = len(candidates)
-  start = max(0, min(start, total))
 
   # Open an extended diagnostic session first (some ECUs gate 0x2F behind it), then drain its reply
   # so it isn't misread as the first DID's.
@@ -310,7 +310,7 @@ def run_sweep2(probe: "TurnSignalProbe", candidates: list,
 
   silence = 0
   answered = False
-  for i in range(start, total):
+  for i in range(total):
     cand = candidates[i]
     if should_abort is not None and should_abort():
       if report is not None:

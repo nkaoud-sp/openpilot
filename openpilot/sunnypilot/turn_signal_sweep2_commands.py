@@ -48,8 +48,11 @@ CONTROL_RETURN_TO_ECU = 0x00      # non-actuating: used for the whole blind disc
 CONTROL_SHORT_TERM_ADJUST = 0x03  # actuating: only ever for one explicit DID, parked
 
 # The turn-signal DID Techstream used on 0x7C0. We don't expect the same number on 0x750, but the
-# body ECU's IO-control DIDs plausibly cluster near it, so the sweep tries the 0x29xx block first.
+# body ECU's IO-control DIDs plausibly cluster near it, so it is a good manual start point (the UI
+# suggests it) for a first session.
 KNOWN_7C0_TURN_DID = 0x2911
+
+MAX_DID = 0xFFFF
 
 NRC_NAMES = {
   0x10: "generalReject",
@@ -131,20 +134,19 @@ def release_candidate(did: int, sub_addr: int = BODY_ECU_SUB_ADDR) -> Did2FCandi
   return Did2FCandidate(did, control=CONTROL_RETURN_TO_ECU, sub_addr=sub_addr)
 
 
-def did_sweep_order() -> list[int]:
-  """Every 16-bit DID, with the 0x29xx block (around the known 0x7C0 turn DID) front-loaded.
+def did_sweep_from(start_did: int = 0) -> list[int]:
+  """DIDs from start_did up to 0xFFFF, in order.
 
-  The neighbourhood of the working 0x7C0 DID is the best guess for the body ECU's lighting IO
-  controls, so it is tested in the first ~90 s; the rest of the space follows for an exhaustive run.
+  Linear (not reordered) so a run has a single, human-meaningful position: the DID it is on. That is
+  what makes the start point selectable and resumable -- pick a DID, sweep upward from there.
   """
-  head_block = range(KNOWN_7C0_TURN_DID & 0xFF00, (KNOWN_7C0_TURN_DID & 0xFF00) + 0x100)
-  head = set(head_block)
-  return list(head_block) + [d for d in range(0x10000) if d not in head]
+  start_did = max(0, min(start_did, MAX_DID))
+  return list(range(start_did, MAX_DID + 1))
 
 
-def discover_sweep(sub_addr: int = BODY_ECU_SUB_ADDR) -> Iterator[Did2FCandidate]:
-  """The blind discovery sweep: non-actuating ReturnControlToECU across the whole DID space."""
-  for did in did_sweep_order():
+def discover_sweep(start_did: int = 0, sub_addr: int = BODY_ECU_SUB_ADDR) -> Iterator[Did2FCandidate]:
+  """The blind discovery sweep: non-actuating ReturnControlToECU from start_did up to 0xFFFF."""
+  for did in did_sweep_from(start_did):
     yield discover_candidate(did, sub_addr=sub_addr)
 
 

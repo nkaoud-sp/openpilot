@@ -1,8 +1,9 @@
 from openpilot.sunnypilot.turn_signal_sweep2_commands import (
-  KNOWN_7C0_TURN_DID,
+  MAX_DID,
   active_candidate,
-  did_sweep_order,
+  did_sweep_from,
   discover_candidate,
+  discover_sweep,
   parse_2f_response,
 )
 
@@ -26,13 +27,26 @@ def test_active_frame_carries_short_term_adjust_and_state():
   assert cand.state == 0x01
 
 
-def test_sweep_order_front_loads_the_known_did_block():
-  order = did_sweep_order()
+def test_sweep_from_zero_covers_whole_space_linearly():
+  order = did_sweep_from(0)
   assert len(order) == 0x10000
-  assert len(set(order)) == 0x10000  # every DID exactly once
-  block_start = KNOWN_7C0_TURN_DID & 0xFF00
-  assert order[:0x100] == list(range(block_start, block_start + 0x100))
-  assert KNOWN_7C0_TURN_DID in order[:0x100]
+  assert order[0] == 0x0000 and order[-1] == MAX_DID
+  assert order == list(range(0x10000))  # linear, so position == DID
+
+
+def test_sweep_from_a_did_starts_there_and_runs_to_the_end():
+  order = did_sweep_from(0x2900)
+  assert order[0] == 0x2900
+  assert order[-1] == MAX_DID
+  assert len(order) == MAX_DID - 0x2900 + 1
+  # the candidate stream begins at the selected DID, so a run resumes exactly where asked
+  first = next(iter(discover_sweep(0x2900)))
+  assert first.did == 0x2900
+
+
+def test_sweep_start_did_is_clamped():
+  assert did_sweep_from(-5)[0] == 0x0000
+  assert did_sweep_from(0x20000) == [MAX_DID]
 
 
 def test_parse_positive_response_with_sub_address():

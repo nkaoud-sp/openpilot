@@ -30,7 +30,8 @@ SIGNAL_LABELS = (lambda: tr("Left"), lambda: tr("Right"), lambda: tr("Hazard"))
 PROBE_REQUEST_PARAM = "TurnSignalProbeRequest"
 PROBE_STATUS_PARAM = "TurnSignalProbeStatus"
 PROBE_START_INDEX_PARAM = "TurnSignalProbeStartIndex"
-SWEEP2_START_INDEX_PARAM = "TurnSignalSweep2StartIndex"
+SWEEP2_START_DID_PARAM = "TurnSignalSweep2StartDid"
+SWEEP2_MAX_DID = 0xFFFF
 PROBE_ACTIVE_STATES = ("baseline", "running", "active")
 
 # Rough wall-clock per candidate (SEND_DRAIN_S + OBSERVE_S in turn_signal_probe.py), for the ETA.
@@ -223,14 +224,30 @@ class TurnSignalTestSettingsLayout(Widget):
       enabled=lambda: self._probe_enabled(),
     )
 
+    # Selectable start point for the long DID sweep: the sweep runs linearly from this DID up to
+    # 0xFFFF, so a run can be split across sessions. It auto-advances to the next unscanned DID when
+    # you Stop (and resets to 0 on a clean finish); set it by hand to resume elsewhere or skip ahead.
+    self._sweep2_start = option_item_sp(
+      title=lambda: tr("Sweep 2.0 Start DID"),
+      description=lambda: tr("Where Sweep 2.0 begins, as a 16-bit DID. Tip: 0x2900 is the block near the DID " +
+                             "Techstream uses on 0x7C0, a good first guess. Auto-advances after a Stop; 0x0000 " +
+                             "sweeps the whole space."),
+      param=SWEEP2_START_DID_PARAM,
+      min_value=0,
+      max_value=SWEEP2_MAX_DID,
+      value_change_step=0x100,
+      label_callback=lambda value: f"0x{value:04X}",
+      inline=True,
+    )
+
     self._sweep2 = button_item_sp(
       title=lambda: tr("Sweep 2.0"),
       button_text=lambda: tr("SWEEP2"),
       description=lambda: tr("Different search space: UDS service 0x2F with a 16-bit DID on the body ECU " +
                              "(0x750), the service Techstream uses for the turn test -- but here on 0x750, not " +
                              "the speed-gated 0x7C0. DISCOVERY ONLY: it asks which DIDs exist (ReturnControlToECU), " +
-                             "actuates nothing, and lists the live ones. The 0x29xx block runs first (~90 s); the " +
-                             "full space is resumable across sessions. Offroad; open the driver door to wake the bus."),
+                             "actuates nothing, and lists the live ones. Starts at the DID above and runs to 0xFFFF; " +
+                             "resumable across sessions. Offroad; open the driver door to wake the bus."),
       callback=self._confirm_sweep2,
       enabled=lambda: self._probe_enabled(),
     )
@@ -273,6 +290,7 @@ class TurnSignalTestSettingsLayout(Widget):
       self._probe_lattice,
       self._sweep_start,
       self._probe_full,
+      self._sweep2_start,
       self._sweep2,
       self._probe_progress,
       self._probe_stop,
@@ -361,7 +379,7 @@ class TurnSignalTestSettingsLayout(Widget):
     if mode == "full":
       request["start"] = int(ui_state.params.get(PROBE_START_INDEX_PARAM, return_default=True))
     elif mode == "sweep2":
-      request["start"] = int(ui_state.params.get(SWEEP2_START_INDEX_PARAM, return_default=True))
+      request["startDid"] = int(ui_state.params.get(SWEEP2_START_DID_PARAM, return_default=True))
     ui_state.params.put(PROBE_REQUEST_PARAM, request)
     # Show immediate feedback until the daemon publishes its first status.
     self._probe_status = {"state": "baseline", "message": tr("Starting..."), "hits": []}
@@ -477,9 +495,9 @@ class TurnSignalTestSettingsLayout(Widget):
     if summary:
       return tr("Probe: {}").format(summary)
     # Idle: surface the saved sweep resume point (read live, so it reflects the daemon's last stop).
-    sweep2_start = int(ui_state.params.get(SWEEP2_START_INDEX_PARAM, return_default=True))
-    if sweep2_start > 0:
-      return tr("Probe: idle (Sweep 2.0 resumes at {})").format(sweep2_start)
+    sweep2_did = int(ui_state.params.get(SWEEP2_START_DID_PARAM, return_default=True))
+    if sweep2_did > 0:
+      return tr("Probe: idle (Sweep 2.0 resumes at DID 0x{:04X})").format(sweep2_did)
     start = int(ui_state.params.get(PROBE_START_INDEX_PARAM, return_default=True))
     if start > 0:
       return tr("Probe: idle (sweep resumes at {}/{})").format(start, self._sweep_total)
