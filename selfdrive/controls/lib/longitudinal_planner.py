@@ -610,7 +610,7 @@ class LongitudinalPlanner:
     self.params = Params()
     self.param_read_frame = 0
     self.launch_assist = False
-    self.launch_eagerness = 10
+    self.launch_eagerness = 7
     self.launch_assist_active = False
     self.launch_state = LAUNCH_READY
     self.park_assist = False
@@ -687,9 +687,9 @@ class LongitudinalPlanner:
   def read_tweaks_params(self):
     if self.param_read_frame % max(1, int(1. / self.dt)) == 0:
       self.launch_assist = self.params.get_bool("LaunchAssist")
-      self.launch_eagerness = self.params.get_int("LaunchEagerness", default=10)
+      self.launch_eagerness = self.params.get_int("LaunchEagerness", default=7)
       self.park_assist = self.params.get_bool("ParkAssist")
-      self.park_distance = self.params.get_int("ParkDistance", default=int(STOP_DISTANCE * 100)) / 100.0
+      self.park_distance = self.params.get_int("ParkDistance", default=270) / 100.0
     self.param_read_frame += 1
 
   def launch_assist_ready(self, sm) -> bool:
