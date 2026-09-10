@@ -38,13 +38,32 @@ class StarPilotTweaksLayout(_SettingsPage):
                  get_value=lambda: f"{self._params.get_int('ParkDistance') / 100:.2f} m",
                  on_click=lambda: self._show_slider("ParkDistance", 100, 300, step=10, unit=" cm", title="Halt Gap"),
                  visible=lambda: self._params.get_bool("ParkAssist")),
+      SettingRow("AutoLockEnabled", "toggle", tr_noop("Auto Lock On Exit"),
+                 subtitle=tr_noop("Secure the car after you leave. Toyota and Lexus only."),
+                 get_state=lambda: self._params.get_bool("AutoLockEnabled"),
+                 set_state=lambda s: self._params.put_bool("AutoLockEnabled", s)),
+      SettingRow("LockDoorsTimer", "value", tr_noop("Lock Delay"),
+                 subtitle=tr_noop("Seconds to wait after the driver leaves before locking."),
+                 get_value=lambda: f"{self._params.get_int('LockDoorsTimer')} s",
+                 on_click=lambda: self._show_slider("LockDoorsTimer", 2, 180, step=1, unit=" s", title="Lock Delay"),
+                 visible=lambda: self._params.get_bool("AutoLockEnabled")),
+      SettingRow("FoldMirrors", "toggle", tr_noop("Fold Mirrors"),
+                 subtitle=tr_noop("Fold mirrors when auto lock secures the car."),
+                 get_state=lambda: self._params.get_bool("FoldMirrors"),
+                 set_state=lambda s: self._params.put_bool("FoldMirrors", s),
+                 visible=lambda: self._params.get_bool("AutoLockEnabled")),
+      SettingRow("CloseWindows", "toggle", tr_noop("Close Windows"),
+                 subtitle=tr_noop("Close windows when auto lock secures the car."),
+                 get_state=lambda: self._params.get_bool("CloseWindows"),
+                 set_state=lambda s: self._params.put_bool("CloseWindows", s),
+                 visible=lambda: self._params.get_bool("AutoLockEnabled")),
     ]
 
     self._manager_view = AetherSettingsView(
       self,
       [SettingSection(title="", rows=self._rows)],
       header_title=tr_noop("Tweaks"),
-      header_subtitle=tr_noop("Small behavior changes for launches, low-speed halts, and drive-mode persistence."),
+      header_subtitle=tr_noop("Small behavior changes for launches, low-speed halts, drive-mode persistence, and exit locking."),
       panel_style=DEFAULT_PANEL_STYLE,
     )
 

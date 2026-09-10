@@ -137,6 +137,10 @@ def wheel_controls_enabled(started: bool, params: Params, CP: car.CarParams, sta
   return params.get_bool("WheelControlsEnabled")
 
 
+def auto_lock_enabled(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
+  return not started and params.get_bool("AutoLockEnabled") and CP.brand == "toyota"
+
+
 def run_v_asm(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
   return started and getattr(starpilot_toggles, "v_asm_enabled", False)
 
@@ -211,6 +215,7 @@ procs = [
 procs += [
   PythonProcess("bluetooth_managerd", "starpilot.system.bluetooth.daemon", bluetooth_enabled, enabled=TICI),
   PythonProcess("wheel_controlsd", "starpilot.system.wheel_controls.wheel_controlsd", wheel_controls_enabled, enabled=TICI, nice=19),
+  PythonProcess("doorlockd", "starpilot.system.doorlockd.doorlockd", auto_lock_enabled, enabled=not PC),
   PythonProcess("the_galaxy", "starpilot.system.the_galaxy.the_galaxy", always_run, nice=10),
   PythonProcess("galaxy", "starpilot.system.galaxy.galaxy", always_run, nice=10),
 ]

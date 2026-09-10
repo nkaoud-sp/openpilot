@@ -41,6 +41,10 @@
     "text": "Chestnut USB link is slow. Check the USB cable. The current speed is %1.",
     "severity": 0
   },
+  "Offroad_DoorlockStatus": {
+    "text": "%1",
+    "severity": 0
+  },
   "Offroad_IsTakingSnapshot": {
     "text": "Taking camera snapshots. System won't start until finished.",
     "severity": 0
