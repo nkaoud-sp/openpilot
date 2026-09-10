@@ -128,8 +128,15 @@ def main() -> None:
     else:
       params.remove(hits_param)
     cloudlog.warning(f"turn_signal_probed: sweep2 start_did=0x{start_did:04X} candidates={total} prior_hits={len(prior_hits)}")
+
+    # Persist the resume DID periodically during the run so a hard power-off (offroad shutdown timer)
+    # resumes near where it stopped rather than redoing the session.
+    def save_resume_did(done: int) -> None:
+      params.put(SWEEP2_START_DID_PARAM, min(start_did + done, 0xFFFF))
+
     run_sweep2(probe, candidates, report=publish, prior_hits=prior_hits,
-               should_abort=lambda: request_gone() or not probe._offroad)
+               should_abort=lambda: request_gone() or not probe._offroad,
+               checkpoint=save_resume_did)
     # progress["index"] counts DIDs processed this run. Resume at the next unscanned DID, or reset to
     # 0 on a clean finish so the next run starts over.
     next_did = 0 if progress["state"] == STATE_DONE else min(start_did + progress["index"], 0xFFFF)

@@ -246,8 +246,10 @@ class TurnSignalTestSettingsLayout(Widget):
       description=lambda: tr("Different search space: UDS service 0x2F with a 16-bit DID on the body ECU " +
                              "(0x750), the service Techstream uses for the turn test -- but here on 0x750, not " +
                              "the speed-gated 0x7C0. DISCOVERY ONLY: it asks which DIDs exist (ReturnControlToECU), " +
-                             "actuates nothing, and lists the live ones. Starts at the DID above and runs to 0xFFFF; " +
-                             "resumable across sessions. Offroad; open the driver door to wake the bus."),
+                             "actuates nothing, and logs the live ones. No need to watch -- it reads the ECU's " +
+                             "replies, not the lamps. Starts at the DID above, runs to 0xFFFF, and can be left " +
+                             "unattended: it saves progress as it goes and auto-pauses if the body bus falls asleep " +
+                             "(reopen the door and press SWEEP2 to resume). Offroad only."),
       callback=self._confirm_sweep2,
       enabled=lambda: self._probe_enabled(),
     )

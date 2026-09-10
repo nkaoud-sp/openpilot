@@ -274,6 +274,13 @@ def run_capture(probe: "TurnSignalProbe", report: Callable[[dict], None],
 SWEEP2_SEND_SETTLE_S = 0.20
 SWEEP2_RESP_WINDOW_S = 0.35
 SWEEP2_SILENCE_LIMIT = 40  # this many DIDs with no 0x758 at all => ECU isn't answering; say so
+# Give up after this many consecutive no-reply DIDs: the body bus has gone to sleep (or was never
+# answering). Stops an unattended run from grinding through -- and skipping -- the rest of the space.
+# ~110 s of silence at 0.55 s/DID, so brief hiccups don't trip it.
+SWEEP2_SLEEP_ABORT = 200
+# Save the resume DID this often during a run, so a hard power-off (offroad shutdown timer) resumes
+# near where it stopped instead of redoing the whole session.
+SWEEP2_CHECKPOINT_EVERY = 200
 
 
 def _read_sweep2_response(probe: "TurnSignalProbe", window_s: float):
@@ -291,12 +298,16 @@ def _read_sweep2_response(probe: "TurnSignalProbe", window_s: float):
 def run_sweep2(probe: "TurnSignalProbe", candidates: list,
                report: Callable[[dict], None] | None = None,
                should_abort: Callable[[], bool] | None = None,
-               prior_hits: list[str] | None = None) -> list[str]:
+               prior_hits: list[str] | None = None,
+               checkpoint: Callable[[int], None] | None = None) -> list[str]:
   """Discovery sweep: send each DID's non-actuating 0x2F request, read the 0x758 reply, collect the
   DIDs the body ECU recognises (positive, or a "real but blocked" NRC). Nothing is actuated here.
 
-  `candidates` already begins at the chosen resume DID, so this walks the whole list; `prior_hits`
-  seeds finds carried over from an earlier session.
+  Built to run unattended: if the body bus stops answering (goes to sleep), it stops cleanly rather
+  than grinding through and skipping the rest, and reports the resume point at the first silent DID.
+  `candidates` already begins at the chosen resume DID; `prior_hits` seeds finds from an earlier
+  session; `checkpoint(done)` is called periodically with the DID count completed so the caller can
+  persist a resume point that survives a hard power-off.
   """
   from openpilot.sunnypilot.turn_signal_sweep2_commands import EXTENDED_SESSION_RECORD
 
@@ -329,13 +340,25 @@ def run_sweep2(probe: "TurnSignalProbe", candidates: list,
       if resp.interesting:
         hits.append(f"{cand}  {resp.description}")
 
+    # Bus stopped answering (asleep) or never answered (wrong addressing / bus down): stop cleanly and
+    # resume at the FIRST silent DID, so the silent run isn't counted as scanned and skipped.
+    if silence >= SWEEP2_SLEEP_ABORT:
+      first_silent = max(i + 1 - silence, 0)
+      if report is not None:
+        report(make_status(STATE_ABORTED, first_silent, total, hits,
+                           "no 0x758 replies - paused (bus asleep?); open the driver door and resume", str(cand)))
+      return hits
+
     msg = "hit" if (resp is not None and resp.interesting) else ""
-    # If nothing has answered after a while, the addressing/session is wrong or the body bus is
-    # asleep. Surface it once (keep sweeping; opening a door may wake the bus).
+    # If nothing has answered yet, the addressing/session is wrong or the body bus is asleep. Surface
+    # it early (keep going a while; opening a door may wake the bus, else the sleep-abort above trips).
     if not answered and silence == SWEEP2_SILENCE_LIMIT:
       msg = "no 0x758 reply yet - open the driver door to wake the body bus"
     if report is not None:
       report(make_status(STATE_RUNNING, i + 1, total, hits, msg, str(cand)))
+
+    if checkpoint is not None and (i + 1) % SWEEP2_CHECKPOINT_EVERY == 0:
+      checkpoint(i + 1)
 
   if report is not None:
     report(make_status(STATE_DONE, total, total, hits, "done"))
