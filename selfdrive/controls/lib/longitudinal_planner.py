@@ -6,6 +6,7 @@ import cereal.messaging as messaging
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from openpilot.common.constants import CV
 from openpilot.common.filter_simple import FirstOrderFilter
+from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.starpilot.common.model_versions import is_tinygrad_model_version
@@ -14,7 +15,7 @@ from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, get_safe_obstacle_distance
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import desired_follow_distance
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import should_trigger_planner_fcw
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import STOP_DISTANCE
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import PARK_MODE_ALL_LOW_SPEED, STOP_DISTANCE
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.lead_behavior import is_radarless_matched_follow_window
 from openpilot.selfdrive.controls.lib.lead_follow_policy import apply as apply_follow_policy
@@ -87,6 +88,11 @@ ALLOW_THROTTLE_ENABLE_THRESHOLD = ALLOW_THROTTLE_THRESHOLD + ALLOW_THROTTLE_HYST
 ALLOW_THROTTLE_DISABLE_THRESHOLD = ALLOW_THROTTLE_THRESHOLD - ALLOW_THROTTLE_HYSTERESIS
 ALLOW_THROTTLE_TRANSITION_CONFIRM_TIME = 0.25
 MIN_ALLOW_THROTTLE_SPEED = 5.0
+LAUNCH_MAX_EGO_SPEED = 0.5
+LAUNCH_MIN_DREL = 2.0
+LAUNCH_VLEAD_BP = [1, 10]
+LAUNCH_VLEAD_V = [1.5, 0.2]
+LAUNCH_READY, LAUNCH_LAUNCHING, LAUNCH_DONE = 0, 1, 2
 FORCE_DECEL_MIN_ACCEL = -0.05
 MODEL_LAUNCH_DISARM_SPEED = 2.0
 MODEL_LAUNCH_COMMIT_TIME = 3.5
@@ -601,6 +607,14 @@ class LongitudinalPlanner:
     self.v_model_error = 0.0
     self.output_a_target = 0.0
     self.output_should_stop = False
+    self.params = Params()
+    self.param_read_frame = 0
+    self.launch_assist = False
+    self.launch_eagerness = 10
+    self.launch_assist_active = False
+    self.launch_state = LAUNCH_READY
+    self.park_assist = False
+    self.park_distance = STOP_DISTANCE
     self.far_follow_brake_slew_rate, self.far_follow_release_slew_rate = get_far_follow_output_slew_rates(CP)
     self.untracked_slow_lead_decel_scale = get_untracked_slow_lead_decel_scale(CP)
     self.tracked_lead_catchup_headway_margins = get_tracked_lead_catchup_headway_margins(CP)
@@ -669,6 +683,45 @@ class LongitudinalPlanner:
   @property
   def mlsim(self):
     return is_tinygrad_model_version(self.generation)
+
+  def read_tweaks_params(self):
+    if self.param_read_frame % max(1, int(1. / self.dt)) == 0:
+      self.launch_assist = self.params.get_bool("LaunchAssist")
+      self.launch_eagerness = self.params.get_int("LaunchEagerness", default=10)
+      self.park_assist = self.params.get_bool("ParkAssist")
+      self.park_distance = self.params.get_int("ParkDistance", default=int(STOP_DISTANCE * 100)) / 100.0
+    self.param_read_frame += 1
+
+  def launch_assist_ready(self, sm) -> bool:
+    if not self.launch_assist:
+      self.launch_state = LAUNCH_READY
+      return False
+
+    CS = sm['carState']
+    lead = sm['radarState'].leadOne
+    stopped = float(CS.vEgo) <= LAUNCH_MAX_EGO_SPEED
+    v_thresh = float(np.interp(self.launch_eagerness, LAUNCH_VLEAD_BP, LAUNCH_VLEAD_V))
+    lead_departing = lead.status and float(lead.vLead) >= v_thresh
+
+    if self.launch_state == LAUNCH_DONE and stopped and not lead_departing:
+      self.launch_state = LAUNCH_READY
+
+    can_fire = (
+      self.launch_state in (LAUNCH_READY, LAUNCH_LAUNCHING) and
+      lead.status and stopped and
+      not bool(getattr(CS, "brakePressed", False)) and
+      not bool(getattr(CS, "gasPressed", False)) and
+      float(lead.dRel) >= LAUNCH_MIN_DREL and lead_departing
+    )
+
+    if can_fire:
+      self.launch_state = LAUNCH_LAUNCHING
+      return True
+
+    if self.launch_state == LAUNCH_LAUNCHING:
+      self.launch_state = LAUNCH_DONE if not stopped else LAUNCH_READY
+
+    return False
 
   def get_mpc_mode(self) -> str:
     if not self.mlsim:
@@ -2340,6 +2393,7 @@ class LongitudinalPlanner:
     dec_mpc_mode = self.get_mpc_mode()
     if not self.mlsim:
       self.mpc.mode = dec_mpc_mode
+    self.read_tweaks_params()
     # Hand the forced stop to the solver as a position. The obstacle sits STOP_DISTANCE
     # beyond the line because the safe-distance term already includes it — placing it on
     # the line parks us short. Below that the existing v_cruise=0 path finishes the stop,
@@ -2391,7 +2445,9 @@ class LongitudinalPlanner:
                     tracked_lead_catchup_bias_cap=self.tracked_lead_catchup_bias_cap,
                     tracked_lead_catchup_speed_range=self.tracked_lead_catchup_speed_range,
                     tracked_lead_catchup_fade_margins=self.tracked_lead_catchup_fade_margins,
-                    tracked_lead_catchup_cruise_error_full=self.tracked_lead_catchup_cruise_error_full)
+                    tracked_lead_catchup_cruise_error_full=self.tracked_lead_catchup_cruise_error_full,
+                    park_assist=self.park_assist, park_distance=self.park_distance,
+                    park_mode=PARK_MODE_ALL_LOW_SPEED)
 
     self.a_desired_trajectory_full = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.a_solution)
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
@@ -2484,6 +2540,11 @@ class LongitudinalPlanner:
       output_a_target, output_should_stop = get_accel_from_plan(
         self.v_desired_trajectory, self.a_desired_trajectory,
         action_t=action_t, vEgoStopping=starpilot_toggles.vEgoStopping)
+
+    self.launch_assist_active = self.launch_assist_ready(sm)
+    if self.launch_assist_active or (self.mpc.park_assist_active and scene_v_ego <= LAUNCH_MAX_EGO_SPEED):
+      output_a_target = output_a_target_mpc if tinygrad_model else output_a_target
+      output_should_stop = output_should_stop_mpc if tinygrad_model else output_should_stop
 
     comfort_output_accel_min = get_vehicle_min_accel(self.CP, v_ego) if experimental_mlsim else accel_limits_turns[0]
     vision_cap_accel_min = min(comfort_output_accel_min, get_vehicle_min_accel(self.CP, v_ego))
