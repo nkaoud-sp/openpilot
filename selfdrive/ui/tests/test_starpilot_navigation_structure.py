@@ -54,16 +54,17 @@ from openpilot.selfdrive.ui.layouts.settings.starpilot.panel import StarPilotPan
 from openpilot.selfdrive.ui.layouts.settings.starpilot.aethergrid import BreadcrumbController, gui_app
 
 
-def test_root_hub_contains_the_six_categories_in_order():
+def test_root_hub_contains_the_categories_in_order():
   assert [item["title"] for item in StarPilotLayout.CATEGORIES] == [
     "Sounds & Alerts",
     "Driving Model",
     "Driving Controls",
+    "Tweaks",
     "System",
     "Appearance",
     "Vehicle Settings",
   ]
-  assert len(StarPilotLayout.CATEGORIES) == 6
+  assert len(StarPilotLayout.CATEGORIES) == 7
   assert all(item["title"] != "Navigation & Maps" for item in StarPilotLayout.CATEGORIES)
 
 
@@ -75,7 +76,6 @@ def test_driving_controls_contains_nested_navigation_folder_and_leaf_routes():
     "Navigation & Maps",
     "Gas / Brake",
     "Steering",
-    "Tweaks",
   ]
 
   navigation_maps = controls["children"][0]
@@ -87,7 +87,6 @@ def test_driving_controls_contains_nested_navigation_folder_and_leaf_routes():
 
   assert controls["children"][1]["panel"] == "LONGITUDINAL"
   assert controls["children"][2]["panel"] == "LATERAL"
-  assert controls["children"][3]["panel"] == "TWEAKS"
 
 
 def test_driving_model_is_a_root_leaf_and_existing_panel_routes_are_preserved():
@@ -173,7 +172,7 @@ def _click_title(layout, title):
 
 def test_nested_hub_navigation_back_and_depth_values(monkeypatch):
   layout, depths = _make_layout(monkeypatch)
-  assert len(layout._main_grid.tiles) == 6
+  assert len(layout._main_grid.tiles) == 7
   assert depths == []
 
   _click_title(layout, "Driving Controls")

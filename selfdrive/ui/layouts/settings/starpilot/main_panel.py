@@ -46,8 +46,12 @@ class StarPilotLayout(Widget):
         },
         {"title": "Gas / Brake", "panel": "LONGITUDINAL", "icon": "road"},
         {"title": "Steering", "panel": "LATERAL", "icon": "steering"},
-        {"title": "Tweaks", "panel": "TWEAKS", "icon": "system"},
       ],
+    },
+    {
+      "title": "Tweaks",
+      "icon": "system",
+      "panel": "TWEAKS",
     },
     {
       "title": "System",
