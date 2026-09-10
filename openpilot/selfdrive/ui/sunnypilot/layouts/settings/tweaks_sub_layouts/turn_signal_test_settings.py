@@ -229,14 +229,14 @@ class TurnSignalTestSettingsLayout(Widget):
     # you Stop (and resets to 0 on a clean finish); set it by hand to resume elsewhere or skip ahead.
     self._sweep2_start = option_item_sp(
       title=lambda: tr("Sweep 2.0 Start DID"),
-      description=lambda: tr("Where Sweep 2.0 begins, as a 16-bit DID. Tip: 0x2900 is the block near the DID " +
-                             "Techstream uses on 0x7C0, a good first guess. Auto-advances after a Stop; 0x0000 " +
-                             "sweeps the whole space."),
+      description=lambda: tr("Where Sweep 2.0 begins, as a decimal DID (hex shown alongside). Tip: 10496 (0x2900) " +
+                             "is near the DID Techstream uses on 0x7C0, a good first guess. Auto-advances after a " +
+                             "Stop; 0 sweeps the whole space."),
       param=SWEEP2_START_DID_PARAM,
       min_value=0,
       max_value=SWEEP2_MAX_DID,
-      value_change_step=0x100,
-      label_callback=lambda value: f"0x{value:04X}",
+      value_change_step=250,
+      label_callback=lambda value: f"{value} (0x{value:04X})",
       inline=True,
     )
 
@@ -497,7 +497,7 @@ class TurnSignalTestSettingsLayout(Widget):
     # Idle: surface the saved sweep resume point (read live, so it reflects the daemon's last stop).
     sweep2_did = int(ui_state.params.get(SWEEP2_START_DID_PARAM, return_default=True))
     if sweep2_did > 0:
-      return tr("Probe: idle (Sweep 2.0 resumes at DID 0x{:04X})").format(sweep2_did)
+      return tr("Probe: idle (Sweep 2.0 resumes at DID {} / 0x{:04X})").format(sweep2_did, sweep2_did)
     start = int(ui_state.params.get(PROBE_START_INDEX_PARAM, return_default=True))
     if start > 0:
       return tr("Probe: idle (sweep resumes at {}/{})").format(start, self._sweep_total)
