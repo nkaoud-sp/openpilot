@@ -2391,7 +2391,10 @@ class LongitudinalPlanner:
                     tracked_lead_catchup_bias_cap=self.tracked_lead_catchup_bias_cap,
                     tracked_lead_catchup_speed_range=self.tracked_lead_catchup_speed_range,
                     tracked_lead_catchup_fade_margins=self.tracked_lead_catchup_fade_margins,
-                    tracked_lead_catchup_cruise_error_full=self.tracked_lead_catchup_cruise_error_full)
+                    tracked_lead_catchup_cruise_error_full=self.tracked_lead_catchup_cruise_error_full,
+                    park_assist=starpilot_toggles.park_assist,
+                    park_distance=starpilot_toggles.park_distance,
+                    park_mode=starpilot_toggles.park_assist_mode)
 
     self.a_desired_trajectory_full = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.a_solution)
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
@@ -2481,6 +2484,11 @@ class LongitudinalPlanner:
           output_a_target, output_a_target_mpc, output_a_target_e2e, speed_handoff,
         )
     else:
+      output_a_target, output_should_stop = get_accel_from_plan(
+        self.v_desired_trajectory, self.a_desired_trajectory,
+        action_t=action_t, vEgoStopping=starpilot_toggles.vEgoStopping)
+
+    if self.mpc.park_assist_active and sm['carState'].vEgo <= 0.5:
       output_a_target, output_should_stop = get_accel_from_plan(
         self.v_desired_trajectory, self.a_desired_trajectory,
         action_t=action_t, vEgoStopping=starpilot_toggles.vEgoStopping)

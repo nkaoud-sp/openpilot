@@ -1368,6 +1368,9 @@ class StarPilotVariables:
     )
     toggle.force_stops = self.get_value("ForceStops", condition=quality_of_life_longitudinal)
     toggle.force_stop_distance_offset = self.get_value("ForceStopDistanceOffset", cast=int, condition=(quality_of_life_longitudinal and toggle.force_stops))
+    toggle.park_assist = self.get_value("ParkAssist", condition=quality_of_life_longitudinal)
+    toggle.park_assist_mode = self.get_value("ParkAssistMode", cast=int, condition=toggle.park_assist, default=1, min=0, max=1)
+    toggle.park_distance = self.get_value("ParkDistance", cast=float, condition=toggle.park_assist, default=250, min=100, max=300) / 100.0
     toggle.force_standstill = self.get_value("ForceStandstill", condition=quality_of_life_longitudinal)
     toggle.radar_takeoffs = self.get_value("RadarTakeoffs", condition=quality_of_life_longitudinal)
     toggle.increase_stopped_distance = self.get_value("IncreasedStoppedDistance", cast=float, condition=quality_of_life_longitudinal, conversion=distance_conversion)
@@ -1503,6 +1506,7 @@ class StarPilotVariables:
       toggle.csc_status = False
       toggle.model_ui = False
       toggle.dynamic_path_width = False
+      toggle.park_assist = False
       toggle.road_name_ui = False
       toggle.show_speed_limits = False
       toggle.speed_limit_vienna = False

@@ -68,6 +68,7 @@ class StarPilotPanelType(IntEnum):
     LATERAL = 4
     MAPS = 5
     DEVICE = 6
+    TWEAKS = 7
     VISUALS = 8
     VEHICLE = 10
     SYSTEM = 12

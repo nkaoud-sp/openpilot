@@ -155,6 +155,12 @@ LEAD_T_IDXS_MODEL = np.asarray(ModelConstants.LEAD_T_IDXS, dtype=np.float64)
 COMFORT_BRAKE = 2.5
 STOP_DISTANCE = 6.0
 
+PARK_VEGO_FADE = [2.0, 4.0]
+PARK_ENGAGE_EGO = 0.5
+PARK_ENGAGE_VLEAD = 0.5
+PARK_MODE_DEAD_STOP = 0
+PARK_MODE_ALL_LOW_SPEED = 1
+
 
 def build_model_lead_trajectory(model_lead, radar_lead, v_ego):
   """Build a model-predicted lead path while preserving the raw h=0 anchor."""
@@ -476,6 +482,9 @@ class LongitudinalMpc:
     self.last_cloudlog_t = 0
     self.status = False
     self.crash_cnt = 0.0
+    self.park_assist_active = False
+    self.park_engaged = False
+    self.stop_distance = STOP_DISTANCE
     self.solution_status = 0
     # timers
     self.solve_time = 0.0
@@ -927,7 +936,8 @@ class LongitudinalMpc:
              lead_obstacle_bias=(0.0, 0.0), tracked_lead_catchup_headway_margins=None,
              tracked_lead_catchup_bias_gain=None, tracked_lead_catchup_bias_cap=None,
              tracked_lead_catchup_speed_range=None, tracked_lead_catchup_fade_margins=None,
-             tracked_lead_catchup_cruise_error_full=None):
+             tracked_lead_catchup_cruise_error_full=None,
+             park_assist=False, park_distance=STOP_DISTANCE, park_mode=PARK_MODE_DEAD_STOP):
     v_ego = self.x0[1]
     lead_one = radarstate.leadOne
     lead_two = radarstate.leadTwo
@@ -949,6 +959,30 @@ class LongitudinalMpc:
     lead_1_obstacle = lead_xv_1[:,0] + get_stopped_equivalence_factor(lead_xv_1[:,1])
     lead_0_obstacle -= float(lead_obstacle_bias[0])
     lead_1_obstacle -= float(lead_obstacle_bias[1])
+
+    self.park_assist_active = False
+    park_off = 0.0
+    if park_assist and park_distance < STOP_DISTANCE and v_ego < PARK_VEGO_FADE[1]:
+      if park_mode == PARK_MODE_ALL_LOW_SPEED:
+        engaged = lead_one.status
+      else:
+        if lead_one.status and v_ego <= PARK_ENGAGE_EGO and lead_one.vLead <= PARK_ENGAGE_VLEAD:
+          self.park_engaged = True
+        engaged = self.park_engaged and lead_one.status
+
+      if engaged:
+        park_off = (STOP_DISTANCE - park_distance) * float(np.interp(v_ego, PARK_VEGO_FADE, [1.0, 0.0]))
+
+      self.park_assist_active = park_off > 0.05
+    else:
+      self.park_engaged = False
+
+    if park_off > 0.0:
+      lead_0_obstacle = lead_0_obstacle + park_off
+      if lead_two.status:
+        lead_1_obstacle = lead_1_obstacle + park_off
+
+    self.stop_distance = STOP_DISTANCE - park_off
 
     self.params[:,0] = ACCEL_MIN
     self.params[:,1] = max(0.0, self.max_a)
