@@ -409,6 +409,17 @@ class ThemeManager:
       return {}
 
   @staticmethod
+  def has_downloadable_assets(assets):
+    if not isinstance(assets, dict):
+      return False
+
+    return any((
+      bool(assets.get("boot_logos")),
+      bool(assets.get("themes")),
+      bool(assets.get("wheels")),
+    ))
+
+  @staticmethod
   def format_name(name, component):
     base = Path(name).stem
     creator = ""
@@ -761,9 +772,11 @@ class ThemeManager:
     assets = {}
     for repo_url in resource_urls:
       assets = self.fetch_assets(repo_url, starpilot_toggles)
-      if assets:
+      if self.has_downloadable_assets(assets):
         break
-    if not assets:
+      if assets:
+        print(f"No downloadable theme assets found at {repo_url}; trying next source...")
+    if not self.has_downloadable_assets(assets):
       return
 
     downloadable_boot_logos = []
