@@ -158,7 +158,6 @@ STOP_DISTANCE = 6.0
 PARK_VEGO_FADE = [2.0, 4.0]
 PARK_ENGAGE_EGO = 0.5
 PARK_ENGAGE_VLEAD = 0.5
-PARK_MODE_DEAD_STOP = 0
 PARK_MODE_ALL_LOW_SPEED = 1
 
 
@@ -937,7 +936,7 @@ class LongitudinalMpc:
              tracked_lead_catchup_bias_gain=None, tracked_lead_catchup_bias_cap=None,
              tracked_lead_catchup_speed_range=None, tracked_lead_catchup_fade_margins=None,
              tracked_lead_catchup_cruise_error_full=None,
-             park_assist=False, park_distance=STOP_DISTANCE, park_mode=PARK_MODE_DEAD_STOP):
+             park_assist=False, park_distance=STOP_DISTANCE, park_mode=PARK_MODE_ALL_LOW_SPEED):
     v_ego = self.x0[1]
     lead_one = radarstate.leadOne
     lead_two = radarstate.leadTwo

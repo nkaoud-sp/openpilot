@@ -14,7 +14,7 @@ from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, get_safe_obstacle_distance
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import desired_follow_distance
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import should_trigger_planner_fcw
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import STOP_DISTANCE
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import PARK_MODE_ALL_LOW_SPEED, STOP_DISTANCE
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.lead_behavior import is_radarless_matched_follow_window
 from openpilot.selfdrive.controls.lib.lead_follow_policy import apply as apply_follow_policy
@@ -87,6 +87,16 @@ ALLOW_THROTTLE_ENABLE_THRESHOLD = ALLOW_THROTTLE_THRESHOLD + ALLOW_THROTTLE_HYST
 ALLOW_THROTTLE_DISABLE_THRESHOLD = ALLOW_THROTTLE_THRESHOLD - ALLOW_THROTTLE_HYSTERESIS
 ALLOW_THROTTLE_TRANSITION_CONFIRM_TIME = 0.25
 MIN_ALLOW_THROTTLE_SPEED = 5.0
+
+# Lead-departure launch assist: when stopped behind a lead that pulls away,
+# defer to the radar-based MPC so the car launches sooner. The MPC still owns
+# the safe gap and the assist never overrides brake or gas.
+LAUNCH_MAX_EGO_SPEED = 0.5
+LAUNCH_MIN_DREL = 2.0
+LAUNCH_VLEAD_BP = [1, 10]
+LAUNCH_VLEAD_V = [1.5, 0.2]
+LAUNCH_READY, LAUNCH_LAUNCHING, LAUNCH_DONE = 0, 1, 2
+
 FORCE_DECEL_MIN_ACCEL = -0.05
 MODEL_LAUNCH_DISARM_SPEED = 2.0
 MODEL_LAUNCH_COMMIT_TIME = 3.5
@@ -605,6 +615,9 @@ class LongitudinalPlanner:
     self.untracked_slow_lead_decel_scale = get_untracked_slow_lead_decel_scale(CP)
     self.tracked_lead_catchup_headway_margins = get_tracked_lead_catchup_headway_margins(CP)
     self.far_follow_output_slew_active = False
+    self.launch_assist_active = False
+    self.launch_assist_latched = False
+    self.launch_state = LAUNCH_READY
     self.model_launch_armed = False
     self.model_launch_stop_seen = False
     self.confident_lead_depart_elapsed = 0.0
@@ -669,6 +682,34 @@ class LongitudinalPlanner:
   @property
   def mlsim(self):
     return is_tinygrad_model_version(self.generation)
+
+  def launch_assist_ready(self, sm, starpilot_toggles) -> bool:
+    if not bool(getattr(starpilot_toggles, "launch_assist", False)):
+      self.launch_state = LAUNCH_READY
+      return False
+
+    CS = sm['carState']
+    lead = sm['radarState'].leadOne
+    stopped = CS.vEgo <= LAUNCH_MAX_EGO_SPEED
+    eagerness = float(getattr(starpilot_toggles, "launch_eagerness", 10) or 10)
+    v_thresh = float(np.interp(eagerness, LAUNCH_VLEAD_BP, LAUNCH_VLEAD_V))
+    lead_departing = lead.status and lead.vLead >= v_thresh
+
+    if self.launch_state == LAUNCH_DONE and stopped and not lead_departing:
+      self.launch_state = LAUNCH_READY
+
+    can_fire = (self.launch_state in (LAUNCH_READY, LAUNCH_LAUNCHING) and
+                lead.status and stopped and not CS.brakePressed and not CS.gasPressed and
+                lead.dRel >= LAUNCH_MIN_DREL and lead_departing)
+
+    if can_fire:
+      self.launch_state = LAUNCH_LAUNCHING
+      return True
+
+    if self.launch_state == LAUNCH_LAUNCHING:
+      self.launch_state = LAUNCH_DONE if not stopped else LAUNCH_READY
+
+    return False
 
   def get_mpc_mode(self) -> str:
     if not self.mlsim:
@@ -2394,7 +2435,7 @@ class LongitudinalPlanner:
                     tracked_lead_catchup_cruise_error_full=self.tracked_lead_catchup_cruise_error_full,
                     park_assist=starpilot_toggles.park_assist,
                     park_distance=starpilot_toggles.park_distance,
-                    park_mode=starpilot_toggles.park_assist_mode)
+                    park_mode=PARK_MODE_ALL_LOW_SPEED)
 
     self.a_desired_trajectory_full = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.a_solution)
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
@@ -2484,6 +2525,13 @@ class LongitudinalPlanner:
           output_a_target, output_a_target_mpc, output_a_target_e2e, speed_handoff,
         )
     else:
+      output_a_target, output_should_stop = get_accel_from_plan(
+        self.v_desired_trajectory, self.a_desired_trajectory,
+        action_t=action_t, vEgoStopping=starpilot_toggles.vEgoStopping)
+
+    self.launch_assist_active = self.launch_assist_ready(sm, starpilot_toggles)
+    self.launch_assist_latched = self.launch_state == LAUNCH_DONE
+    if self.launch_assist_active:
       output_a_target, output_should_stop = get_accel_from_plan(
         self.v_desired_trajectory, self.a_desired_trajectory,
         action_t=action_t, vEgoStopping=starpilot_toggles.vEgoStopping)

@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr, tr_noop
-from openpilot.system.ui.widgets import DialogResult
-from openpilot.system.ui.widgets.option_dialog import MultiOptionDialog
 
 from openpilot.selfdrive.ui.layouts.settings.starpilot.panel import _SettingsPage
 from openpilot.selfdrive.ui.layouts.settings.starpilot.aethergrid import (
@@ -17,10 +14,6 @@ from openpilot.selfdrive.ui.layouts.settings.starpilot.aethergrid import (
 
 
 PANEL_STYLE = DEFAULT_PANEL_STYLE
-PARK_ASSIST_MODE_OPTIONS = [
-  (0, "From Full Stop"),
-  (1, "Any Low Speed"),
-]
 
 
 class TweaksManagerView(CardHubManagerView):
@@ -29,6 +22,12 @@ class TweaksManagerView(CardHubManagerView):
 
   def _build_cards(self):
     return [
+      {
+        "title": tr("Lead Launch Assist"),
+        "desc": tr("When a stopped lead pulls away, launch sooner while preserving the MPC safe gap."),
+        "icon": "vehicle",
+        "on_click": lambda: self._controller._navigate_to("launch_assist"),
+      },
       {
         "title": tr("Lead Halt Assist"),
         "desc": tr("Settle closer behind a stopped lead and smoothly restore the normal gap after launch."),
@@ -52,16 +51,20 @@ class StarPilotTweaksLayout(_SettingsPage):
     )
 
   def _build_view(self):
+    self._launch_assist_rows = [
+      SettingRow("LaunchEagerness", "value", tr_noop("Launch Eagerness"),
+                 subtitle=tr_noop("Higher launches with less lead movement; lower waits until the lead is clearly moving."),
+                 get_value=lambda: tr("Level {}").format(self._params.get_int("LaunchEagerness", return_default=True, default=10)),
+                 on_click=lambda: self._show_slider("LaunchEagerness", 1, 10, step=1,
+                                                    title=tr_noop("Launch Eagerness"))),
+    ]
+
     self._halt_assist_rows = [
       SettingRow("ParkDistance", "value", tr_noop("Standstill Gap"),
                  subtitle=tr_noop("How close to stop behind a stopped lead. The normal gap returns as speed rises."),
                  get_value=lambda: f"{self._params.get_int('ParkDistance') / 100:.2f} m",
                  on_click=lambda: self._show_slider("ParkDistance", 100, 300, step=10, unit=" cm",
                                                     title=tr_noop("Standstill Gap"))),
-      SettingRow("ParkAssistMode", "value", tr_noop("Engage When"),
-                 subtitle=tr_noop("From Full Stop waits for a stopped lead; Any Low Speed applies while following slowly."),
-                 get_value=self._get_park_mode_display,
-                 on_click=self._show_park_mode_selector),
     ]
 
     self._manager_view = TweaksManagerView(
@@ -77,6 +80,21 @@ class StarPilotTweaksLayout(_SettingsPage):
       "When stopped behind a stopped lead, settle at a closer gap than the default.",
     )
 
+    pt_launch_assist = self._make_parent(
+      "LaunchAssist",
+      "Lead Launch Assist",
+      "When stopped behind a lead that pulls away, use the radar MPC output to launch sooner.",
+    )
+
+    self._sub_panels["launch_assist"] = AetherSettingsView(
+      self,
+      [SettingSection(title="", rows=self._launch_assist_rows)],
+      header_title=tr_noop("Lead Launch Assist"),
+      header_subtitle=tr_noop("Tune how eagerly StarPilot reacts when the stopped lead starts moving."),
+      parent_toggle=pt_launch_assist,
+      panel_style=PANEL_STYLE,
+    )
+
     self._sub_panels["halt_assist"] = AetherSettingsView(
       self,
       [SettingSection(title="", rows=self._halt_assist_rows)],
@@ -86,19 +104,3 @@ class StarPilotTweaksLayout(_SettingsPage):
       panel_style=PANEL_STYLE,
     )
     self._wire_sub_panels()
-
-  def _get_park_mode_display(self):
-    current = self._params.get_int("ParkAssistMode", return_default=True, default=1)
-    return tr(next((label for value, label in PARK_ASSIST_MODE_OPTIONS if value == current), "Any Low Speed"))
-
-  def _show_park_mode_selector(self):
-    option_labels = [tr(label) for _, label in PARK_ASSIST_MODE_OPTIONS]
-    current = self._get_park_mode_display()
-
-    def on_select(res):
-      if res == DialogResult.CONFIRM and dialog.selection in option_labels:
-        selected_index = option_labels.index(dialog.selection)
-        self._params.put_int("ParkAssistMode", PARK_ASSIST_MODE_OPTIONS[selected_index][0])
-
-    dialog = MultiOptionDialog(tr("Engage When"), option_labels, current, callback=on_select)
-    gui_app.push_widget(dialog)

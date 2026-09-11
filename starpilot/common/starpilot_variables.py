@@ -1368,8 +1368,9 @@ class StarPilotVariables:
     )
     toggle.force_stops = self.get_value("ForceStops", condition=quality_of_life_longitudinal)
     toggle.force_stop_distance_offset = self.get_value("ForceStopDistanceOffset", cast=int, condition=(quality_of_life_longitudinal and toggle.force_stops))
+    toggle.launch_assist = self.get_value("LaunchAssist", condition=quality_of_life_longitudinal)
+    toggle.launch_eagerness = self.get_value("LaunchEagerness", cast=int, condition=toggle.launch_assist, default=10, min=1, max=10)
     toggle.park_assist = self.get_value("ParkAssist", condition=quality_of_life_longitudinal)
-    toggle.park_assist_mode = self.get_value("ParkAssistMode", cast=int, condition=toggle.park_assist, default=1, min=0, max=1)
     toggle.park_distance = self.get_value("ParkDistance", cast=float, condition=toggle.park_assist, default=250, min=100, max=300) / 100.0
     toggle.force_standstill = self.get_value("ForceStandstill", condition=quality_of_life_longitudinal)
     toggle.radar_takeoffs = self.get_value("RadarTakeoffs", condition=quality_of_life_longitudinal)
@@ -1504,6 +1505,7 @@ class StarPilotVariables:
 
       toggle.cem_status = False
       toggle.csc_status = False
+      toggle.launch_assist = False
       toggle.model_ui = False
       toggle.dynamic_path_width = False
       toggle.park_assist = False
