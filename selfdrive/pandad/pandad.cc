@@ -519,6 +519,7 @@ void pandad_run(std::vector<Panda *> &pandas) {
       );
       process_panda_state(pandas, &pm, engaged, is_onroad, spoofing_started, ignore_ignition_line);
       panda_safety.configureSafetyMode(is_onroad);
+      panda_safety.maybeSendOffroadCan(is_onroad);
     }
 
     // Send out peripheralState at 2Hz

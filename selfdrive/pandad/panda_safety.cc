@@ -1,6 +1,9 @@
+#include <algorithm>
+
 #include "selfdrive/pandad/pandad.h"
 #include "cereal/messaging/messaging.h"
 #include "common/swaglog.h"
+#include "common/timing.h"
 
 void PandaSafety::configureSafetyMode(bool is_onroad) {
   if (is_onroad && !safety_configured_) {
@@ -90,4 +93,53 @@ void PandaSafety::setSafetyMode(const std::string &params_string) {
     pandas_[i]->set_alternative_experience(alternative_experience);
     pandas_[i]->set_safety_model(safety_model, safety_param);
   }
+}
+
+static constexpr uint64_t OFFROAD_CAN_GAP_NS = 200000000ULL;
+
+void PandaSafety::maybeSendOffroadCan(bool is_onroad) {
+  if (is_onroad) {
+    offroad_records_.clear();
+    return;
+  }
+
+  std::string queue = params_.get("OffroadCanQueue");
+  if (!queue.empty()) {
+    params_.remove("OffroadCanQueue");
+    for (size_t i = 0; i + 12 <= queue.size(); i += 12) {
+      offroad_records_.push_back(queue.substr(i, 12));
+    }
+  }
+
+  if (offroad_records_.empty() || pandas_.empty()) {
+    return;
+  }
+
+  uint64_t now = nanos_since_boot();
+  if (now - last_offroad_send_ns_ < OFFROAD_CAN_GAP_NS) {
+    return;
+  }
+  last_offroad_send_ns_ = now;
+
+  std::string rec = offroad_records_.front();
+  offroad_records_.erase(offroad_records_.begin());
+
+  uint16_t addr = ((uint8_t)rec[0] << 8) | (uint8_t)rec[1];
+  uint8_t bus = (uint8_t)rec[2];
+  uint8_t dlc = std::min((uint8_t)rec[3], (uint8_t)8);
+  Panda *internal_panda = pandas_[0];
+
+  internal_panda->set_safety_model(cereal::CarParams::SafetyModel::ELM327, 1U);
+
+  MessageBuilder msg;
+  auto evt = msg.initEvent();
+  auto sendcan = evt.initSendcan(1);
+  sendcan[0].setAddress(addr);
+  sendcan[0].setDat(kj::arrayPtr((const uint8_t *)rec.data() + 4, dlc));
+  sendcan[0].setSrc(bus);
+  internal_panda->can_send(sendcan.asReader());
+
+  internal_panda->set_safety_model(cereal::CarParams::SafetyModel::NO_OUTPUT);
+
+  LOGW("OffroadCan: sent frame 0x%x on bus %d via ELM327 (%zu queued)", addr, bus, offroad_records_.size());
 }

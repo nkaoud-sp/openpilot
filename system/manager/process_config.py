@@ -78,6 +78,9 @@ def only_onroad(started: bool, params: Params, CP: car.CarParams, starpilot_togg
 def only_offroad(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
   return not started
 
+def auto_door_lock(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
+  return not started and getattr(starpilot_toggles, "auto_door_lock", False)
+
 def sentry_mode(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
   return not started and params.get_bool("SentryModeEnabled")
 
@@ -222,6 +225,7 @@ else:
   procs.append(PythonProcess("ui", "selfdrive.ui.ui", always_run, watchdog_max_dt=UI_WATCHDOG_MAX_DT))
 
 procs += [
+  PythonProcess("autolockd", "starpilot.autolockd", auto_door_lock),
   PythonProcess("device_syncd", "starpilot.system.device_syncd", always_run),
   PythonProcess("starpilot_process", "starpilot.starpilot_process", always_run),
   PythonProcess("mapd", "starpilot.navigation.mapd_wrapper", run_mapd, nice=19),

@@ -1368,6 +1368,9 @@ class StarPilotVariables:
     )
     toggle.force_stops = self.get_value("ForceStops", condition=quality_of_life_longitudinal)
     toggle.force_stop_distance_offset = self.get_value("ForceStopDistanceOffset", cast=int, condition=(quality_of_life_longitudinal and toggle.force_stops))
+    toggle.auto_door_lock = self.get_value("AutoDoorLock", condition=(quality_of_life and toggle.car_make == "toyota"))
+    toggle.auto_door_lock_close_windows = self.get_value("AutoDoorLockCloseWindows", condition=toggle.auto_door_lock)
+    toggle.auto_door_lock_fold_mirrors = self.get_value("AutoDoorLockFoldMirrors", condition=toggle.auto_door_lock)
     toggle.launch_assist = self.get_value("LaunchAssist", condition=quality_of_life_longitudinal)
     toggle.launch_eagerness = self.get_value("LaunchEagerness", cast=int, condition=toggle.launch_assist, default=10, min=1, max=10)
     toggle.park_assist = self.get_value("ParkAssist", condition=quality_of_life_longitudinal)
@@ -1472,6 +1475,7 @@ class StarPilotVariables:
 
     if toggle.simple_mode:
       toggle.alert_volume_controller = False
+      toggle.auto_door_lock = False
 
       toggle.color_scheme = "stock"
       toggle.current_holiday_theme = "stock"

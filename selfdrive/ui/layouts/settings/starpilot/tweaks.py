@@ -29,6 +29,12 @@ class TweaksManagerView(CardHubManagerView):
         "on_click": lambda: self._controller._navigate_to("launch_assist"),
       },
       {
+        "title": tr("Auto Door Lock"),
+        "desc": tr("After shutdown, verify the cabin is empty and queue Toyota body-lock commands offroad."),
+        "icon": "vehicle",
+        "on_click": lambda: self._controller._navigate_to("auto_door_lock"),
+      },
+      {
         "title": tr("Lead Halt Assist"),
         "desc": tr("Settle closer behind a stopped lead and smoothly restore the normal gap after launch."),
         "icon": "road",
@@ -67,6 +73,17 @@ class StarPilotTweaksLayout(_SettingsPage):
                                                     title=tr_noop("Standstill Gap"))),
     ]
 
+    self._auto_door_lock_rows = [
+      SettingRow("AutoDoorLockCloseWindows", "toggle", tr_noop("Close Windows"),
+                 subtitle=tr_noop("Close all windows before locking."),
+                 get_state=lambda: self._params.get_bool("AutoDoorLockCloseWindows"),
+                 set_state=lambda s: self._params.put_bool("AutoDoorLockCloseWindows", s)),
+      SettingRow("AutoDoorLockFoldMirrors", "toggle", tr_noop("Fold Mirrors"),
+                 subtitle=tr_noop("Fold both side mirrors before locking."),
+                 get_state=lambda: self._params.get_bool("AutoDoorLockFoldMirrors"),
+                 set_state=lambda s: self._params.put_bool("AutoDoorLockFoldMirrors", s)),
+    ]
+
     self._manager_view = TweaksManagerView(
       self, [],
       header_title=tr_noop("Tweaks"),
@@ -86,12 +103,27 @@ class StarPilotTweaksLayout(_SettingsPage):
       "When stopped behind a lead that pulls away, use the radar MPC output to launch sooner.",
     )
 
+    pt_auto_door_lock = self._make_parent(
+      "AutoDoorLock",
+      "Auto Door Lock",
+      "After shutdown, wait for exit, confirm no face is detected, then lock offroad.",
+    )
+
     self._sub_panels["launch_assist"] = AetherSettingsView(
       self,
       [SettingSection(title="", rows=self._launch_assist_rows)],
       header_title=tr_noop("Lead Launch Assist"),
       header_subtitle=tr_noop("Tune how eagerly StarPilot reacts when the stopped lead starts moving."),
       parent_toggle=pt_launch_assist,
+      panel_style=PANEL_STYLE,
+    )
+
+    self._sub_panels["auto_door_lock"] = AetherSettingsView(
+      self,
+      [SettingSection(title="", rows=self._auto_door_lock_rows)],
+      header_title=tr_noop("Auto Door Lock"),
+      header_subtitle=tr_noop("Toyota offroad lock flow with optional window close and mirror fold commands."),
+      parent_toggle=pt_auto_door_lock,
       panel_style=PANEL_STYLE,
     )
 
