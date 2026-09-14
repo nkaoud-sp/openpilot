@@ -28,10 +28,15 @@ public:
   // No-op onroad, where the real safety mode is active.
   void maybeSendOffroadCan(bool is_onroad);
 
+  // Independent offroad hazard-lamp test sender. Triggered by HazardFlashRequest and separate
+  // from OffroadCanQueue/autolock command building.
+  void maybeSendHazardFlash(bool is_onroad);
+
 private:
   void updateMultiplexingMode();
   std::vector<std::string> fetchCarParams();
   void setSafetyMode(const std::vector<std::string> &params_string);
+  void sendOffroadDiagnosticFrame(uint16_t addr, uint8_t bus, const uint8_t *data, uint8_t dlc);
 
   bool initialized_ = false;
   bool log_once_ = false;
@@ -39,6 +44,9 @@ private:
   bool prev_obd_multiplexing_ = false;
   std::vector<std::string> offroad_records_;   // pending 12-byte CAN records to send, one per gap
   uint64_t last_offroad_send_ns_ = 0;
+  bool hazard_flash_active_ = false;
+  size_t hazard_flash_step_ = 0;
+  uint64_t hazard_next_send_ns_ = 0;
   Panda *panda_;
   Params params_;
 };

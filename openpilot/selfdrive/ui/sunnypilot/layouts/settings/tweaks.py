@@ -12,14 +12,10 @@ from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.launc
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.park_assist_settings import ParkAssistSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.speed_assist_settings import SpeedAssistSettingsLayout
 from openpilot.selfdrive.ui.ui_state import ui_state
-from openpilot.sunnypilot.autolock_commands import build_hazard_queue
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.sunnypilot.widgets.list_view import button_item_sp, simple_button_item_sp, toggle_item_sp
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.scroller_tici import Scroller
-
-
-HAZARD_TEST_FLASHES = 3
 
 
 class PanelType(IntEnum):
@@ -110,9 +106,8 @@ class TweaksLayout(Widget):
     self._hazard_test = button_item_sp(
       title=lambda: tr("Hazard Flash Test"),
       button_text=lambda: tr("Flash"),
-      description=lambda: tr("Flash the hazard lamps three times to check the body-ECU CAN path used by " +
-                            "Auto Door Lock. Offroad only: pandad can only send these frames while the car " +
-                            "is off. Toyota/Lexus."),
+      description=lambda: tr("Flash the hazard lamps three times using a dedicated offroad pandad test sender. " +
+                            "Offroad only. Toyota/Lexus."),
       callback=self._on_hazard_test,
       enabled=lambda: ui_state.is_offroad(),
     )
@@ -138,10 +133,7 @@ class TweaksLayout(Widget):
     ]
 
   def _on_hazard_test(self):
-    # Same OffroadCanQueue path as the auto door lock: pandad drains it offroad, one frame per
-    # 200 ms, via ELM327. pandad appends to whatever is still pending, so pressing again mid-run
-    # just extends the blinking; every sequence ends with an OFF frame, so it can't latch on.
-    ui_state.params.put("OffroadCanQueue", build_hazard_queue(HAZARD_TEST_FLASHES))
+    ui_state.params.put_bool("HazardFlashRequest", True)
 
   def _on_reverse_cruise(self, state: bool):
     # The flag is read at car-process init, so request an onroad cycle to apply it without a full reboot.

@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <string>
 #include <vector>
 
@@ -91,6 +92,87 @@ bool PandaSafety::getOffroadMode() {
 // Gap between offroad CAN frames. The body ECU drops back-to-back diagnostic frames, so they are
 // sent one at a time this far apart. Tune here if some commands still don't land.
 static constexpr uint64_t OFFROAD_CAN_GAP_NS = 200000000ULL;  // 200 ms
+
+static constexpr uint16_t HAZARD_ADDR = 0x750;
+static constexpr uint8_t HAZARD_BUS = 0;
+static constexpr uint64_t HAZARD_PREAMBLE_GAP_NS = 100000000ULL;  // 100 ms
+static constexpr uint64_t HAZARD_FLASH_GAP_NS = 450000000ULL;  // 450 ms half-cycle
+static constexpr size_t HAZARD_FLASHES = 3;
+static constexpr size_t HAZARD_FLASH_STEPS = HAZARD_FLASHES * 2;
+static constexpr size_t HAZARD_TOTAL_STEPS = HAZARD_FLASH_STEPS + 1;
+
+// Captured from the OBD hazard trace:
+// 0x750 40 01 3E 00 00 00 00 00 -> tester present, positive response 0x758 40 01 7E...
+// 0x750 40 06 3B 13 F0 C0 00 00 -> hazards on
+// 0x750 40 06 3B 13 F0 00 00 00 -> hazards off
+static constexpr std::array<uint8_t, 8> HAZARD_TESTER_PRESENT_CMD = {0x40, 0x01, 0x3E, 0x00, 0x00, 0x00, 0x00, 0x00};
+static constexpr std::array<uint8_t, 8> HAZARD_ON_CMD = {0x40, 0x06, 0x3B, 0x13, 0xF0, 0xC0, 0x00, 0x00};
+static constexpr std::array<uint8_t, 8> HAZARD_OFF_CMD = {0x40, 0x06, 0x3B, 0x13, 0xF0, 0x00, 0x00, 0x00};
+
+void PandaSafety::sendOffroadDiagnosticFrame(uint16_t addr, uint8_t bus, const uint8_t *data, uint8_t dlc) {
+  // 0x750 body-ECU diagnostic writes need an output-capable diagnostic safety model. Keep that
+  // window scoped to this single CAN frame and immediately restore NO_OUTPUT.
+  panda_->set_safety_model(cereal::CarParams::SafetyModel::ELM327, 1U);
+
+  MessageBuilder msg;
+  auto evt = msg.initEvent();
+  auto sendcan = evt.initSendcan(1);
+  sendcan[0].setAddress(addr);
+  sendcan[0].setDat(kj::arrayPtr(data, std::min(dlc, (uint8_t)8)));
+  sendcan[0].setSrc(bus);
+  panda_->can_send(sendcan.asReader());
+
+  panda_->set_safety_model(cereal::CarParams::SafetyModel::NO_OUTPUT);
+}
+
+void PandaSafety::maybeSendHazardFlash(bool is_onroad) {
+  if (is_onroad) {
+    hazard_flash_active_ = false;
+    hazard_flash_step_ = 0;
+    hazard_next_send_ns_ = 0;
+    params_.remove("HazardFlashRequest");
+    return;
+  }
+
+  if (params_.getBool("HazardFlashRequest")) {
+    params_.remove("HazardFlashRequest");
+    hazard_flash_active_ = true;
+    hazard_flash_step_ = 0;
+    hazard_next_send_ns_ = 0;
+    LOGW("HazardFlash: queued %zu flashes", HAZARD_FLASHES);
+  }
+
+  if (!hazard_flash_active_) {
+    return;
+  }
+
+  uint64_t now = nanos_since_boot();
+  if (hazard_next_send_ns_ != 0 && now < hazard_next_send_ns_) {
+    return;
+  }
+
+  if (hazard_flash_step_ == 0) {
+    sendOffroadDiagnosticFrame(HAZARD_ADDR, HAZARD_BUS, HAZARD_TESTER_PRESENT_CMD.data(), static_cast<uint8_t>(HAZARD_TESTER_PRESENT_CMD.size()));
+    LOGW("HazardFlash: sent tester-present preamble");
+  } else {
+    const size_t flash_step = hazard_flash_step_ - 1;
+    const bool hazards_on = (flash_step % 2) == 0;
+    const auto &cmd = hazards_on ? HAZARD_ON_CMD : HAZARD_OFF_CMD;
+    sendOffroadDiagnosticFrame(HAZARD_ADDR, HAZARD_BUS, cmd.data(), static_cast<uint8_t>(cmd.size()));
+    LOGW("HazardFlash: sent %s frame (%zu/%zu)", hazards_on ? "ON" : "OFF", flash_step + 1, HAZARD_FLASH_STEPS);
+  }
+
+  hazard_flash_step_++;
+  if (hazard_flash_step_ >= HAZARD_TOTAL_STEPS) {
+    hazard_flash_active_ = false;
+    hazard_flash_step_ = 0;
+    hazard_next_send_ns_ = 0;
+    LOGW("HazardFlash: complete");
+    return;
+  }
+
+  hazard_next_send_ns_ = now + (hazard_flash_step_ == 1 ? HAZARD_PREAMBLE_GAP_NS : HAZARD_FLASH_GAP_NS);
+}
 
 void PandaSafety::maybeSendOffroadCan(bool is_onroad) {
   // Only ever touch the safety model offroad. Onroad the car-specific safety mode is active and
