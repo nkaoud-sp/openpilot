@@ -392,6 +392,10 @@ void pandad_run(Panda *panda) {
   while (!do_exit && check_connected(panda)) {
     can_recv(panda, &pm);
 
+    // Play any queued offroad CAN script at the full loop rate: its frames carry their own
+    // delays, and 10 ms of resolution is what keeps ISO-TP and blink timing intact.
+    panda_safety.maybeSendOffroadCanScript(is_onroad);
+
     // Process peripheral state at 20 Hz
     if (rk.frame() % 5 == 0) {
       process_peripheral_state(panda, &pm, no_fan_control, is_onroad);

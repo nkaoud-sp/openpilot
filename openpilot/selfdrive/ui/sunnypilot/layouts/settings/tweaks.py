@@ -12,8 +12,9 @@ from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.launc
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.park_assist_settings import ParkAssistSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.speed_assist_settings import SpeedAssistSettingsLayout
 from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.sunnypilot.hazard_flash import DEFAULT_FLASHES, build_hazard_flash_script
 from openpilot.system.ui.lib.multilang import tr
-from openpilot.system.ui.sunnypilot.widgets.list_view import simple_button_item_sp, toggle_item_sp
+from openpilot.system.ui.sunnypilot.widgets.list_view import button_item_sp, simple_button_item_sp, toggle_item_sp
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.scroller_tici import Scroller
 
@@ -103,6 +104,16 @@ class TweaksLayout(Widget):
       enabled=lambda: not ui_state.engaged,
     )
 
+    self._hazard_test = button_item_sp(
+      title=lambda: tr("Hazard Flash Test"),
+      button_text=lambda: tr("Flash"),
+      description=lambda: tr("Blink the hazard lamps a few times over the OBD diagnostic path, to check that the " +
+                            "car takes commands from the panda before relying on a feature that sends them. " +
+                            "Offroad only: the frames can only go out while the car is off. Toyota/Lexus."),
+      callback=self._on_hazard_test,
+      enabled=lambda: ui_state.is_offroad(),
+    )
+
     self._auto_lock_button = simple_button_item_sp(
       button_text=lambda: tr("Auto Door Lock"),
       button_width=800,
@@ -120,7 +131,15 @@ class TweaksLayout(Widget):
       self._speed_assist_button,
       self._reverse_cruise,
       self._auto_lock_button,
+      self._hazard_test,
     ]
+
+  def _on_hazard_test(self):
+    # pandad plays the script offroad only, so don't leave one queued for the next time the car
+    # is parked. The button is greyed out onroad too; this guards the callback itself.
+    if not ui_state.is_offroad():
+      return
+    ui_state.params.put("OffroadCanScript", build_hazard_flash_script(DEFAULT_FLASHES))
 
   def _on_reverse_cruise(self, state: bool):
     # The flag is read at car-process init, so request an onroad cycle to apply it without a full reboot.
