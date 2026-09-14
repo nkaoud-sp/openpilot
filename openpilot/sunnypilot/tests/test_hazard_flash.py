@@ -9,16 +9,23 @@ import pytest
 from openpilot.sunnypilot.hazard_flash import (
   CMD_ADDR,
   CMD_BUS,
+  DEFAULT_DURATION_S,
+  FLASH_PERIOD_MS,
   HALF_CYCLE_MS,
   REQUEST_CONSECUTIVE_OFF,
   REQUEST_CONSECUTIVE_ON,
   REQUEST_FIRST_FRAME,
   SCRIPT_RECORD_LEN,
   SESSION_DEFAULT,
+  SESSION_EXTENDED,
   ScriptFrame,
   build_hazard_flash_frames,
   build_hazard_flash_script,
+  build_hazard_stop_frames,
+  build_hazard_stop_script,
   encode_script,
+  flashes_for_duration,
+  script_duration_s,
 )
 
 
@@ -99,6 +106,40 @@ class TestHazardFlashScript:
         assert consecutive in (REQUEST_CONSECUTIVE_ON, REQUEST_CONSECUTIVE_OFF)
         assert 0 < delay_ms < 1000
 
-  def test_no_flashes_does_nothing_to_the_lamps(self):
-    data = [rec[3] for rec in decode_script(build_hazard_flash_script(0))]
-    assert REQUEST_FIRST_FRAME not in data
+  def test_default_run_lasts_a_minute(self):
+    # Within one flash of the minute: the sequence can only end on a dark half cycle.
+    duration = script_duration_s(build_hazard_flash_frames())
+    assert abs(duration - DEFAULT_DURATION_S) < FLASH_PERIOD_MS / 1000
+
+  @pytest.mark.parametrize("seconds", [5, 30, 60, 300])
+  def test_duration_scales(self, seconds):
+    frames = build_hazard_flash_frames(flashes_for_duration(seconds))
+    assert abs(script_duration_s(frames) - seconds) < FLASH_PERIOD_MS / 1000
+
+  def test_never_builds_an_empty_run(self):
+    """A press has to do something visible, however short the duration asked for."""
+    assert flashes_for_duration(0) == 1
+
+  def test_delays_fit_the_record(self):
+    for delay_ms, _, _, _ in decode_script(build_hazard_flash_script()):
+      assert 0 <= delay_ms <= 0xFFFF
+
+
+class TestHazardStopScript:
+  def test_puts_the_lamps_out_and_closes_the_session(self):
+    data = [rec[3] for rec in decode_script(build_hazard_stop_script())]
+    # The session is reopened first: a run that already ended has timed out of the extended one.
+    assert data[0] == SESSION_EXTENDED
+    assert REQUEST_CONSECUTIVE_ON not in data
+    assert REQUEST_CONSECUTIVE_OFF in data
+    assert data[-1] == SESSION_DEFAULT
+
+  def test_short_enough_to_feel_immediate(self):
+    assert script_duration_s(build_hazard_stop_frames()) < 0.5
+
+  def test_frames_match_the_flash_script(self):
+    """Both scripts talk to the same ECU the same way, so a stop can't be left behind by a change."""
+    flash = {rec[3] for rec in decode_script(build_hazard_flash_script())}
+    for _delay_ms, addr, bus, data in decode_script(build_hazard_stop_script()):
+      assert (addr, bus) == (CMD_ADDR, CMD_BUS)
+      assert data in flash

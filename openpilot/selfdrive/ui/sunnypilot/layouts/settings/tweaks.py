@@ -4,6 +4,7 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+import time
 from enum import IntEnum
 
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.auto_lock_settings import AutoLockSettingsLayout
@@ -12,7 +13,12 @@ from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.launc
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.park_assist_settings import ParkAssistSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.speed_assist_settings import SpeedAssistSettingsLayout
 from openpilot.selfdrive.ui.ui_state import ui_state
-from openpilot.sunnypilot.hazard_flash import DEFAULT_FLASHES, build_hazard_flash_script
+from openpilot.sunnypilot.hazard_flash import (
+  build_hazard_flash_frames,
+  build_hazard_stop_script,
+  encode_script,
+  script_duration_s,
+)
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.sunnypilot.widgets.list_view import button_item_sp, simple_button_item_sp, toggle_item_sp
 from openpilot.system.ui.widgets import Widget
@@ -33,6 +39,7 @@ class TweaksLayout(Widget):
     super().__init__()
 
     self._current_panel = PanelType.TWEAKS
+    self._hazard_flash_until = 0.0
     self._dynamic_follow_layout = DynamicFollowSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._launch_layout = LaunchAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._park_layout = ParkAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
@@ -106,10 +113,11 @@ class TweaksLayout(Widget):
 
     self._hazard_test = button_item_sp(
       title=lambda: tr("Hazard Flash Test"),
-      button_text=lambda: tr("Flash"),
-      description=lambda: tr("Blink the hazard lamps a few times over the OBD diagnostic path, to check that the " +
-                            "car takes commands from the panda before relying on a feature that sends them. " +
-                            "Offroad only: the frames can only go out while the car is off. Toyota/Lexus."),
+      button_text=lambda: tr("Stop") if self._hazard_flashing() else tr("Flash"),
+      description=lambda: tr("Blink the hazard lamps for a minute over the OBD diagnostic path, to check that the " +
+                            "car takes commands from the panda before relying on a feature that sends them. Press " +
+                            "again to stop early. Offroad only: the frames can only go out while the car is off. " +
+                            "Toyota/Lexus."),
       callback=self._on_hazard_test,
       enabled=lambda: ui_state.is_offroad(),
     )
@@ -134,12 +142,27 @@ class TweaksLayout(Widget):
       self._hazard_test,
     ]
 
+  def _hazard_flashing(self) -> bool:
+    # There is no feedback from pandad, so track the run against the length of the script that was
+    # queued. Going onroad drops it, so that counts as the run being over.
+    return ui_state.is_offroad() and time.monotonic() < self._hazard_flash_until
+
   def _on_hazard_test(self):
     # pandad plays the script offroad only, so don't leave one queued for the next time the car
     # is parked. The button is greyed out onroad too; this guards the callback itself.
     if not ui_state.is_offroad():
       return
-    ui_state.params.put("OffroadCanScript", build_hazard_flash_script(DEFAULT_FLASHES))
+
+    # A minute is long enough to want out of, and a queued script replaces the one playing, so the
+    # same button cuts the run short by queuing the frames that put the lamps out.
+    if self._hazard_flashing():
+      ui_state.params.put("OffroadCanScript", build_hazard_stop_script())
+      self._hazard_flash_until = 0.0
+      return
+
+    frames = build_hazard_flash_frames()
+    ui_state.params.put("OffroadCanScript", encode_script(frames))
+    self._hazard_flash_until = time.monotonic() + script_duration_s(frames)
 
   def _on_reverse_cruise(self, state: bool):
     # The flag is read at car-process init, so request an onroad cycle to apply it without a full reboot.

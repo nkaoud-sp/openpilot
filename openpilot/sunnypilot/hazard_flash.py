@@ -72,7 +72,21 @@ FLOW_CONTROL_DELAY_MS = 40
 HALF_CYCLE_MS = 380
 SESSION_DELAY_MS = 40
 
-DEFAULT_FLASHES = 3
+# One flash is a lit half cycle plus a dark one.
+FLASH_PERIOD_MS = 2 * HALF_CYCLE_MS
+
+# How long a press flashes for. The capture only ran 23 flashes (17 s), so a minute is an
+# extension of it; nothing in the sequence is stateful, it is the same two writes repeated, and
+# the requests themselves keep the diagnostic session from timing out underneath the run.
+DEFAULT_DURATION_S = 60.0
+
+
+def flashes_for_duration(seconds: float) -> int:
+  """Whole flashes closest to `seconds`, since the sequence can only end on a dark half cycle."""
+  return max(1, round(seconds * 1000 / FLASH_PERIOD_MS))
+
+
+DEFAULT_FLASHES = flashes_for_duration(DEFAULT_DURATION_S)
 
 
 class ScriptFrame(NamedTuple):
@@ -132,3 +146,28 @@ def build_hazard_flash_frames(flashes: int = DEFAULT_FLASHES) -> list[ScriptFram
 
 def build_hazard_flash_script(flashes: int = DEFAULT_FLASHES) -> bytes:
   return encode_script(build_hazard_flash_frames(flashes))
+
+
+def build_hazard_stop_frames() -> list[ScriptFrame]:
+  """Frames that cut a run short: put the lamps out, then hand them back to the ECU.
+
+  Queuing this replaces whatever pandad is still playing. The session is reopened first because
+  this also has to work once a run has already finished and the session has timed out, where the
+  0x2F is rejected and the closing reset is the whole of the work.
+  """
+  return [
+    ScriptFrame(0, SESSION_EXTENDED),
+    ScriptFrame(SESSION_DELAY_MS, REQUEST_FIRST_FRAME),
+    ScriptFrame(CONSECUTIVE_FRAME_DELAY_MS, REQUEST_CONSECUTIVE_OFF),
+    ScriptFrame(FLOW_CONTROL_DELAY_MS, FLOW_CONTROL),
+    ScriptFrame(SESSION_DELAY_MS, SESSION_DEFAULT),
+  ]
+
+
+def build_hazard_stop_script() -> bytes:
+  return encode_script(build_hazard_stop_frames())
+
+
+def script_duration_s(frames: Iterable[ScriptFrame]) -> float:
+  """How long a script takes to play, so a caller can tell when it is still running."""
+  return sum(frame.delay_ms for frame in frames) / 1000.0
