@@ -95,7 +95,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.params = Params()
     self.param_read_frame = 0
     self.launch_assist = False
-    self.launch_eagerness = 10
+    self.launch_eagerness = 7
     self.launch_assist_active = False
     self.launch_assist_latched = False
     self.launch_state = LAUNCH_READY
