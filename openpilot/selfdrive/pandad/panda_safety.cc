@@ -1,6 +1,11 @@
+#include <algorithm>
+#include <string>
+#include <vector>
+
 #include "selfdrive/pandad/pandad.h"
 #include "openpilot/cereal/messaging/messaging.h"
 #include "common/swaglog.h"
+#include "common/timing.h"
 
 void PandaSafety::configureSafetyMode(bool is_onroad) {
   if (is_onroad && !safety_configured_) {
@@ -81,4 +86,62 @@ void PandaSafety::setSafetyMode(const std::vector<std::string> &params_string) {
 bool PandaSafety::getOffroadMode() {
   auto offroad_mode = params_.getBool("OffroadMode");
   return offroad_mode;
+}
+
+// Gap between offroad CAN frames. The body ECU drops back-to-back diagnostic frames, so they are
+// sent one at a time this far apart. Tune here if some commands still don't land.
+static constexpr uint64_t OFFROAD_CAN_GAP_NS = 200000000ULL;  // 200 ms
+
+void PandaSafety::maybeSendOffroadCan(bool is_onroad) {
+  // Only ever touch the safety model offroad. Onroad the car-specific safety mode is active and
+  // must not be disturbed, so the queue is intentionally ignored there.
+  if (is_onroad) {
+    offroad_records_.clear();
+    return;
+  }
+
+  // Append newly requested frames to the pending queue.
+  // OffroadCanQueue: 12-byte records [addr_hi, addr_lo, bus, dlc, data[8]].
+  std::string queue = params_.get("OffroadCanQueue");
+  if (!queue.empty()) {
+    params_.remove("OffroadCanQueue");
+    for (size_t i = 0; i + 12 <= queue.size(); i += 12) {
+      offroad_records_.push_back(queue.substr(i, 12));
+    }
+  }
+
+  if (offroad_records_.empty()) {
+    return;
+  }
+
+  // Space the frames out: send at most one per OFFROAD_CAN_GAP_NS.
+  uint64_t now = nanos_since_boot();
+  if (now - last_offroad_send_ns_ < OFFROAD_CAN_GAP_NS) {
+    return;
+  }
+  last_offroad_send_ns_ = now;
+
+  std::string rec = offroad_records_.front();
+  offroad_records_.erase(offroad_records_.begin());
+
+  uint16_t addr = ((uint8_t)rec[0] << 8) | (uint8_t)rec[1];
+  uint8_t bus = (uint8_t)rec[2];
+  uint8_t dlc = std::min((uint8_t)rec[3], (uint8_t)8);
+
+  // 0x750 is a UDS diagnostic address; ELM327 (no OBD multiplexing) is the least-privilege mode
+  // that allows transmitting it. The offroad health loop re-asserts NO_OUTPUT afterwards.
+  panda_->set_safety_model(cereal::CarParams::SafetyModel::ELM327, 1U);
+
+  MessageBuilder msg;
+  auto evt = msg.initEvent();
+  auto sendcan = evt.initSendcan(1);
+  sendcan[0].setAddress(addr);
+  sendcan[0].setDat(kj::arrayPtr((const uint8_t *)rec.data() + 4, dlc));
+  sendcan[0].setSrc(bus);
+  panda_->can_send(sendcan.asReader());
+
+  // Revert immediately; don't leave the panda in an output-capable mode.
+  panda_->set_safety_model(cereal::CarParams::SafetyModel::NO_OUTPUT);
+
+  LOGW("OffroadCan: sent frame 0x%x on bus %d via ELM327 (%zu queued)", addr, bus, offroad_records_.size());
 }

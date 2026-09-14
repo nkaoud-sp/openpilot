@@ -65,6 +65,9 @@ def only_onroad(started: bool, params: Params, CP: car.CarParams) -> bool:
 def only_offroad(started: bool, params: Params, CP: car.CarParams) -> bool:
   return not started
 
+def auto_door_lock(started: bool, params: Params, CP: car.CarParams) -> bool:
+  return (not started) and params.get_bool("AutoDoorLock")
+
 def livestream(started: bool, params: Params, CP: car.CarParams) -> bool:
   return params.get_bool("IsLiveStreaming")
 
@@ -180,6 +183,9 @@ procs += [
 
   # locationd
   NativeProcess("locationd_llk", "openpilot/sunnypilot/selfdrive/locationd", ["./locationd"], only_onroad),
+
+  # auto door lock
+  PythonProcess("autolockd", "openpilot.sunnypilot.autolockd", auto_door_lock),
 ]
 
 if os.path.exists("../../sunnypilot/sunnylink/uploader.py"):
