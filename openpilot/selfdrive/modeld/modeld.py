@@ -34,6 +34,8 @@ from openpilot.common.file_chunker import open_file_chunked
 from openpilot.common.hardware.usb import CHESTNUT_USB_IDS
 from openpilot.selfdrive.modeld.constants import ModelConstants, Plan
 from openpilot.selfdrive.modeld.helpers import chestnut_present, chestnut_compiled, chestnut_ready, modeld_pkl_path, load_oob
+from openpilot.selfdrive.modeld.frame_downscale import FrameDownscaler, select_frame_size
+from openpilot.common.hardware import COMMA_HARDWARE
 
 from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
 from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
@@ -191,12 +193,22 @@ class ModelState(ModelStateBase):
     self.prev_desire = np.zeros(ModelConstants.DESIRE_LEN, dtype=np.float32)
     self.chestnut = chestnut
 
+    # chestnut runs comma four sized frames: on a bigger camera, resample on the device GPU before the frames cross the link
+    frame_w, frame_h = cam_w, cam_h
+    self.downscaler: FrameDownscaler | None = None
+    if chestnut:
+      frame_w, frame_h = select_frame_size(jits['run_model'], cam_w, cam_h, native=Params().get_bool("ChestnutNativeFrames"))
+      if (frame_w, frame_h) != (cam_w, cam_h):
+        self.downscaler = FrameDownscaler((cam_w, cam_h), (frame_w, frame_h), 'QCOM' if COMMA_HARDWARE else 'CPU')
+      cloudlog.warning(f"chestnut frames: {cam_w}x{cam_h} camera -> {frame_w}x{frame_h} model input")
+    self.frame_scale = self.downscaler.scale if self.downscaler is not None else np.eye(3, dtype=np.float32)
+
     self.frame_skip = ModelConstants.MODEL_RUN_FREQ // ModelConstants.MODEL_CONTEXT_FREQ
-    self.frame_copy_size = nv12_copy_size(*get_nv12_info(cam_w, cam_h)[:3])
+    self.frame_copy_size = nv12_copy_size(*get_nv12_info(frame_w, frame_h)[:3])
     self.input_queues, self.npy, self.frame_views = make_input_queues(
       self.input_shapes, self.frame_skip, device=self.model_device, frame_copy_size=self.frame_copy_size)
     self.parser = Parser()
-    self.run_model = jits['run_model'][(cam_w,cam_h)]
+    self.run_model = jits['run_model'][(frame_w, frame_h)]
 
   def slice_outputs(self, model_outputs: np.ndarray, output_slices: dict[str, slice]) -> dict[str, np.ndarray]:
     parsed_model_outputs = {k: model_outputs[np.newaxis, v] for k,v in output_slices.items()}
@@ -205,7 +217,9 @@ class ModelState(ModelStateBase):
   def run(self, bufs: dict[str, VisionBuf], transforms: dict[str, np.ndarray],
           inputs: dict[str, np.ndarray], after_enqueue: Callable[[], None] | None = None) -> dict[str, np.ndarray]:
     for key, buf in bufs.items():
-      np.copyto(self.frame_views[key], np.frombuffer(buf.data, dtype=np.uint8, count=self.frame_copy_size))
+      # warmup passes frames already at the model input size as numpy arrays
+      data = self.downscaler.run(key, buf) if self.downscaler is not None and not isinstance(buf, np.ndarray) else buf.data
+      np.copyto(self.frame_views[key], np.frombuffer(data, dtype=np.uint8, count=self.frame_copy_size))
 
     # Model decides when action is completed, so desire input is just a pulse triggered on rising edge
     inputs['desire_pulse'][0] = 0
@@ -213,8 +227,8 @@ class ModelState(ModelStateBase):
     self.prev_desire[:] = inputs['desire_pulse']
     self.npy['traffic_convention'][:] = inputs['traffic_convention']
     self.npy['action_t'][:] = inputs['action_t']
-    self.npy['tfm'][:,:] = transforms['img'][:,:]
-    self.npy['big_tfm'][:,:] = transforms['big_img'][:,:]
+    self.npy['tfm'][:,:] = self.frame_scale @ transforms['img']
+    self.npy['big_tfm'][:,:] = self.frame_scale @ transforms['big_img']
 
     outs, = self.run_model(**{k: self.input_queues[k] for k in MODELD_INPUTS})
     if after_enqueue is not None:

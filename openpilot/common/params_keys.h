@@ -157,6 +157,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"CarParamsSPCache", {CLEAR_ON_MANAGER_START, BYTES}},
     {"CarParamsSPPersistent", {PERSISTENT, BYTES}},
     {"CarPlatformBundle", {PERSISTENT | BACKUP, JSON}},
+    {"ChestnutNativeFrames", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"ChevronInfo", {PERSISTENT | BACKUP, INT, "4"}},
     {"CompletedSunnylinkConsentVersion", {PERSISTENT, STRING, "0"}},
     {"CustomAccIncrementsEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},

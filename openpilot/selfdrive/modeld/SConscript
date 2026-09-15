@@ -8,6 +8,7 @@ from openpilot.common.transformations.camera import _ar_ox_fisheye, _os_fisheye
 from openpilot.common.transformations.model import MEDMODEL_INPUT_SIZE, DM_INPUT_SIZE
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.modeld.helpers import TG_INPUT_DEVICES_PATH, chestnut_present, modeld_pkl_path
+from openpilot.selfdrive.modeld.frame_downscale import downscale_target
 
 
 Import('env', 'arch')
@@ -27,10 +28,13 @@ if arch == 'comma_arm64':
   from openpilot.common.hardware import HARDWARE
   camera = _os_fisheye if HARDWARE.get_device_type() == "mici" else _ar_ox_fisheye
   camera_configs = [(camera.width, camera.height)]
+  # chestnut gets comma four sized frames on every device (see frame_downscale.py)
+  chestnut_camera_configs = [downscale_target(camera.width, camera.height)]
   tg_backend = 'QCOM'
   tg_flags = f'DEV={tg_backend} IMAGE=1 FLOAT16=1 NOLOCALS=1 JIT_BATCH_SIZE=0 OPENPILOT_HACKS=1'
 else:
   camera_configs = [(c.width, c.height) for c in (_ar_ox_fisheye, _os_fisheye)]
+  chestnut_camera_configs = camera_configs
   tg_backend = 'CPU'
   tg_flags = f'DEV=CPU' if arch == 'Darwin' else 'DEV=CPU:LLVM'
 
@@ -75,7 +79,7 @@ if not os.getenv('SKIP_TINYGRAD_COMPILE'):
     target_pkl_path = File(modeld_pkl_path(chestnut)).abspath
     file_prefix, cmd_flags = ('big_', chestnut_tg_flags) if chestnut else ('', tg_flags)
     driving_onnx_deps = get_existing_chunks(File(f"models/{file_prefix}driving_supercombo.onnx").abspath)
-    camera_res_args = ' '.join(f'{cw}x{ch}' for cw, ch in camera_configs)
+    camera_res_args = ' '.join(f'{cw}x{ch}' for cw, ch in (chestnut_camera_configs if chestnut else camera_configs))
     # CPU 7 is isolated with isolcpus on AGNOS, so explicitly pin the compiler to it.
     taskset = 'taskset -c 7 ' if arch == 'comma_arm64' else ''
     cmd = (f'{cmd_flags} {mac_brew_string} {taskset}python3 {modeld_dir}/compile_modeld.py '
