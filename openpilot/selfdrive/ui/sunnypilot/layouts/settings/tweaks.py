@@ -201,8 +201,21 @@ class TweaksLayout(Widget):
     result, self._benchmark_result = self._benchmark_result, None
     return result
 
+  @staticmethod
+  def _chestnut_bundle_status() -> str:
+    # which chestnut bundle is selected and whether its pkl is actually on disk and hash-valid
+    try:
+      from openpilot.sunnypilot.models.helpers import get_selected_bundle, _bundle_is_valid_locally
+      bundle = get_selected_bundle(ui_state.params, "chestnut")
+      if bundle is None:
+        return "chestnut bundle: none selected"
+      return f"chestnut bundle: {bundle.displayName}, files {'valid' if _bundle_is_valid_locally(bundle) else 'MISSING or hash mismatch'}"
+    except Exception as e:
+      return f"chestnut bundle: could not check ({e})"
+
   def _run_frame_benchmark(self):
     mode = ui_state.params.get("ChestnutFrameMode") or "not run yet"
+    mode += "\n" + self._chestnut_bundle_status()
     if error := ui_state.params.get("ChestnutLastError"):
       mode += f"\nchestnut error: {error[-700:]}"
     try:
