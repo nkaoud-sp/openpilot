@@ -128,6 +128,14 @@ class TweaksLayout(Widget):
       callback=lambda: self._set_current_panel(PanelType.AUTO_LOCK),
     )
 
+    self._chestnut_native_frames = toggle_item_sp(
+      title=lambda: tr("Chestnut Native Camera Frames"),
+      description=lambda: tr("Send full 1928x1208 camera frames to chestnut instead of resampling them to the comma four " +
+                            "size (1344x760) on the device first. Native frames spend about 12 ms more of each 50 ms frame " +
+                            "on the USB link, which makes heavier models lag. comma 3X only, applies on the next drive."),
+      param="ChestnutNativeFrames",
+    )
+
     return [
       self._remember_experimental_mode,
       self._dynamic_follow,
@@ -140,6 +148,7 @@ class TweaksLayout(Widget):
       self._reverse_cruise,
       self._auto_lock_button,
       self._hazard_test,
+      self._chestnut_native_frames,
     ]
 
   def _hazard_flashing(self) -> bool:

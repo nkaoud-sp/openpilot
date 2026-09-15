@@ -18,6 +18,7 @@ from tinygrad.tensor import Tensor
 import openpilot.cereal.messaging as messaging
 from openpilot.common.hardware import COMMA_HARDWARE
 from openpilot.selfdrive.modeld.helpers import chestnut_present
+from openpilot.selfdrive.modeld.frame_downscale import FrameDownscaler, select_frame_size
 from openpilot.cereal import log
 from opendbc.car.structs import car
 from openpilot.cereal.services import SERVICE_LIST
@@ -125,7 +126,18 @@ class ModelState(ModelStateBase):
     self.QUEUE_DEV = self.DEV
     self.is_run_model = 'run_model' in jits
 
-    nv12_info = get_nv12_info(cam_w, cam_h)
+    # chestnut runs comma four sized frames: on a bigger camera, resample on the device GPU before the frames cross the link
+    frame_w, frame_h = cam_w, cam_h
+    self.downscaler: FrameDownscaler | None = None
+    if self.chestnut:
+      available = jits['run_model'] if self.is_run_model else [k for k in jits if isinstance(k, tuple)]
+      frame_w, frame_h = select_frame_size(available, cam_w, cam_h, native=Params().get_bool("ChestnutNativeFrames"))
+      if (frame_w, frame_h) != (cam_w, cam_h):
+        self.downscaler = FrameDownscaler((cam_w, cam_h), (frame_w, frame_h), 'QCOM' if COMMA_HARDWARE else 'CPU')
+      cloudlog.warning(f"chestnut frames: {cam_w}x{cam_h} camera -> {frame_w}x{frame_h} model input")
+    self.frame_scale = self.downscaler.scale if self.downscaler is not None else np.eye(3, dtype=np.float32)
+
+    nv12_info = get_nv12_info(frame_w, frame_h)
     self.frame_copy_size = nv12_copy_size(*nv12_info[:3])
     self.full_frames: dict = {}
     self._blob_cache: dict = {}
@@ -144,12 +156,12 @@ class ModelState(ModelStateBase):
         self.input_queues, self.numpy_inputs, self.frame_buffers = make_stock_input_queues(
           self.input_shapes, self.frame_skip, device=self.DEV, frame_copy_size=self.frame_copy_size)
         self.frame_views, self.npy = self.frame_buffers, self.numpy_inputs
-        self.run_model, self.run_policy, self.warp = jits['run_model'][(cam_w, cam_h)], None, None
+        self.run_model, self.run_policy, self.warp = jits['run_model'][(frame_w, frame_h)], None, None
       else:
         self.input_queues, self.numpy_inputs = make_supercombo_input_queues(self.input_shapes, self.frame_skip, device=self.QUEUE_DEV)
-        self.run_model, self.run_policy, self.warp = None, jits['run_policy'], jits[(cam_w, cam_h)]
+        self.run_model, self.run_policy, self.warp = None, jits['run_policy'], jits[(frame_w, frame_h)]
     else:
-      self.run_model, self.run_policy, self.warp = None, jits['run_policy'], jits[(cam_w, cam_h)]
+      self.run_model, self.run_policy, self.warp = None, jits['run_policy'], jits[(frame_w, frame_h)]
       vision_metadata = metadata['vision']
       policy_keys = [k for k in metadata if k not in ('vision', 'warp_dev')]
       self._combined_model_type = 'split' if policy_keys == ['policy'] else 'multi_policy'
@@ -217,12 +229,16 @@ class ModelState(ModelStateBase):
   def run(self, bufs: dict[str, VisionBuf], transforms: dict[str, np.ndarray],
           inputs: dict[str, np.ndarray],
           after_enqueue: Callable[[], None] | None = None) -> dict[str, np.ndarray] | None:
+    # warmup passes frames already at the model input size as numpy arrays
+    resample = self.downscaler is not None and not any(isinstance(buf, np.ndarray) for buf in bufs.values())
     if self.is_run_model:
       for key, buf in bufs.items():
-        data = buf.data if hasattr(buf, 'data') else buf
+        data = self.downscaler.run(key, buf) if resample else (buf.data if hasattr(buf, 'data') else buf)
         np.copyto(self.frame_buffers[key], np.frombuffer(data, dtype=np.uint8, count=self.frame_copy_size))
     else:
       for key, buf in bufs.items():
+        if resample:
+          buf = self.downscaler.run(key, buf)  # persistent per-key host frame, so the pointer below stays valid
         ptr = np.frombuffer(buf.data, dtype=np.uint8).ctypes.data
         cache_key = (key, ptr)
         if cache_key not in self._blob_cache:
@@ -238,8 +254,8 @@ class ModelState(ModelStateBase):
       if key in self.numpy_inputs and key in inputs:
         self.numpy_inputs[key][:] = inputs[key]
 
-    self.numpy_inputs['tfm'][:, :] = transforms[self._road_key].reshape(3, 3)
-    self.numpy_inputs['big_tfm'][:, :] = transforms[self._wide_key].reshape(3, 3)
+    self.numpy_inputs['tfm'][:, :] = self.frame_scale @ transforms[self._road_key].reshape(3, 3)
+    self.numpy_inputs['big_tfm'][:, :] = self.frame_scale @ transforms[self._wide_key].reshape(3, 3)
 
     if self.run_model is not None:
       outs, = self.run_model(**{k: self.input_queues[k] for k in MODELD_INPUTS})
