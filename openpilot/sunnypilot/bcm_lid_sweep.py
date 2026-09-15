@@ -85,6 +85,8 @@ GRID_LIDS = [0x01 + 0x10 * i for i in range(16)]
 # attributed to the identifier that caused it rather than being noticed later.
 WATCH_RANGE = range(0x600, 0x700)
 
+FLOW_CONTROL = bytes([BCM_SUBADDR, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+
 
 def build_request(lid: int, service: int = SVC_READ) -> bytes:
   """One sub-addressed KWP request frame for `lid`, padded to the 8 bytes ISO 15765-4 wants."""
@@ -97,9 +99,6 @@ def build_request(lid: int, service: int = SVC_READ) -> bytes:
   else:
     raise ValueError(f"unsupported service: {service:#x}")
   return bytes([BCM_SUBADDR, len(payload)]) + payload.ljust(6, b"\x00")
-
-
-FLOW_CONTROL = bytes([BCM_SUBADDR, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
 
 
 @dataclass
@@ -139,7 +138,7 @@ def parse_payload(payload: bytes, service: int) -> Response:
 def _decode_frame(frame: bytes) -> tuple[str, bytes, int]:
   """Split a sub-addressed frame into (kind, payload_or_fragment, declared_length).
 
-  kind is "single", "first" (more to come), or "other" for anything not addressed to us.
+  kind is "single", "first" (more to come), "consecutive", or "other" for anything not ours.
   """
   if len(frame) < 2 or frame[0] != BCM_SUBADDR:
     return "other", b"", 0
@@ -155,94 +154,110 @@ def _decode_frame(frame: bytes) -> tuple[str, bytes, int]:
   return "other", b"", 0
 
 
-def _sweep(args) -> dict:
-  # Imported here so the frame builders above stay importable off-device, where cereal isn't built.
-  import openpilot.cereal.messaging as messaging
-  from openpilot.common.params import Params
-  from openpilot.selfdrive.pandad import can_capnp_to_list
-  from openpilot.sunnypilot.hazard_flash import ScriptFrame, encode_script
+class DeviceLink:
+  """The only part that touches the device: queue a frame, collect bus-0 frames, read onroad.
 
-  params = Params()
-  can_sock = messaging.sub_sock("can", conflate=False, timeout=0)
-  sm = messaging.SubMaster(["deviceState"])
+  Requests go out through OffroadCanScript rather than OffroadCanQueue. A KWP negative response
+  does not echo the identifier it refused, so only one request can be in flight if answers are
+  to be matched to probes - and the script path is the one with the ELM327 linger that stops a
+  frame being flushed out of the TX FIFO by the safety-model change (see panda_safety.cc).
+  """
 
-  sm.update(1000)
-  if sm.alive["deviceState"] and sm["deviceState"].getDeviceState().started and not args.force:
-    raise SystemExit("device is onroad; pandad will not play the script. Use Always Offroad, or --force.")
+  def __init__(self):
+    import openpilot.cereal.messaging as messaging
+    from openpilot.common.params import Params
+    from openpilot.selfdrive.pandad import can_capnp_to_list
+    from openpilot.sunnypilot.hazard_flash import ScriptFrame, encode_script
 
-  service = SVC_IO_CONTROL if args.control else SVC_READ
-  settle = args.settle if args.settle is not None else (1.0 if args.control else 0.35)
+    self._messaging = messaging
+    self._can_capnp_to_list = can_capnp_to_list
+    self._ScriptFrame = ScriptFrame
+    self._encode_script = encode_script
 
-  def send(frame: bytes):
-    params.put("OffroadCanScript", encode_script([ScriptFrame(0, frame, addr=BCM_REQ_ADDR, bus=BUS)]))
+    self.params = Params()
+    self.can_sock = messaging.sub_sock("can", conflate=False, timeout=0)
+    self.sm = messaging.SubMaster(["deviceState"])
 
-  def drain() -> list[tuple[int, bytes]]:
+  def onroad(self) -> bool:
+    self.sm.update(1000)
+    return bool(self.sm.alive["deviceState"] and self.sm["deviceState"].started)
+
+  def send(self, frame: bytes):
+    script = self._encode_script([self._ScriptFrame(0, frame, addr=BCM_REQ_ADDR, bus=BUS)])
+    self.params.put("OffroadCanScript", script)
+
+  def poll(self) -> list[tuple[int, bytes]]:
     out = []
-    for _, frames in can_capnp_to_list(messaging.drain_sock_raw(can_sock)):
+    raw = self._messaging.drain_sock_raw(self.can_sock)
+    for _, frames in self._can_capnp_to_list(raw):
       for addr, dat, src in frames:
         if src == BUS:
           out.append((addr, bytes(dat)))
     return out
 
+
+def probe(link, lid: int, service: int, settle: float) -> tuple[Response, dict[str, str]]:
+  """Send one request and collect the answer, plus any broadcast that moved while we waited."""
+  watched: dict[int, bytes] = {}
+  for addr, dat in link.poll():          # drain stale frames, and snapshot the broadcasts
+    if addr in WATCH_RANGE:
+      watched[addr] = dat
+
+  link.send(build_request(lid, service))
+
+  resp = Response()
+  pending: bytearray | None = None
+  want = 0
+  changed: dict[str, str] = {}
+  deadline = time.monotonic() + settle
+
+  while time.monotonic() < deadline:
+    for addr, dat in link.poll():
+      if addr in WATCH_RANGE:
+        if addr in watched and watched[addr] != dat:
+          changed[f"0x{addr:03X}"] = f"{watched[addr].hex(' ')} -> {dat.hex(' ')}"
+        watched[addr] = dat
+      if addr != BCM_RESP_ADDR:
+        continue
+
+      kind, chunk, length = _decode_frame(dat)
+      if kind == "single":
+        candidate = parse_payload(chunk, service)
+        if candidate.nrc == 0x78:
+          # responsePending: the ECU is asking for more time, not answering.
+          deadline = time.monotonic() + settle
+          continue
+        resp = candidate
+        deadline = min(deadline, time.monotonic() + 0.05)
+      elif kind == "first":
+        pending, want = bytearray(chunk), length
+        resp.multiframe = True
+        link.send(FLOW_CONTROL)
+      elif kind == "consecutive" and pending is not None:
+        pending += chunk
+        if len(pending) >= want:
+          resp = parse_payload(bytes(pending[:want]), service)
+          resp.multiframe = True
+          pending = None
+          deadline = min(deadline, time.monotonic() + 0.05)
+    time.sleep(0.01)
+
+  if pending is not None:
+    resp.truncated = True
+  return resp, changed
+
+
+def sweep(link, lids, service: int, settle: float, log=print) -> dict:
   results: dict[int, Response] = {}
   side_effects: dict[int, dict[str, str]] = {}
 
-  for lid in args.lids:
-    drain()                                   # discard anything queued before this probe
-    watched = {}
-    for addr, dat in drain():
-      if addr in WATCH_RANGE:
-        watched[addr] = dat
-
-    send(build_request(lid, service))
-
-    resp = Response()
-    pending: bytearray | None = None
-    want = 0
-    deadline = time.monotonic() + settle
-    changed: dict[str, str] = {}
-
-    while time.monotonic() < deadline:
-      for addr, dat in drain():
-        if addr in WATCH_RANGE:
-          if addr in watched and watched[addr] != dat:
-            changed[f"0x{addr:03X}"] = f"{watched[addr].hex(' ')} -> {dat.hex(' ')}"
-          watched[addr] = dat
-        if addr != BCM_RESP_ADDR:
-          continue
-
-        kind, chunk, length = _decode_frame(dat)
-        if kind == "single":
-          candidate = parse_payload(chunk, service)
-          # A responsePending is the ECU asking for more time, not the answer.
-          if candidate.nrc == 0x78:
-            deadline = time.monotonic() + settle
-            continue
-          resp = candidate
-          deadline = min(deadline, time.monotonic() + 0.05)
-        elif kind == "first":
-          pending, want = bytearray(chunk), length
-          resp.multiframe = True
-          send(FLOW_CONTROL)
-        elif kind == "consecutive" and pending is not None:
-          pending += chunk
-          if len(pending) >= want:
-            resp = parse_payload(bytes(pending[:want]), service)
-            resp.multiframe = True
-            pending = None
-            deadline = min(deadline, time.monotonic() + 0.05)
-      time.sleep(0.01)
-
-    if pending is not None:
-      resp.truncated = True
+  for lid in lids:
+    resp, changed = probe(link, lid, service, settle)
     results[lid] = resp
     if changed:
       side_effects[lid] = changed
-
-    flag = ""
-    if changed:
-      flag = "   ** something changed: " + "; ".join(f"{a} {d}" for a, d in changed.items())
-    print(f"  0x{lid:02X}  {resp.verdict:<22} {resp.data or resp.raw}{flag}")
+    flag = "   ** something changed: " + "; ".join(f"{a} {d}" for a, d in changed.items()) if changed else ""
+    log(f"  0x{lid:02X}  {resp.verdict:<22} {resp.data or resp.raw}{flag}")
 
   return {
     "service": f"0x{service:02X}",
@@ -251,18 +266,21 @@ def _sweep(args) -> dict:
   }
 
 
-def do_diff(path_a: str, path_b: str):
-  a, b = (json.load(open(p)) for p in (path_a, path_b))
+def do_diff(path_a: str, path_b: str, log=print):
+  with open(path_a) as f:
+    a = json.load(f)
+  with open(path_b) as f:
+    b = json.load(f)
   ra, rb = a["results"], b["results"]
-  print(f"identifiers whose value differs between {path_a} and {path_b}:\n")
+  log(f"identifiers whose value differs between {path_a} and {path_b}:\n")
   found = False
   for lid in sorted(set(ra) & set(rb)):
     va, vb = ra[lid], rb[lid]
     if va.get("positive") and vb.get("positive") and va.get("data") != vb.get("data"):
       found = True
-      print(f"  {lid}   {va['data']}   ->   {vb['data']}")
+      log(f"  {lid}   {va['data']}   ->   {vb['data']}")
   if not found:
-    print("  (none - no live identifier changed between the two runs)")
+    log("  (none - no live identifier changed between the two runs)")
 
 
 def main():
@@ -283,11 +301,11 @@ def main():
     return
 
   if args.lids:
-    args.lids = [int(x, 0) for x in args.lids.split(",")]
+    lids = [int(x, 0) for x in args.lids.split(",")]
   elif args.all:
-    args.lids = list(range(0x100))
+    lids = list(range(0x100))
   else:
-    args.lids = GRID_LIDS
+    lids = GRID_LIDS
 
   if args.control and not args.yes:
     print("--control sends InputOutputControlByLocalIdentifier to identifiers nobody has mapped.")
@@ -296,9 +314,15 @@ def main():
     if input("type 'parked' to continue: ").strip() != "parked":
       raise SystemExit("aborted")
 
-  svc = SVC_IO_CONTROL if args.control else SVC_READ
-  print(f"\nsweeping {len(args.lids)} identifiers on (0x{BCM_REQ_ADDR:03X}, 0x{BCM_SUBADDR:02X}) with service 0x{svc:02X}\n")
-  out = _sweep(args)
+  service = SVC_IO_CONTROL if args.control else SVC_READ
+  settle = args.settle if args.settle is not None else (1.0 if args.control else 0.35)
+
+  link = DeviceLink()
+  if link.onroad() and not args.force:
+    raise SystemExit("device is onroad; pandad will not play the script. Use Always Offroad, or --force.")
+
+  print(f"\nsweeping {len(lids)} identifiers on (0x{BCM_REQ_ADDR:03X}, 0x{BCM_SUBADDR:02X}) with service 0x{service:02X}\n")
+  out = sweep(link, lids, service, settle)
 
   live = [k for k, v in out["results"].items() if v["positive"]]
   print(f"\n{len(live)} live identifier(s): {', '.join(live) if live else '(none)'}")
