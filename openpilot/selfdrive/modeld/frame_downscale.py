@@ -170,11 +170,12 @@ class FrameDownscaler:
 if __name__ == "__main__":
   # on-device timing: python3 -m openpilot.selfdrive.modeld.frame_downscale [--device QCOM]
   import argparse
+  import os
   import time
   import types
-  from tinygrad.device import Device
   p = argparse.ArgumentParser()
-  p.add_argument('--device', default=Device.DEFAULT)
+  # never ask tinygrad for a default device here: with a chestnut attached it probes the AMD card and fetches firmware
+  p.add_argument('--device', default='QCOM' if os.path.exists('/dev/kgsl-3d0') else 'CPU')
   p.add_argument('--runs', type=int, default=50)
   args = p.parse_args()
   src, dst = (1928, 1208), CHESTNUT_FRAME_SIZE
@@ -195,3 +196,15 @@ if __name__ == "__main__":
     downscaler.jit(downscaler._blob_cache[frame.ctypes.data])
     downscaler._dev.synchronize()
   print(f"kernel only: {(time.perf_counter() - st) / args.runs * 1e3:.2f} ms")
+  st = time.perf_counter()
+  for _ in range(args.runs):
+    downscaler.jit(downscaler._blob_cache[frame.ctypes.data])
+    downscaler._dev.synchronize()
+    if downscaler._invalidate is not None:
+      addr = downscaler.out.ctypes.data
+      downscaler._invalidate.fxn(ctypes.c_uint64(addr & ~63), -(-(addr + downscaler.copy_size - (addr & ~63)) // 64))
+  print(f"kernel + cache invalidate: {(time.perf_counter() - st) / args.runs * 1e3:.2f} ms")
+  st = time.perf_counter()
+  for _ in range(args.runs):
+    downscaler.frames['img'][:downscaler.copy_size] = downscaler.out
+  print(f"host memcpy only: {(time.perf_counter() - st) / args.runs * 1e3:.2f} ms")
