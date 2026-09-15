@@ -15,6 +15,7 @@ from openpilot.sunnypilot.bcm_lid_sweep import (
   BCM_SUBADDR,
   BUS,
   GRID_LIDS,
+  HAZARD_MSG,
   RADAR_SUBADDR,
   REJECTED_SRC,
   RETURNED_SRC,
@@ -23,6 +24,9 @@ from openpilot.sunnypilot.bcm_lid_sweep import (
   DeviceLink,
   _decode_frame,
   build_request,
+  describe_hazard,
+  effect_probe,
+  effect_sweep,
   parse_payload,
   preflight,
   probe,
@@ -390,3 +394,51 @@ class TestDeviceLink:
       (0x750, b"\x40\x01\x3e", RETURNED_SRC),
       (0x750, b"\x40\x01\x3e", REJECTED_SRC),
     ]
+
+
+class TestEffectMode:
+  """With no answers on this bus, a live identifier is found by what it moves."""
+
+  HAZ_OFF = b"\x29\x00\x7e\x30\x00\x00\x0b\x74"
+  HAZ_ON = b"\x29\x80\x7e\x38\x00\x00\x0b\x74"
+
+  def test_names_the_hazard_bit(self):
+    assert describe_hazard(self.HAZ_OFF, self.HAZ_ON) == "HAZARD on"
+    assert describe_hazard(self.HAZ_ON, self.HAZ_OFF) == "HAZARD off"
+
+  def test_names_the_turn_signal(self):
+    left = b"\x29\x00\x7e\x10\x00\x00\x0b\x74"
+    assert describe_hazard(self.HAZ_OFF, left) == "left"
+
+  def test_ignores_changes_elsewhere_in_the_message(self):
+    """Byte 1 bit 0x80 is the BCM's event flag and moves on every broadcast; it is not a lamp."""
+    event = b"\x29\x80\x7e\x30\x00\x00\x0b\x74"
+    assert describe_hazard(self.HAZ_OFF, event) is None
+
+  def test_handles_a_short_frame(self):
+    assert describe_hazard(b"\x29", self.HAZ_ON) is None
+
+  def test_drives_then_releases_the_identifier(self):
+    """A run that stops early must not leave an output latched on."""
+    link = FakeLink({})
+    effect_probe(link, 0x41, 0x08, 0.02, BCM_SUBADDR, log=lambda *_: None)
+    assert [f[2:5] for f in link.sent] == [b"\x30\x41\x00", b"\x30\x41\x00"]
+    assert link.sent[0][5] == 0x08, "drives with the value"
+    assert link.sent[1][5] == 0x00, "then hands control back"
+
+  def test_uses_the_body_ecu_frame_shape(self):
+    link = FakeLink({})
+    effect_probe(link, 0x41, 0x08, 0.02, BCM_SUBADDR, log=lambda *_: None)
+    for frame in link.sent:
+      assert frame[0] == BCM_SUBADDR and frame[1] == 0x05 and len(frame) == 8
+
+  def test_reports_a_hazard_effect_against_the_identifier(self):
+    link = FakeLink({}, broadcasts={0x41: {HAZARD_MSG: self.HAZ_ON}})
+    link._queue.append((HAZARD_MSG, self.HAZ_OFF, BUS))
+    out = effect_sweep(link, [0x41], 0x08, 0.05, BCM_SUBADDR, log=lambda *_: None)
+    assert "0x41" in out["effects"]
+    assert "HAZARD on" in out["effects"]["0x41"][f"0x{HAZARD_MSG:03X}"]
+
+  def test_quiet_identifier_is_not_reported(self):
+    out = effect_sweep(FakeLink({}), [0x41], 0x08, 0.02, BCM_SUBADDR, log=lambda *_: None)
+    assert out["effects"] == {}

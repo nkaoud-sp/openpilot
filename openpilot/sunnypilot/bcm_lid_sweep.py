@@ -321,6 +321,76 @@ def preflight(link, log=print, listen: float = 1.5, timeout: float = 1.0,
   return ok
 
 
+# What a lamp control would show up as, from the labelled rlog: 0x614 byte 3 carries the hazard
+# flag and the turn-signal field, and the body ECU broadcasts it on change with byte 1 bit 0x80
+# raised for about a second.
+HAZARD_MSG = 0x614
+HAZARD_BYTE = 3
+HAZARD_BIT = 0x08
+TURN_FIELD_MASK = 0x30
+
+
+def describe_hazard(before: bytes, after: bytes) -> str | None:
+  """Name the change if 0x614's lamp bits moved, so the one that matters isn't just another row."""
+  if len(before) <= HAZARD_BYTE or len(after) <= HAZARD_BYTE:
+    return None
+  b, a = before[HAZARD_BYTE], after[HAZARD_BYTE]
+  if (b ^ a) & (HAZARD_BIT | TURN_FIELD_MASK) == 0:
+    return None
+  bits = []
+  if (b ^ a) & HAZARD_BIT:
+    bits.append("HAZARD " + ("on" if a & HAZARD_BIT else "off"))
+  if (b ^ a) & TURN_FIELD_MASK:
+    bits.append({1: "left", 2: "right", 3: "none"}.get((a & TURN_FIELD_MASK) >> 4, "?"))
+  return " + ".join(bits)
+
+
+def effect_probe(link, lid: int, value: int, settle: float, subaddr: int,
+                 log=print) -> dict[str, str]:
+  """Drive one identifier and watch what the body ECU says about it afterwards.
+
+  There are no answers to read on this bus - the auto-lock has always worked without one - so a
+  live identifier is found by what it changes, not by what it replies. The control is released
+  again straight after, so nothing is left latched.
+  """
+  watched: dict[int, bytes] = {}
+  for addr, dat, src in link.poll():
+    if src == BUS and addr in WATCH_RANGE:
+      watched[addr] = dat
+
+  log(f"  0x{lid:02X}  sending 30 {lid:02X} 00 {value:02X} 00 ...")
+  payload = bytes([SVC_IO_CONTROL, lid, 0x00, value, 0x00])
+  link.send(bytes([subaddr, len(payload)]) + payload.ljust(6, b"\x00"))
+
+  changed: dict[str, str] = {}
+  for addr, dat, src in _collect(link, settle):
+    if src != BUS or addr not in WATCH_RANGE:
+      continue
+    if addr in watched and watched[addr] != dat:
+      note = describe_hazard(watched[addr], dat) if addr == HAZARD_MSG else None
+      label = f"{watched[addr].hex(' ')} -> {dat.hex(' ')}"
+      changed[f"0x{addr:03X}"] = f"{label}   <<< {note}" if note else label
+    watched[addr] = dat
+
+  # Hand the output back whatever happened, so a run that is cut short can't leave lamps latched.
+  release = bytes([SVC_IO_CONTROL, lid, 0x00, 0x00, 0x00])
+  link.send(bytes([subaddr, len(release)]) + release.ljust(6, b"\x00"))
+  _collect(link, 0.4)
+  return changed
+
+
+def effect_sweep(link, lids, value: int, settle: float, subaddr: int, log=print) -> dict:
+  out: dict[int, dict[str, str]] = {}
+  for lid in lids:
+    changed = effect_probe(link, lid, value, settle, subaddr, log)
+    if changed:
+      out[lid] = changed
+      for addr, what in changed.items():
+        log(f"        {addr}  {what}")
+  return {"mode": "effect", "value": f"0x{value:02X}", "subaddr": f"0x{subaddr:02X}",
+          "effects": {f"0x{lid:02X}": v for lid, v in out.items()}}
+
+
 def probe(link, lid: int, service: int, settle: float, wake: bool = True,
           attempts: int = 3, subaddr: int = BCM_SUBADDR) -> tuple[Response, dict[str, str]]:
   """Send one request and collect the answer, plus any broadcast that moved while we waited.
@@ -453,6 +523,10 @@ def main():
   p.add_argument("--no-preflight", action="store_true", help="skip the bus/pandad/ECU checks")
   subaddr_help = f"0x750 sub-address (default {hex(BCM_SUBADDR)} body ECU; {hex(RADAR_SUBADDR)} radar, answers on bus 0)"
   p.add_argument("--subaddr", default=hex(BCM_SUBADDR), help=subaddr_help)
+  p.add_argument("--effect", action="store_true",
+                 help="drive each identifier and watch what changes, for a bus with no answers. ACTUATES.")
+  p.add_argument("--value", default="0x08",
+                 help="data byte for --effect (default 0x08, the hazard bit in 0x614 byte 3)")
   args = p.parse_args()
 
   if args.diff:
@@ -465,6 +539,14 @@ def main():
     lids = list(range(0x100))
   else:
     lids = GRID_LIDS
+
+  if args.effect and not args.yes:
+    print("--effect DRIVES each identifier: it sends a real, non-zero control and watches what moves.")
+    print("Doors, windows, mirrors, lamps and the horn all live in this identifier space. Park the")
+    print("car outside, keep hands clear of the windows, and watch it while this runs. Each control")
+    print("is released again immediately, and Ctrl-C stops between identifiers.")
+    if input("type 'drive it' to continue: ").strip() != "drive it":
+      raise SystemExit("aborted")
 
   if args.control and not args.yes:
     print("--control sends InputOutputControlByLocalIdentifier to identifiers nobody has mapped.")
@@ -486,13 +568,23 @@ def main():
     if not preflight(link, subaddr=subaddr) and not args.force:
       raise SystemExit("\npreflight failed; fix the above or pass --force to sweep anyway.")
 
-  print(f"\nsweeping {len(lids)} identifiers on (0x{BCM_REQ_ADDR:03X}, 0x{subaddr:02X}) with service 0x{service:02X}\n")
-  out = sweep(link, lids, service, settle, wake=not args.no_wake, subaddr=subaddr)
+  if args.effect:
+    value = int(args.value, 0)
+    print(f"\ndriving {len(lids)} identifiers on (0x{BCM_REQ_ADDR:03X}, 0x{subaddr:02X}) with data 0x{value:02X}\n")
+    out = effect_sweep(link, lids, value, args.settle or 1.5, subaddr)
+    hits = out["effects"]
+    print(f"\n{len(hits)} identifier(s) changed something: {', '.join(hits) if hits else '(none)'}")
+    for lid, changed in hits.items():
+      if any("HAZARD" in v for v in changed.values()):
+        print(f"  {lid} moved the hazard bit in 0x614 - this is the one")
+  else:
+    print(f"\nsweeping {len(lids)} identifiers on (0x{BCM_REQ_ADDR:03X}, 0x{subaddr:02X}) with service 0x{service:02X}\n")
+    out = sweep(link, lids, service, settle, wake=not args.no_wake, subaddr=subaddr)
 
-  live = [k for k, v in out["results"].items() if v["positive"]]
-  print(f"\n{len(live)} live identifier(s): {', '.join(live) if live else '(none)'}")
-  if out["side_effects"]:
-    print(f"identifiers that changed a broadcast: {', '.join(out['side_effects'])}")
+    live = [k for k, v in out["results"].items() if v["positive"]]
+    print(f"\n{len(live)} live identifier(s): {', '.join(live) if live else '(none)'}")
+    if out["side_effects"]:
+      print(f"identifiers that changed a broadcast: {', '.join(out['side_effects'])}")
 
   if args.out:
     with open(args.out, "w") as f:
