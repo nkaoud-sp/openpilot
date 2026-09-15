@@ -203,6 +203,8 @@ class TweaksLayout(Widget):
 
   def _run_frame_benchmark(self):
     mode = ui_state.params.get("ChestnutFrameMode") or "not run yet"
+    if error := ui_state.params.get("ChestnutLastError"):
+      mode += f"\nchestnut error: {error[-700:]}"
     try:
       proc = subprocess.run(FRAME_BENCHMARK_CMD, cwd=BASEDIR, capture_output=True, text=True, timeout=600)
       output = proc.stdout.strip()[-800:]

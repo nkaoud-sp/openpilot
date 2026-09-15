@@ -12,6 +12,7 @@ os.environ['GMMU'] = '0'
 import numpy as np
 import threading
 import time
+import traceback
 from setproctitle import setproctitle
 from tinygrad.tensor import Tensor
 
@@ -384,8 +385,10 @@ def main(demo=False):
         m = ModelState(cam_w=vipc_client_main.width, cam_h=vipc_client_main.height, chestnut=True)
         m.warmup()
         big_model = m
+        params.put("ChestnutLastError", "")
       except Exception:
         cloudlog.exception("chestnut load failed")
+        params.put("ChestnutLastError", "load failed:\n" + traceback.format_exc()[-900:])
     loader = threading.Thread(target=load_big, daemon=True)
     loader.start()
     loader.join(BIG_MODEL_TIMEOUT)
@@ -537,6 +540,7 @@ def main(demo=False):
       if not params.get_bool("ChestnutActive"):
         raise
       cloudlog.exception("chestnut failed, falling back to small")
+      params.put("ChestnutLastError", f"failed after {run_count} runs:\n" + traceback.format_exc()[-900:])
       params.put_bool("ChestnutModelError", True)
       params.put_bool("ChestnutActive", False)
       assert small_model is not None
