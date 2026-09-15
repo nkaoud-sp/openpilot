@@ -4,6 +4,7 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+import time
 from collections.abc import Callable
 from enum import IntEnum
 import subprocess
@@ -16,7 +17,12 @@ from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.launc
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.park_assist_settings import ParkAssistSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.speed_assist_settings import SpeedAssistSettingsLayout
 from openpilot.selfdrive.ui.ui_state import ui_state
-from openpilot.sunnypilot.autolock_commands import build_hazard_queue
+from openpilot.sunnypilot.hazard_flash import (
+  build_hazard_flash_frames,
+  build_hazard_stop_script,
+  encode_script,
+  script_duration_s,
+)
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog
@@ -25,7 +31,6 @@ from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.scroller_tici import Scroller
 
 
-HAZARD_TEST_FLASHES = 3
 FRAME_BENCHMARK_CMD = ["python3", "-m", "openpilot.selfdrive.modeld.frame_downscale", "--device", "QCOM"]
 
 
@@ -55,6 +60,7 @@ class TweaksLayout(Widget):
     super().__init__()
 
     self._current_panel = PanelType.TWEAKS
+    self._hazard_flash_until = 0.0
     self._benchmark_thread: threading.Thread | None = None
     self._benchmark_result: str | None = None
     self._dynamic_follow_layout = DynamicFollowSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
@@ -130,10 +136,11 @@ class TweaksLayout(Widget):
 
     self._hazard_test = button_item_sp(
       title=lambda: tr("Hazard Flash Test"),
-      button_text=lambda: tr("Flash"),
-      description=lambda: tr("Flash the hazard lamps three times to check the body-ECU CAN path used by " +
-                            "Auto Door Lock. Offroad only: pandad can only send these frames while the car " +
-                            "is off. Toyota/Lexus."),
+      button_text=lambda: tr("Stop") if self._hazard_flashing() else tr("Flash"),
+      description=lambda: tr("Blink the hazard lamps for a minute over the OBD diagnostic path, to check that the " +
+                            "car takes commands from the panda before relying on a feature that sends them. Press " +
+                            "again to stop early. Offroad only: the frames can only go out while the car is off. " +
+                            "Toyota/Lexus."),
       callback=self._on_hazard_test,
       enabled=lambda: ui_state.is_offroad(),
     )
@@ -177,6 +184,11 @@ class TweaksLayout(Widget):
       self._frame_benchmark,
     ]
 
+  def _hazard_flashing(self) -> bool:
+    # There is no feedback from pandad, so track the run against the length of the script that was
+    # queued. Going onroad drops it, so that counts as the run being over.
+    return ui_state.is_offroad() and time.monotonic() < self._hazard_flash_until
+
   def _on_frame_benchmark(self):
     if self._benchmark_thread is not None and self._benchmark_thread.is_alive():
       return
@@ -217,10 +229,21 @@ class TweaksLayout(Widget):
     self._benchmark_result = f"last drive: {mode}\n\n{output}"
 
   def _on_hazard_test(self):
-    # Same OffroadCanQueue path as the auto door lock: pandad drains it offroad, one frame per
-    # 200 ms, via ELM327. pandad appends to whatever is still pending, so pressing again mid-run
-    # just extends the blinking; every sequence ends with an OFF frame, so it can't latch on.
-    ui_state.params.put("OffroadCanQueue", build_hazard_queue(HAZARD_TEST_FLASHES))
+    # pandad plays the script offroad only, so don't leave one queued for the next time the car
+    # is parked. The button is greyed out onroad too; this guards the callback itself.
+    if not ui_state.is_offroad():
+      return
+
+    # A minute is long enough to want out of, and a queued script replaces the one playing, so the
+    # same button cuts the run short by queuing the frames that put the lamps out.
+    if self._hazard_flashing():
+      ui_state.params.put("OffroadCanScript", build_hazard_stop_script())
+      self._hazard_flash_until = 0.0
+      return
+
+    frames = build_hazard_flash_frames()
+    ui_state.params.put("OffroadCanScript", encode_script(frames))
+    self._hazard_flash_until = time.monotonic() + script_duration_s(frames)
 
   def _on_reverse_cruise(self, state: bool):
     # The flag is read at car-process init, so request an onroad cycle to apply it without a full reboot.
