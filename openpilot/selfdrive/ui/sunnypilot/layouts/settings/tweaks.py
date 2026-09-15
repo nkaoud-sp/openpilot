@@ -5,8 +5,12 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 import time
+from collections.abc import Callable
 from enum import IntEnum
+import subprocess
+import threading
 
+from openpilot.common.basedir import BASEDIR
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.auto_lock_settings import AutoLockSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.dynamic_follow_settings import DynamicFollowSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.launch_assist_settings import LaunchAssistSettingsLayout
@@ -19,10 +23,15 @@ from openpilot.sunnypilot.hazard_flash import (
   encode_script,
   script_duration_s,
 )
+from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr
+from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog
 from openpilot.system.ui.sunnypilot.widgets.list_view import button_item_sp, simple_button_item_sp, toggle_item_sp
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.scroller_tici import Scroller
+
+
+FRAME_BENCHMARK_CMD = ["python3", "-m", "openpilot.selfdrive.modeld.frame_downscale", "--device", "QCOM"]
 
 
 class PanelType(IntEnum):
@@ -34,12 +43,26 @@ class PanelType(IntEnum):
   AUTO_LOCK = 5
 
 
+class _BenchmarkDialog(ConfirmDialog):
+  # a modal hides the layout below it, so the dialog polls for the benchmark result itself
+  def __init__(self, text: str, take_result: Callable[[], str | None]):
+    super().__init__(text, tr("OK"), cancel_text="")
+    self._take_result = take_result
+
+  def _render(self, rect):
+    if (result := self._take_result()) is not None:
+      self.set_text(result)
+    super()._render(rect)
+
+
 class TweaksLayout(Widget):
   def __init__(self):
     super().__init__()
 
     self._current_panel = PanelType.TWEAKS
     self._hazard_flash_until = 0.0
+    self._benchmark_thread: threading.Thread | None = None
+    self._benchmark_result: str | None = None
     self._dynamic_follow_layout = DynamicFollowSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._launch_layout = LaunchAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._park_layout = ParkAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
@@ -136,6 +159,15 @@ class TweaksLayout(Widget):
       param="ChestnutNativeFrames",
     )
 
+    self._frame_benchmark = button_item_sp(
+      title=lambda: tr("Chestnut Frame Benchmark"),
+      button_text=lambda: tr("Run"),
+      description=lambda: tr("Time the comma four frame resample on this device's GPU and show the numbers on screen, " +
+                            "along with the frame mode modeld used on the last drive. Offroad only, takes about a minute."),
+      callback=self._on_frame_benchmark,
+      enabled=lambda: ui_state.is_offroad(),
+    )
+
     return [
       self._remember_experimental_mode,
       self._dynamic_follow,
@@ -149,12 +181,37 @@ class TweaksLayout(Widget):
       self._auto_lock_button,
       self._hazard_test,
       self._chestnut_native_frames,
+      self._frame_benchmark,
     ]
 
   def _hazard_flashing(self) -> bool:
     # There is no feedback from pandad, so track the run against the length of the script that was
     # queued. Going onroad drops it, so that counts as the run being over.
     return ui_state.is_offroad() and time.monotonic() < self._hazard_flash_until
+
+  def _on_frame_benchmark(self):
+    if self._benchmark_thread is not None and self._benchmark_thread.is_alive():
+      return
+    self._benchmark_result = None
+    gui_app.push_widget(_BenchmarkDialog(tr("Running the chestnut frame benchmark, this takes about a minute..."), self._take_benchmark_result))
+    self._benchmark_thread = threading.Thread(target=self._run_frame_benchmark, daemon=True)
+    self._benchmark_thread.start()
+
+  def _take_benchmark_result(self) -> str | None:
+    result, self._benchmark_result = self._benchmark_result, None
+    return result
+
+  def _run_frame_benchmark(self):
+    mode = ui_state.params.get("ChestnutFrameMode") or "not run yet"
+    try:
+      proc = subprocess.run(FRAME_BENCHMARK_CMD, cwd=BASEDIR, capture_output=True, text=True, timeout=600)
+      output = (proc.stdout + proc.stderr).strip()[-1200:]
+      if proc.returncode != 0:
+        output = f"exit code {proc.returncode}\n{output}"
+    except Exception as e:
+      output = f"failed to run: {e}"
+    # picked up by the dialog's render, so its text is only touched from the UI thread
+    self._benchmark_result = f"last drive: {mode}\n\n{output}"
 
   def _on_hazard_test(self):
     # pandad plays the script offroad only, so don't leave one queued for the next time the car

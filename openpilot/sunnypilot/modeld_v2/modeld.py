@@ -135,6 +135,7 @@ class ModelState(ModelStateBase):
       if (frame_w, frame_h) != (cam_w, cam_h):
         self.downscaler = FrameDownscaler((cam_w, cam_h), (frame_w, frame_h), 'QCOM' if COMMA_HARDWARE else 'CPU')
       cloudlog.warning(f"chestnut frames: {cam_w}x{cam_h} camera -> {frame_w}x{frame_h} model input")
+      Params().put("ChestnutFrameMode", f"{cam_w}x{cam_h} camera -> {frame_w}x{frame_h} model input")
     self.frame_scale = self.downscaler.scale if self.downscaler is not None else np.eye(3, dtype=np.float32)
 
     nv12_info = get_nv12_info(frame_w, frame_h)
