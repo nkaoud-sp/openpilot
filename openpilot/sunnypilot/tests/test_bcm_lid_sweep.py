@@ -14,12 +14,12 @@ from openpilot.sunnypilot.bcm_lid_sweep import (
   BCM_RESP_ADDR,
   BCM_SUBADDR,
   BUS,
+  GRID_LIDS,
+  RADAR_SUBADDR,
   REJECTED_SRC,
   RETURNED_SRC,
-  GRID_LIDS,
   SVC_IO_CONTROL,
   SVC_READ,
-  TESTER_PRESENT,
   DeviceLink,
   _decode_frame,
   build_request,
@@ -27,6 +27,7 @@ from openpilot.sunnypilot.bcm_lid_sweep import (
   preflight,
   probe,
   sweep,
+  wake_frame,
 )
 
 SETTLE = 0.02
@@ -79,8 +80,8 @@ class FakeLink:
     self._queue.append((BCM_REQ_ADDR, frame, RETURNED_SRC))
 
     if frame[2] == 0x3E:
-      if self.awake:
-        self._queue.append((BCM_RESP_ADDR, b"\x40\x01\x7e\x00\x00\x00\x00\x00", BUS))
+      if self.awake:   # echo the sub-address that was asked, as the real module does
+        self._queue.append((BCM_RESP_ADDR, bytes([frame[0], 0x01, 0x7E, 0, 0, 0, 0, 0]), BUS))
       return
     if frame[2] in (SVC_READ, SVC_IO_CONTROL):
       lid = frame[3]
@@ -237,11 +238,11 @@ class TestProbe:
     probe(link, 0x11, SVC_IO_CONTROL, SETTLE, wake=False)
     assert len(link.sent) == 1
 
-  def test_wake_sends_tester_present_first(self):
+  def test_wake_sends_a_tester_present_first(self):
     """The dongle never read an identifier without a TesterPresent in front of it."""
     link = FakeLink({0x11: b"\x40\x02\x70\x11\x00\x00\x00\x00"})
     probe(link, 0x11, SVC_IO_CONTROL, SETTLE, wake=True)
-    assert link.sent[0] == TESTER_PRESENT
+    assert link.sent[0] == wake_frame()
     assert link.sent[1][2:4] == b"\x30\x11"
 
   def test_tester_present_reply_is_not_read_as_the_answer(self):
@@ -292,7 +293,7 @@ class TestPreflight:
     link = FakeLink({}, awake=False, consumes_scripts=True, idle=self.BUS_TRAFFIC, transmits=True)
     preflight(link, log=lines.append, listen=0.05, timeout=0.05)
     assert any("frame reached bus yes" in ln for ln in lines)
-    assert any("body ECU awake    NO" in ln for ln in lines)
+    assert any("0x40 answers      NO" in ln for ln in lines)
 
   def test_walks_the_send_jitter_across_attempts(self):
     """A frame lost to the 100 ms NO_OUTPUT beat must not look like a dead ECU forever."""
@@ -300,11 +301,24 @@ class TestPreflight:
     preflight(link, log=lambda *_: None, listen=0.05, timeout=0.05)
     assert len(set(link.delays)) > 1
 
+  def test_points_at_the_radar_as_a_control_when_the_body_ecu_is_silent(self):
+    """0x0F answers on bus 0, so it separates a broken transport from a module that isn't there."""
+    lines = []
+    link = FakeLink({}, awake=False, consumes_scripts=True, idle=self.BUS_TRAFFIC)
+    preflight(link, log=lines.append, listen=0.05, timeout=0.05)
+    assert any(f"--subaddr 0x{RADAR_SUBADDR:02X}" in ln for ln in lines)
+
+  def test_does_not_suggest_the_radar_when_already_probing_it(self):
+    lines = []
+    link = FakeLink({}, awake=False, consumes_scripts=True, idle=self.BUS_TRAFFIC)
+    preflight(link, log=lines.append, listen=0.05, timeout=0.05, subaddr=RADAR_SUBADDR)
+    assert not any("--subaddr" in ln for ln in lines)
+
   def test_reports_each_check_by_name(self):
     lines = []
     preflight(FakeLink({}, awake=False, consumes_scripts=True, idle=self.BUS_TRAFFIC), log=lines.append, listen=0.05, timeout=0.05)
     text = "\n".join(lines)
-    for check in ("bus 0 traffic", "pandad picked up", "frame reached bus", "body ECU awake"):
+    for check in ("bus 0 traffic", "pandad picked up", "frame reached bus", "answers"):
       assert check in text
 
 

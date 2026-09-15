@@ -85,12 +85,25 @@ GRID_LIDS = [0x01 + 0x10 * i for i in range(16)]
 # attributed to the identifier that caused it rather than being noticed later.
 WATCH_RANGE = range(0x600, 0x700)
 
-FLOW_CONTROL = bytes([BCM_SUBADDR, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+# 0x750 is shared and sub-addressed: 0x40 is the body ECU, 0xA5/0xA6 the mirror modules,
+# 0x90-0x93 the door modules, and 0x0F the forward radar. Which of them are reachable depends on
+# the bus: openpilot queries 0x750 on bus 0 for the radar only, and opendbc lists the body ECU
+# among the ECUs *not* queried there. Probing 0x0F is therefore the control experiment - it is
+# known to answer on bus 0, so if it replies and 0x40 does not, the transport is fine and the
+# body ECU simply is not on this bus.
+RADAR_SUBADDR = 0x0F
+
+
+def flow_control(subaddr: int = BCM_SUBADDR) -> bytes:
+  return bytes([subaddr, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+
+
+def wake_frame(subaddr: int = BCM_SUBADDR) -> bytes:
+  return bytes([subaddr, 0x01, 0x3E, 0x00, 0x00, 0x00, 0x00, 0x00])
 
 # The hazard dongle sends TesterPresent before its reads and again every few requests, and the
 # body ECU answers 0x7E. A KWP ECU that has gone quiet may need it before it will answer at all,
 # so by default every probe is preceded by one.
-TESTER_PRESENT = bytes([BCM_SUBADDR, 0x01, 0x3E, 0x00, 0x00, 0x00, 0x00, 0x00])
 TESTER_PRESENT_RESPONSE = 0x7E
 
 # The panda re-publishes what it transmits, tagging the bus so the frame's fate is visible:
@@ -107,7 +120,7 @@ REJECTED_SRC = 0xC0 + BUS
 SEND_JITTER_MS = (0, 37, 71, 13, 53)
 
 
-def build_request(lid: int, service: int = SVC_READ) -> bytes:
+def build_request(lid: int, service: int = SVC_READ, subaddr: int = BCM_SUBADDR) -> bytes:
   """One sub-addressed KWP request frame for `lid`, padded to the 8 bytes ISO 15765-4 wants."""
   if not 0 <= lid <= 0xFF:
     raise ValueError(f"local identifier out of range: {lid}")
@@ -117,7 +130,7 @@ def build_request(lid: int, service: int = SVC_READ) -> bytes:
     payload = bytes([SVC_IO_CONTROL, lid]) + IO_CONTROL_PROBE_DATA
   else:
     raise ValueError(f"unsupported service: {service:#x}")
-  return bytes([BCM_SUBADDR, len(payload)]) + payload.ljust(6, b"\x00")
+  return bytes([subaddr, len(payload)]) + payload.ljust(6, b"\x00")
 
 
 @dataclass
@@ -154,12 +167,12 @@ def parse_payload(payload: bytes, service: int) -> Response:
   return resp
 
 
-def _decode_frame(frame: bytes) -> tuple[str, bytes, int]:
+def _decode_frame(frame: bytes, subaddr: int = BCM_SUBADDR) -> tuple[str, bytes, int]:
   """Split a sub-addressed frame into (kind, payload_or_fragment, declared_length).
 
   kind is "single", "first" (more to come), "consecutive", or "other" for anything not ours.
   """
-  if len(frame) < 2 or frame[0] != BCM_SUBADDR:
+  if len(frame) < 2 or frame[0] != subaddr:
     return "other", b"", 0
   pci = frame[1] >> 4
   if pci == 0:
@@ -237,7 +250,8 @@ def _collect(link, seconds: float, watched: dict[int, bytes] | None = None) -> l
   return frames
 
 
-def preflight(link, log=print, listen: float = 1.5, timeout: float = 1.0) -> bool:
+def preflight(link, log=print, listen: float = 1.5, timeout: float = 1.0,
+              subaddr: int = BCM_SUBADDR) -> bool:
   """Check the three things that make every identifier look absent, and name which one failed.
 
   A silent sweep is ambiguous: an empty identifier space, a sleeping ECU and a panda that never
@@ -260,7 +274,7 @@ def preflight(link, log=print, listen: float = 1.5, timeout: float = 1.0) -> boo
   transmitted = rejected = answered = False
   consumed = False
   for attempt, delay_ms in enumerate(SEND_JITTER_MS):
-    link.send(TESTER_PRESENT, delay_ms)
+    link.send(wake_frame(subaddr), delay_ms)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline and link.script_pending():
       time.sleep(0.02)
@@ -271,7 +285,7 @@ def preflight(link, log=print, listen: float = 1.5, timeout: float = 1.0) -> boo
         transmitted = True
       if addr == BCM_REQ_ADDR and src == REJECTED_SRC:
         rejected = True
-      kind, payload, _ = _decode_frame(dat)
+      kind, payload, _ = _decode_frame(dat, subaddr)
       if addr == BCM_RESP_ADDR and src == BUS and kind == "single" and payload[:1] == bytes([TESTER_PRESENT_RESPONSE]):
         answered = True
     if answered:
@@ -294,18 +308,21 @@ def preflight(link, log=print, listen: float = 1.5, timeout: float = 1.0) -> boo
     log("  safety rejected   YES  -> the panda's safety model refused the frame, not the ECU.")
     ok = False
 
-  log(f"  body ECU awake    {'yes' if answered else 'NO'}  (TesterPresent -> 0x7E)")
+  log(f"  0x{subaddr:02X} answers      {'yes' if answered else 'NO'}  (TesterPresent -> 0x7E)")
   if transmitted and not answered:
-    log("                    -> the frame reached the bus and (0x750, 0x40) did not answer, so")
-    log("                       the ECU is asleep or not on this bus. A sweep now would report")
+    log(f"                    -> the frame reached the bus and (0x750, 0x{subaddr:02X}) did not answer, so")
+    log("                       that module is asleep or not on this bus. A sweep now would report")
     log("                       every identifier absent whether or not it exists.")
+    if subaddr != RADAR_SUBADDR:
+      log(f"                       Try --subaddr 0x{RADAR_SUBADDR:02X}: the radar is known to answer on bus 0,")
+      log("                       so if it replies the transport is fine and this module is elsewhere.")
     ok = False
 
   return ok
 
 
 def probe(link, lid: int, service: int, settle: float, wake: bool = True,
-          attempts: int = 3) -> tuple[Response, dict[str, str]]:
+          attempts: int = 3, subaddr: int = BCM_SUBADDR) -> tuple[Response, dict[str, str]]:
   """Send one request and collect the answer, plus any broadcast that moved while we waited.
 
   Retried with a different pre-send delay each time: a frame lost to the NO_OUTPUT beat is
@@ -315,7 +332,8 @@ def probe(link, lid: int, service: int, settle: float, wake: bool = True,
   changed: dict[str, str] = {}
   resp = Response()
   for attempt in range(attempts):
-    resp, moved = _probe_once(link, lid, service, settle, wake, SEND_JITTER_MS[attempt % len(SEND_JITTER_MS)])
+    resp, moved = _probe_once(link, lid, service, settle, wake,
+                              SEND_JITTER_MS[attempt % len(SEND_JITTER_MS)], subaddr)
     changed.update(moved)
     if resp.verdict != "no response":
       break
@@ -323,7 +341,7 @@ def probe(link, lid: int, service: int, settle: float, wake: bool = True,
 
 
 def _probe_once(link, lid: int, service: int, settle: float, wake: bool,
-                delay_ms: int) -> tuple[Response, dict[str, str]]:
+                delay_ms: int, subaddr: int = BCM_SUBADDR) -> tuple[Response, dict[str, str]]:
   watched: dict[int, bytes] = {}
   for addr, dat, src in link.poll():     # drain stale frames, and snapshot the broadcasts
     if src == BUS and addr in WATCH_RANGE:
@@ -331,10 +349,10 @@ def _probe_once(link, lid: int, service: int, settle: float, wake: bool,
 
   if wake:
     # Mirrors the dongle, which never read an identifier without a TesterPresent in front of it.
-    link.send(TESTER_PRESENT, delay_ms)
+    link.send(wake_frame(subaddr), delay_ms)
     _collect(link, 0.08 + delay_ms / 1000.0, watched)
 
-  link.send(build_request(lid, service), delay_ms)
+  link.send(build_request(lid, service, subaddr), delay_ms)
 
   resp = Response()
   pending: bytearray | None = None
@@ -353,7 +371,7 @@ def _probe_once(link, lid: int, service: int, settle: float, wake: bool,
       if addr != BCM_RESP_ADDR:
         continue
 
-      kind, chunk, length = _decode_frame(dat)
+      kind, chunk, length = _decode_frame(dat, subaddr)
       if kind == "single":
         if chunk[:1] == bytes([TESTER_PRESENT_RESPONSE]):
           continue        # a late answer to the wake frame, not to this probe
@@ -367,7 +385,7 @@ def _probe_once(link, lid: int, service: int, settle: float, wake: bool,
       elif kind == "first":
         pending, want = bytearray(chunk), length
         resp.multiframe = True
-        link.send(FLOW_CONTROL)
+        link.send(flow_control(subaddr))
       elif kind == "consecutive" and pending is not None:
         pending += chunk
         if len(pending) >= want:
@@ -382,12 +400,13 @@ def _probe_once(link, lid: int, service: int, settle: float, wake: bool,
   return resp, changed
 
 
-def sweep(link, lids, service: int, settle: float, log=print, wake: bool = True) -> dict:
+def sweep(link, lids, service: int, settle: float, log=print, wake: bool = True,
+          subaddr: int = BCM_SUBADDR) -> dict:
   results: dict[int, Response] = {}
   side_effects: dict[int, dict[str, str]] = {}
 
   for lid in lids:
-    resp, changed = probe(link, lid, service, settle, wake)
+    resp, changed = probe(link, lid, service, settle, wake, subaddr=subaddr)
     results[lid] = resp
     if changed:
       side_effects[lid] = changed
@@ -396,6 +415,7 @@ def sweep(link, lids, service: int, settle: float, log=print, wake: bool = True)
 
   return {
     "service": f"0x{service:02X}",
+    "subaddr": f"0x{subaddr:02X}",
     "results": {f"0x{lid:02X}": asdict(r) for lid, r in results.items()},
     "side_effects": {f"0x{lid:02X}": v for lid, v in side_effects.items()},
   }
@@ -431,6 +451,8 @@ def main():
   p.add_argument("--yes", action="store_true", help="skip the confirmation prompt for --control")
   p.add_argument("--no-wake", action="store_true", help="don't send TesterPresent before each probe")
   p.add_argument("--no-preflight", action="store_true", help="skip the bus/pandad/ECU checks")
+  subaddr_help = f"0x750 sub-address (default {hex(BCM_SUBADDR)} body ECU; {hex(RADAR_SUBADDR)} radar, answers on bus 0)"
+  p.add_argument("--subaddr", default=hex(BCM_SUBADDR), help=subaddr_help)
   args = p.parse_args()
 
   if args.diff:
@@ -453,6 +475,7 @@ def main():
 
   service = SVC_IO_CONTROL if args.control else SVC_READ
   settle = args.settle if args.settle is not None else (1.0 if args.control else 0.5)
+  subaddr = int(args.subaddr, 0)
 
   link = DeviceLink()
   if link.onroad() and not args.force:
@@ -460,11 +483,11 @@ def main():
 
   if not args.no_preflight:
     print("\npreflight:")
-    if not preflight(link) and not args.force:
+    if not preflight(link, subaddr=subaddr) and not args.force:
       raise SystemExit("\npreflight failed; fix the above or pass --force to sweep anyway.")
 
-  print(f"\nsweeping {len(lids)} identifiers on (0x{BCM_REQ_ADDR:03X}, 0x{BCM_SUBADDR:02X}) with service 0x{service:02X}\n")
-  out = sweep(link, lids, service, settle, wake=not args.no_wake)
+  print(f"\nsweeping {len(lids)} identifiers on (0x{BCM_REQ_ADDR:03X}, 0x{subaddr:02X}) with service 0x{service:02X}\n")
+  out = sweep(link, lids, service, settle, wake=not args.no_wake, subaddr=subaddr)
 
   live = [k for k, v in out["results"].items() if v["positive"]]
   print(f"\n{len(live)} live identifier(s): {', '.join(live) if live else '(none)'}")
