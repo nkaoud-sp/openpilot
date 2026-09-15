@@ -259,15 +259,15 @@ def preflight(link, log=print, listen: float = 1.5, timeout: float = 1.0,
   """
   ok = True
 
+  # Informational only. A quiet bus is what the car off looks like, and that is a state worth
+  # sweeping in - the auto-lock drives this same ECU, on this same bus, with the car off. The
+  # echo check below is the one that actually proves the frame got out, so this must not gate.
   seen: dict[int, int] = {}
   for addr, _, src in _collect(link, listen):
     if src == BUS:
       seen[addr] = seen.get(addr, 0) + 1
-  log(f"  bus 0 traffic     {sum(seen.values())} frames from {len(seen)} addresses in {listen:.1f} s")
-  if not seen:
-    log("                    -> nothing on bus 0. The powertrain bus is asleep or the panda is")
-    log("                       not connected. Switch the ignition on (Always Offroad) and retry.")
-    ok = False
+  quiet = "  (car appears to be off)" if not seen else ""
+  log(f"  bus 0 traffic     {sum(seen.values())} frames from {len(seen)} addresses in {listen:.1f} s{quiet}")
 
   # Walk the jitter so a phase-locked collision with pandad's NO_OUTPUT beat can't hide the
   # answer on every attempt.

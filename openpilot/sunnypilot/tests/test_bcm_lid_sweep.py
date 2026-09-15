@@ -261,10 +261,12 @@ class TestPreflight:
     link = FakeLink({}, awake=True, consumes_scripts=True, idle=self.BUS_TRAFFIC)
     assert preflight(link, log=lambda *_: None, listen=0.05, timeout=0.05) is True
 
-  def test_fails_on_a_silent_bus(self):
-    """Car asleep: no broadcasts at all, so every identifier would look absent."""
+  def test_a_quiet_bus_does_not_block_the_sweep(self):
+    """The car being off is a state worth sweeping in: auto-lock drives this ECU there."""
     link = FakeLink({}, awake=True, consumes_scripts=True, idle=[])
-    assert preflight(link, log=lambda *_: None, listen=0.05, timeout=0.05) is False
+    lines = []
+    assert preflight(link, log=lines.append, listen=0.05, timeout=0.05) is True
+    assert any("car appears to be off" in ln for ln in lines)
 
   def test_fails_when_pandad_never_takes_the_script(self):
     """Nothing was transmitted, so the sweep would be measuring nothing."""
