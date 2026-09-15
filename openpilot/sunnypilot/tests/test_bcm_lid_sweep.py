@@ -10,9 +10,12 @@ import pytest
 
 from openpilot.sunnypilot.autolock_commands import LOCK_CMD, UNLOCK_CMD
 from openpilot.sunnypilot.bcm_lid_sweep import (
+  BCM_REQ_ADDR,
   BCM_RESP_ADDR,
   BCM_SUBADDR,
   BUS,
+  REJECTED_SRC,
+  RETURNED_SRC,
   GRID_LIDS,
   SVC_IO_CONTROL,
   SVC_READ,
@@ -51,27 +54,40 @@ class FakeLink:
   """Stands in for the device: answers each request from a scripted table."""
 
   def __init__(self, answers: dict[int, bytes], broadcasts: dict[int, bytes] | None = None,
-               awake: bool = True, consumes_scripts: bool = True, idle: list | None = None):
+               awake: bool = True, consumes_scripts: bool = True, idle: list | None = None,
+               transmits: bool = True, safety_rejects: bool = False):
     self.answers = answers          # lid -> response frame, or absent for no reply
     self.broadcasts = broadcasts or {}
     self.awake = awake              # whether the ECU answers TesterPresent
     self.consumes_scripts = consumes_scripts   # whether pandad picks the script up
-    self.idle = idle or []          # background bus traffic, replayed on every poll
+    self.transmits = transmits      # whether the frame actually reaches the wire
+    self.safety_rejects = safety_rejects       # whether panda safety refuses to send it
+    self.idle = [(a, d, BUS) for a, d in (idle or [])]
     self.sent: list[bytes] = []
-    self._queue: list[tuple[int, bytes]] = []
+    self.delays: list[int] = []
+    self._queue: list[tuple[int, bytes, int]] = []
 
-  def send(self, frame: bytes):
+  def send(self, frame: bytes, delay_ms: int = 0):
     self.sent.append(frame)
+    self.delays.append(delay_ms)
+
+    if self.safety_rejects:
+      self._queue.append((BCM_REQ_ADDR, frame, REJECTED_SRC))
+      return
+    if not self.transmits:
+      return          # queued by pandad, flushed before it reached the bus
+    self._queue.append((BCM_REQ_ADDR, frame, RETURNED_SRC))
+
     if frame[2] == 0x3E:
       if self.awake:
-        self._queue.append((BCM_RESP_ADDR, b"\x40\x01\x7e\x00\x00\x00\x00\x00"))
+        self._queue.append((BCM_RESP_ADDR, b"\x40\x01\x7e\x00\x00\x00\x00\x00", BUS))
       return
     if frame[2] in (SVC_READ, SVC_IO_CONTROL):
       lid = frame[3]
       if lid in self.answers:
-        self._queue.append((BCM_RESP_ADDR, self.answers[lid]))
+        self._queue.append((BCM_RESP_ADDR, self.answers[lid], BUS))
       for addr, dat in self.broadcasts.get(lid, {}).items():
-        self._queue.append((addr, dat))
+        self._queue.append((addr, dat, BUS))
 
   def script_pending(self):
     return not self.consumes_scripts
@@ -211,7 +227,7 @@ class TestProbe:
       broadcasts={0x31: {0x614: b"\x29\x80\x7e\x38\x00\x00\x0b\x74"}},
     )
     # seed the pre-probe snapshot with a different value so the change is visible
-    link._queue.append((0x614, b"\x29\x00\x7e\x30\x00\x00\x0b\x74"))
+    link._queue.append((0x614, b"\x29\x00\x7e\x30\x00\x00\x0b\x74", BUS))
     _, changed = probe(link, 0x31, SVC_IO_CONTROL, SETTLE)
     assert "0x614" in changed and "38" in changed["0x614"]
 
@@ -258,11 +274,37 @@ class TestPreflight:
     link = FakeLink({}, awake=False, consumes_scripts=True, idle=self.BUS_TRAFFIC)
     assert preflight(link, log=lambda *_: None, listen=0.05, timeout=0.05) is False
 
+  def test_fails_when_the_frame_never_reaches_the_bus(self):
+    """pandad took the script but the panda flushed it: not the same as a silent ECU."""
+    link = FakeLink({}, awake=True, consumes_scripts=True, idle=self.BUS_TRAFFIC, transmits=False)
+    lines = []
+    assert preflight(link, log=lines.append, listen=0.05, timeout=0.05) is False
+    assert any("frame reached bus NO" in ln for ln in lines)
+
+  def test_fails_and_says_so_when_panda_safety_rejects_the_frame(self):
+    link = FakeLink({}, awake=True, consumes_scripts=True, idle=self.BUS_TRAFFIC, safety_rejects=True)
+    lines = []
+    assert preflight(link, log=lines.append, listen=0.05, timeout=0.05) is False
+    assert any("safety rejected" in ln for ln in lines)
+
+  def test_a_silent_ecu_is_only_blamed_once_the_frame_provably_went_out(self):
+    lines = []
+    link = FakeLink({}, awake=False, consumes_scripts=True, idle=self.BUS_TRAFFIC, transmits=True)
+    preflight(link, log=lines.append, listen=0.05, timeout=0.05)
+    assert any("frame reached bus yes" in ln for ln in lines)
+    assert any("body ECU awake    NO" in ln for ln in lines)
+
+  def test_walks_the_send_jitter_across_attempts(self):
+    """A frame lost to the 100 ms NO_OUTPUT beat must not look like a dead ECU forever."""
+    link = FakeLink({}, awake=False, consumes_scripts=True, idle=self.BUS_TRAFFIC)
+    preflight(link, log=lambda *_: None, listen=0.05, timeout=0.05)
+    assert len(set(link.delays)) > 1
+
   def test_reports_each_check_by_name(self):
     lines = []
     preflight(FakeLink({}, awake=False, consumes_scripts=True, idle=self.BUS_TRAFFIC), log=lines.append, listen=0.05, timeout=0.05)
     text = "\n".join(lines)
-    for check in ("bus 0 traffic", "pandad picked up", "body ECU awake"):
+    for check in ("bus 0 traffic", "pandad picked up", "frame reached bus", "body ECU awake"):
       assert check in text
 
 
@@ -317,11 +359,18 @@ class TestDeviceLink:
     assert script[4] == BUS
     assert script[6:6 + script[5]] == b"\x40\x02\x21\x11\x00\x00\x00\x00"
 
-  def test_poll_keeps_only_bus_zero_and_returns_bytes(self):
+  def test_poll_keeps_bus_zero_and_our_own_echoes_but_not_other_buses(self):
+    """The echo tags are how a flushed frame is told from a silent ECU, so they must survive."""
     link = self._stub(
       can_sock=None,
       _messaging=SimpleNamespace(drain_sock_raw=lambda _s: [b""]),
       _can_capnp_to_list=lambda _raw: [(0, [(0x758, b"\x40\x02\x70\x11", BUS),
+                                            (0x750, b"\x40\x01\x3e", RETURNED_SRC),
+                                            (0x750, b"\x40\x01\x3e", REJECTED_SRC),
                                             (0x758, b"\xff", 2)])],
     )
-    assert link.poll() == [(0x758, b"\x40\x02\x70\x11")]
+    assert link.poll() == [
+      (0x758, b"\x40\x02\x70\x11", BUS),
+      (0x750, b"\x40\x01\x3e", RETURNED_SRC),
+      (0x750, b"\x40\x01\x3e", REJECTED_SRC),
+    ]

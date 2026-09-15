@@ -93,6 +93,19 @@ FLOW_CONTROL = bytes([BCM_SUBADDR, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
 TESTER_PRESENT = bytes([BCM_SUBADDR, 0x01, 0x3E, 0x00, 0x00, 0x00, 0x00, 0x00])
 TESTER_PRESENT_RESPONSE = 0x7E
 
+# The panda re-publishes what it transmits, tagging the bus so the frame's fate is visible:
+# 0x80 + bus for a frame that went out, 0xC0 + bus for one the safety model refused to send
+# (panda.h). Without this, a frame that never reached the wire and an ECU that stayed silent
+# look identical.
+RETURNED_SRC = 0x80 + BUS
+REJECTED_SRC = 0xC0 + BUS
+
+# pandad polls for a queued script every 100 ms, and its panda-state loop re-asserts NO_OUTPUT
+# every 100 ms (pandad.cc). Two timers of the same period can phase-lock, and a safety-model
+# change re-inits the CAN cores - which flushes a frame still sitting in the TX FIFO. Giving each
+# request a different pre-send delay walks it around that beat instead of landing on it.
+SEND_JITTER_MS = (0, 37, 71, 13, 53)
+
 
 def build_request(lid: int, service: int = SVC_READ) -> bytes:
   """One sub-addressed KWP request frame for `lid`, padded to the 8 bytes ISO 15765-4 wants."""
@@ -188,8 +201,8 @@ class DeviceLink:
     self.sm.update(1000)
     return bool(self.sm.alive["deviceState"] and self.sm["deviceState"].started)
 
-  def send(self, frame: bytes):
-    script = self._encode_script([self._ScriptFrame(0, frame, addr=BCM_REQ_ADDR, bus=BUS)])
+  def send(self, frame: bytes, delay_ms: int = 0):
+    script = self._encode_script([self._ScriptFrame(delay_ms, frame, addr=BCM_REQ_ADDR, bus=BUS)])
     self.params.put("OffroadCanScript", script)
 
   def script_pending(self) -> bool:
@@ -200,24 +213,25 @@ class DeviceLink:
     """
     return bool(self.params.get("OffroadCanScript"))
 
-  def poll(self) -> list[tuple[int, bytes]]:
+  def poll(self) -> list[tuple[int, bytes, int]]:
+    """Every frame, with its src: bus 0 for received, RETURNED_SRC/REJECTED_SRC for our own."""
     out = []
     raw = self._messaging.drain_sock_raw(self.can_sock)
     for _, frames in self._can_capnp_to_list(raw):
       for addr, dat, src in frames:
-        if src == BUS:
-          out.append((addr, bytes(dat)))
+        if src in (BUS, RETURNED_SRC, REJECTED_SRC):
+          out.append((addr, bytes(dat), src))
     return out
 
 
-def _collect(link, seconds: float, watched: dict[int, bytes] | None = None) -> list[tuple[int, bytes]]:
+def _collect(link, seconds: float, watched: dict[int, bytes] | None = None) -> list[tuple[int, bytes, int]]:
   """Poll for `seconds`, returning every frame seen."""
   frames = []
   deadline = time.monotonic() + seconds
   while time.monotonic() < deadline:
-    for addr, dat in link.poll():
-      frames.append((addr, dat))
-      if watched is not None and addr in WATCH_RANGE:
+    for addr, dat, src in link.poll():
+      frames.append((addr, dat, src))
+      if watched is not None and src == BUS and addr in WATCH_RANGE:
         watched[addr] = dat
     time.sleep(0.01)
   return frames
@@ -232,56 +246,95 @@ def preflight(link, log=print, listen: float = 1.5, timeout: float = 1.0) -> boo
   ok = True
 
   seen: dict[int, int] = {}
-  for addr, _ in _collect(link, listen):
-    seen[addr] = seen.get(addr, 0) + 1
+  for addr, _, src in _collect(link, listen):
+    if src == BUS:
+      seen[addr] = seen.get(addr, 0) + 1
   log(f"  bus 0 traffic     {sum(seen.values())} frames from {len(seen)} addresses in {listen:.1f} s")
   if not seen:
     log("                    -> nothing on bus 0. The powertrain bus is asleep or the panda is")
     log("                       not connected. Switch the ignition on (Always Offroad) and retry.")
     ok = False
 
-  link.send(TESTER_PRESENT)
+  # Walk the jitter so a phase-locked collision with pandad's NO_OUTPUT beat can't hide the
+  # answer on every attempt.
+  transmitted = rejected = answered = False
   consumed = False
-  deadline = time.monotonic() + timeout
-  while time.monotonic() < deadline:
-    if not link.script_pending():
-      consumed = True
+  for attempt, delay_ms in enumerate(SEND_JITTER_MS):
+    link.send(TESTER_PRESENT, delay_ms)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline and link.script_pending():
+      time.sleep(0.02)
+    consumed = consumed or not link.script_pending()
+
+    for addr, dat, src in _collect(link, timeout / 2 + delay_ms / 1000.0):
+      if addr == BCM_REQ_ADDR and src == RETURNED_SRC:
+        transmitted = True
+      if addr == BCM_REQ_ADDR and src == REJECTED_SRC:
+        rejected = True
+      kind, payload, _ = _decode_frame(dat)
+      if addr == BCM_RESP_ADDR and src == BUS and kind == "single" and payload[:1] == bytes([TESTER_PRESENT_RESPONSE]):
+        answered = True
+    if answered:
+      log(f"  (answered on attempt {attempt + 1} of {len(SEND_JITTER_MS)}, {delay_ms} ms pre-send delay)")
       break
-    time.sleep(0.02)
+
   log(f"  pandad picked up  {'yes' if consumed else 'NO'}")
   if not consumed:
     log("                    -> pandad never took the script, so nothing was transmitted. It only")
     log("                       plays them offroad: check the device is not onroad, and running.")
     ok = False
 
-  answered = False
-  for addr, dat in _collect(link, timeout / 2):
-    kind, payload, _ = _decode_frame(dat)
-    if addr == BCM_RESP_ADDR and kind == "single" and payload[:1] == bytes([TESTER_PRESENT_RESPONSE]):
-      answered = True
+  log(f"  frame reached bus {'yes' if transmitted else 'NO'}   (panda echoes what it sends)")
+  if consumed and not transmitted and not rejected:
+    log("                    -> pandad queued it but the panda never put it on the wire. Its")
+    log("                       panda-state loop re-asserts NO_OUTPUT every 100 ms, and a")
+    log("                       safety-model change re-inits the CAN cores, flushing the TX FIFO.")
+    ok = False
+  if rejected:
+    log("  safety rejected   YES  -> the panda's safety model refused the frame, not the ECU.")
+    ok = False
+
   log(f"  body ECU awake    {'yes' if answered else 'NO'}  (TesterPresent -> 0x7E)")
-  if consumed and not answered:
-    log("                    -> the frame went out but (0x750, 0x40) did not answer. The ECU is")
-    log("                       asleep or unreachable; a sweep now would report every identifier")
-    log("                       absent whether or not it exists.")
+  if transmitted and not answered:
+    log("                    -> the frame reached the bus and (0x750, 0x40) did not answer, so")
+    log("                       the ECU is asleep or not on this bus. A sweep now would report")
+    log("                       every identifier absent whether or not it exists.")
     ok = False
 
   return ok
 
 
-def probe(link, lid: int, service: int, settle: float, wake: bool = True) -> tuple[Response, dict[str, str]]:
-  """Send one request and collect the answer, plus any broadcast that moved while we waited."""
+def probe(link, lid: int, service: int, settle: float, wake: bool = True,
+          attempts: int = 3) -> tuple[Response, dict[str, str]]:
+  """Send one request and collect the answer, plus any broadcast that moved while we waited.
+
+  Retried with a different pre-send delay each time: a frame lost to the NO_OUTPUT beat is
+  silence, indistinguishable from an identifier that does not exist, so silence is not trusted
+  until it has survived a few different phases.
+  """
+  changed: dict[str, str] = {}
+  resp = Response()
+  for attempt in range(attempts):
+    resp, moved = _probe_once(link, lid, service, settle, wake, SEND_JITTER_MS[attempt % len(SEND_JITTER_MS)])
+    changed.update(moved)
+    if resp.verdict != "no response":
+      break
+  return resp, changed
+
+
+def _probe_once(link, lid: int, service: int, settle: float, wake: bool,
+                delay_ms: int) -> tuple[Response, dict[str, str]]:
   watched: dict[int, bytes] = {}
-  for addr, dat in link.poll():          # drain stale frames, and snapshot the broadcasts
-    if addr in WATCH_RANGE:
+  for addr, dat, src in link.poll():     # drain stale frames, and snapshot the broadcasts
+    if src == BUS and addr in WATCH_RANGE:
       watched[addr] = dat
 
   if wake:
     # Mirrors the dongle, which never read an identifier without a TesterPresent in front of it.
-    link.send(TESTER_PRESENT)
-    _collect(link, 0.08, watched)
+    link.send(TESTER_PRESENT, delay_ms)
+    _collect(link, 0.08 + delay_ms / 1000.0, watched)
 
-  link.send(build_request(lid, service))
+  link.send(build_request(lid, service), delay_ms)
 
   resp = Response()
   pending: bytearray | None = None
@@ -290,7 +343,9 @@ def probe(link, lid: int, service: int, settle: float, wake: bool = True) -> tup
   deadline = time.monotonic() + settle
 
   while time.monotonic() < deadline:
-    for addr, dat in link.poll():
+    for addr, dat, src in link.poll():
+      if src != BUS:
+        continue          # our own frame echoed back, not an answer
       if addr in WATCH_RANGE:
         if addr in watched and watched[addr] != dat:
           changed[f"0x{addr:03X}"] = f"{watched[addr].hex(' ')} -> {dat.hex(' ')}"
