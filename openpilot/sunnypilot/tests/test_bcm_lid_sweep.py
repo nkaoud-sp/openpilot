@@ -16,10 +16,12 @@ from openpilot.sunnypilot.bcm_lid_sweep import (
   GRID_LIDS,
   SVC_IO_CONTROL,
   SVC_READ,
+  TESTER_PRESENT,
   DeviceLink,
   _decode_frame,
   build_request,
   parse_payload,
+  preflight,
   probe,
   sweep,
 )
@@ -48,14 +50,22 @@ class FakeSubMaster:
 class FakeLink:
   """Stands in for the device: answers each request from a scripted table."""
 
-  def __init__(self, answers: dict[int, bytes], broadcasts: dict[int, bytes] | None = None):
+  def __init__(self, answers: dict[int, bytes], broadcasts: dict[int, bytes] | None = None,
+               awake: bool = True, consumes_scripts: bool = True, idle: list | None = None):
     self.answers = answers          # lid -> response frame, or absent for no reply
     self.broadcasts = broadcasts or {}
+    self.awake = awake              # whether the ECU answers TesterPresent
+    self.consumes_scripts = consumes_scripts   # whether pandad picks the script up
+    self.idle = idle or []          # background bus traffic, replayed on every poll
     self.sent: list[bytes] = []
     self._queue: list[tuple[int, bytes]] = []
 
   def send(self, frame: bytes):
     self.sent.append(frame)
+    if frame[2] == 0x3E:
+      if self.awake:
+        self._queue.append((BCM_RESP_ADDR, b"\x40\x01\x7e\x00\x00\x00\x00\x00"))
+      return
     if frame[2] in (SVC_READ, SVC_IO_CONTROL):
       lid = frame[3]
       if lid in self.answers:
@@ -63,8 +73,11 @@ class FakeLink:
       for addr, dat in self.broadcasts.get(lid, {}).items():
         self._queue.append((addr, dat))
 
+  def script_pending(self):
+    return not self.consumes_scripts
+
   def poll(self):
-    out, self._queue = self._queue, []
+    out, self._queue = self._queue + list(self.idle), []
     return out
 
 
@@ -205,8 +218,52 @@ class TestProbe:
   def test_sends_exactly_one_request(self):
     """A KWP negative doesn't echo its identifier, so only one probe may be in flight."""
     link = FakeLink({0x11: b"\x40\x03\x7f\x30\x12\x00\x00\x00"})
-    probe(link, 0x11, SVC_IO_CONTROL, SETTLE)
+    probe(link, 0x11, SVC_IO_CONTROL, SETTLE, wake=False)
     assert len(link.sent) == 1
+
+  def test_wake_sends_tester_present_first(self):
+    """The dongle never read an identifier without a TesterPresent in front of it."""
+    link = FakeLink({0x11: b"\x40\x02\x70\x11\x00\x00\x00\x00"})
+    probe(link, 0x11, SVC_IO_CONTROL, SETTLE, wake=True)
+    assert link.sent[0] == TESTER_PRESENT
+    assert link.sent[1][2:4] == b"\x30\x11"
+
+  def test_tester_present_reply_is_not_read_as_the_answer(self):
+    """0x7E arriving late must not be scored as this identifier's response."""
+    link = FakeLink({}, awake=True)
+    resp, _ = probe(link, 0x41, SVC_READ, SETTLE, wake=True)
+    assert resp.verdict == "no response"
+
+
+class TestPreflight:
+  """A silent sweep has three very different causes; preflight has to tell them apart."""
+
+  BUS_TRAFFIC = [(0x620, b"\x10\x00\x00\x00\xf0\x00\x08\x5a")]
+
+  def test_passes_when_everything_is_working(self):
+    link = FakeLink({}, awake=True, consumes_scripts=True, idle=self.BUS_TRAFFIC)
+    assert preflight(link, log=lambda *_: None, listen=0.05, timeout=0.05) is True
+
+  def test_fails_on_a_silent_bus(self):
+    """Car asleep: no broadcasts at all, so every identifier would look absent."""
+    link = FakeLink({}, awake=True, consumes_scripts=True, idle=[])
+    assert preflight(link, log=lambda *_: None, listen=0.05, timeout=0.05) is False
+
+  def test_fails_when_pandad_never_takes_the_script(self):
+    """Nothing was transmitted, so the sweep would be measuring nothing."""
+    link = FakeLink({}, awake=True, consumes_scripts=False, idle=self.BUS_TRAFFIC)
+    assert preflight(link, log=lambda *_: None, listen=0.05, timeout=0.05) is False
+
+  def test_fails_when_the_body_ecu_does_not_answer(self):
+    link = FakeLink({}, awake=False, consumes_scripts=True, idle=self.BUS_TRAFFIC)
+    assert preflight(link, log=lambda *_: None, listen=0.05, timeout=0.05) is False
+
+  def test_reports_each_check_by_name(self):
+    lines = []
+    preflight(FakeLink({}, awake=False, consumes_scripts=True, idle=self.BUS_TRAFFIC), log=lines.append, listen=0.05, timeout=0.05)
+    text = "\n".join(lines)
+    for check in ("bus 0 traffic", "pandad picked up", "body ECU awake"):
+      assert check in text
 
 
 class TestSweep:

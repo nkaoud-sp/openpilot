@@ -87,6 +87,12 @@ WATCH_RANGE = range(0x600, 0x700)
 
 FLOW_CONTROL = bytes([BCM_SUBADDR, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
 
+# The hazard dongle sends TesterPresent before its reads and again every few requests, and the
+# body ECU answers 0x7E. A KWP ECU that has gone quiet may need it before it will answer at all,
+# so by default every probe is preceded by one.
+TESTER_PRESENT = bytes([BCM_SUBADDR, 0x01, 0x3E, 0x00, 0x00, 0x00, 0x00, 0x00])
+TESTER_PRESENT_RESPONSE = 0x7E
+
 
 def build_request(lid: int, service: int = SVC_READ) -> bytes:
   """One sub-addressed KWP request frame for `lid`, padded to the 8 bytes ISO 15765-4 wants."""
@@ -186,6 +192,14 @@ class DeviceLink:
     script = self._encode_script([self._ScriptFrame(0, frame, addr=BCM_REQ_ADDR, bus=BUS)])
     self.params.put("OffroadCanScript", script)
 
+  def script_pending(self) -> bool:
+    """True while a queued script is still waiting to be picked up.
+
+    pandad removes the param the moment it takes the script (panda_safety.cc), so this going
+    false is proof that pandad saw it - and it staying true means nothing was ever transmitted.
+    """
+    return bool(self.params.get("OffroadCanScript"))
+
   def poll(self) -> list[tuple[int, bytes]]:
     out = []
     raw = self._messaging.drain_sock_raw(self.can_sock)
@@ -196,12 +210,76 @@ class DeviceLink:
     return out
 
 
-def probe(link, lid: int, service: int, settle: float) -> tuple[Response, dict[str, str]]:
+def _collect(link, seconds: float, watched: dict[int, bytes] | None = None) -> list[tuple[int, bytes]]:
+  """Poll for `seconds`, returning every frame seen."""
+  frames = []
+  deadline = time.monotonic() + seconds
+  while time.monotonic() < deadline:
+    for addr, dat in link.poll():
+      frames.append((addr, dat))
+      if watched is not None and addr in WATCH_RANGE:
+        watched[addr] = dat
+    time.sleep(0.01)
+  return frames
+
+
+def preflight(link, log=print, listen: float = 1.5, timeout: float = 1.0) -> bool:
+  """Check the three things that make every identifier look absent, and name which one failed.
+
+  A silent sweep is ambiguous: an empty identifier space, a sleeping ECU and a panda that never
+  transmitted all print the same thing. These separate them before 256 rows of "no response".
+  """
+  ok = True
+
+  seen: dict[int, int] = {}
+  for addr, _ in _collect(link, listen):
+    seen[addr] = seen.get(addr, 0) + 1
+  log(f"  bus 0 traffic     {sum(seen.values())} frames from {len(seen)} addresses in {listen:.1f} s")
+  if not seen:
+    log("                    -> nothing on bus 0. The powertrain bus is asleep or the panda is")
+    log("                       not connected. Switch the ignition on (Always Offroad) and retry.")
+    ok = False
+
+  link.send(TESTER_PRESENT)
+  consumed = False
+  deadline = time.monotonic() + timeout
+  while time.monotonic() < deadline:
+    if not link.script_pending():
+      consumed = True
+      break
+    time.sleep(0.02)
+  log(f"  pandad picked up  {'yes' if consumed else 'NO'}")
+  if not consumed:
+    log("                    -> pandad never took the script, so nothing was transmitted. It only")
+    log("                       plays them offroad: check the device is not onroad, and running.")
+    ok = False
+
+  answered = False
+  for addr, dat in _collect(link, timeout / 2):
+    kind, payload, _ = _decode_frame(dat)
+    if addr == BCM_RESP_ADDR and kind == "single" and payload[:1] == bytes([TESTER_PRESENT_RESPONSE]):
+      answered = True
+  log(f"  body ECU awake    {'yes' if answered else 'NO'}  (TesterPresent -> 0x7E)")
+  if consumed and not answered:
+    log("                    -> the frame went out but (0x750, 0x40) did not answer. The ECU is")
+    log("                       asleep or unreachable; a sweep now would report every identifier")
+    log("                       absent whether or not it exists.")
+    ok = False
+
+  return ok
+
+
+def probe(link, lid: int, service: int, settle: float, wake: bool = True) -> tuple[Response, dict[str, str]]:
   """Send one request and collect the answer, plus any broadcast that moved while we waited."""
   watched: dict[int, bytes] = {}
   for addr, dat in link.poll():          # drain stale frames, and snapshot the broadcasts
     if addr in WATCH_RANGE:
       watched[addr] = dat
+
+  if wake:
+    # Mirrors the dongle, which never read an identifier without a TesterPresent in front of it.
+    link.send(TESTER_PRESENT)
+    _collect(link, 0.08, watched)
 
   link.send(build_request(lid, service))
 
@@ -222,6 +300,8 @@ def probe(link, lid: int, service: int, settle: float) -> tuple[Response, dict[s
 
       kind, chunk, length = _decode_frame(dat)
       if kind == "single":
+        if chunk[:1] == bytes([TESTER_PRESENT_RESPONSE]):
+          continue        # a late answer to the wake frame, not to this probe
         candidate = parse_payload(chunk, service)
         if candidate.nrc == 0x78:
           # responsePending: the ECU is asking for more time, not answering.
@@ -247,12 +327,12 @@ def probe(link, lid: int, service: int, settle: float) -> tuple[Response, dict[s
   return resp, changed
 
 
-def sweep(link, lids, service: int, settle: float, log=print) -> dict:
+def sweep(link, lids, service: int, settle: float, log=print, wake: bool = True) -> dict:
   results: dict[int, Response] = {}
   side_effects: dict[int, dict[str, str]] = {}
 
   for lid in lids:
-    resp, changed = probe(link, lid, service, settle)
+    resp, changed = probe(link, lid, service, settle, wake)
     results[lid] = resp
     if changed:
       side_effects[lid] = changed
@@ -289,11 +369,13 @@ def main():
   p.add_argument("--lids", help="explicit comma-separated identifiers, e.g. 0x11,0x21")
   p.add_argument("--control", action="store_true",
                  help="probe 0x30 I/O control with all data bits clear instead of reading. Park the car.")
-  p.add_argument("--settle", type=float, help="seconds to wait per identifier (default 0.35 read, 1.0 control)")
+  p.add_argument("--settle", type=float, help="seconds to wait per identifier (default 0.5 read, 1.0 control)")
   p.add_argument("--out", help="write results as JSON, for --diff")
   p.add_argument("--diff", nargs=2, metavar=("A.json", "B.json"), help="compare two runs and report what moved")
   p.add_argument("--force", action="store_true", help="sweep even if the device reports onroad")
   p.add_argument("--yes", action="store_true", help="skip the confirmation prompt for --control")
+  p.add_argument("--no-wake", action="store_true", help="don't send TesterPresent before each probe")
+  p.add_argument("--no-preflight", action="store_true", help="skip the bus/pandad/ECU checks")
   args = p.parse_args()
 
   if args.diff:
@@ -315,14 +397,19 @@ def main():
       raise SystemExit("aborted")
 
   service = SVC_IO_CONTROL if args.control else SVC_READ
-  settle = args.settle if args.settle is not None else (1.0 if args.control else 0.35)
+  settle = args.settle if args.settle is not None else (1.0 if args.control else 0.5)
 
   link = DeviceLink()
   if link.onroad() and not args.force:
     raise SystemExit("device is onroad; pandad will not play the script. Use Always Offroad, or --force.")
 
+  if not args.no_preflight:
+    print("\npreflight:")
+    if not preflight(link) and not args.force:
+      raise SystemExit("\npreflight failed; fix the above or pass --force to sweep anyway.")
+
   print(f"\nsweeping {len(lids)} identifiers on (0x{BCM_REQ_ADDR:03X}, 0x{BCM_SUBADDR:02X}) with service 0x{service:02X}\n")
-  out = sweep(link, lids, service, settle)
+  out = sweep(link, lids, service, settle, wake=not args.no_wake)
 
   live = [k for k, v in out["results"].items() if v["positive"]]
   print(f"\n{len(live)} live identifier(s): {', '.join(live) if live else '(none)'}")
