@@ -8,8 +8,13 @@ transfer is a fixed per-frame cost that depends only on the camera resolution:
 
 The big model JIT is compiled per camera resolution, so a comma 3X that resamples its frames to the comma
 four size on its own GPU runs the exact same JIT as a comma four, with the same amount of the frame
-budget left for inference. The resample is a bilinear NV12 -> NV12 kernel run on the device GPU (QCOM),
-written straight into the padded layout the comma four JIT expects. The warp matrices are scaled to match.
+budget left for inference. The resample is a nearest-neighbour NV12 -> NV12 kernel run on the device GPU
+(QCOM), written straight into the padded layout the comma four JIT expects. The warp matrices are scaled to match.
+
+Nearest rather than bilinear on purpose: the model's own warp on the card samples nearest-neighbour at ~2 px
+spacing, so with native frames the model already saw one nearest source pixel per model pixel. Resampling
+nearest first gives it the same thing, while a bilinear kernel measured 5.5 ms per frame on the Adreno, most
+of what the smaller transfer saves.
 
 The kernel is captured at runtime rather than shipped as a pickle: tinygrad hash-conses buffer UOps by slot
 number, so a pickled JIT loaded into a process that already holds same-shaped buffers can alias them. It is
@@ -49,23 +54,19 @@ def frame_scale_matrix(src_size: tuple[int, int], dst_size: tuple[int, int]) -> 
   return np.diag([dst_size[0] / src_size[0], dst_size[1] / src_size[1], 1.0]).astype(np.float32)
 
 
-def _axis_lut(src_len: int, dst_len: int, out_len: int, channels: int = 1) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-  # Pixel-center aligned bilinear taps along one axis. Output positions past dst_len (stride/height padding)
-  # replicate the last real pixel. With channels=2 the axis is an interleaved UV row: output byte j is
-  # chroma pixel j//2, channel j%2, and the taps address the matching source byte.
+def _axis_lut(src_len: int, dst_len: int, out_len: int, channels: int = 1) -> np.ndarray:
+  # Pixel-center aligned nearest source index along one axis. Output positions past dst_len (stride/height
+  # padding) replicate the last real pixel. With channels=2 the axis is an interleaved UV row: output byte j is
+  # chroma pixel j//2, channel j%2, and the index addresses the matching source byte.
   j = np.arange(out_len)
   c = j % channels
   d = np.minimum(j // channels, dst_len - 1)
-  s = np.clip((d + 0.5) * (src_len / dst_len) - 0.5, 0, src_len - 1)
-  i0 = np.floor(s).astype(np.int32)
-  i1 = np.minimum(i0 + 1, src_len - 1).astype(np.int32)
-  f = (s - i0).astype(np.float32)
-  return i0 * channels + c, i1 * channels + c, f
+  i = np.clip(np.round((d + 0.5) * (src_len / dst_len) - 0.5), 0, src_len - 1).astype(np.int32)
+  return i * channels + c
 
 
 def make_downscale(src_size: tuple[int, int], dst_size: tuple[int, int], device: str | None = None):
   """Builds the tinygrad NV12 resample: uint8 source frame -> uint8 frame of nv12_copy_size(dst) bytes."""
-  from tinygrad import dtypes
   from tinygrad.device import Device
   from tinygrad.tensor import Tensor
   device = device or Device.DEFAULT
@@ -77,25 +78,16 @@ def make_downscale(src_size: tuple[int, int], dst_size: tuple[int, int], device:
   src_uv_offset = src_stride * src_y_height
 
   planes = [
-    # (source plane byte offset, row taps, column taps, output rows)
-    (0, _axis_lut(src_h, dst_h, dst_y_height), _axis_lut(src_w, dst_w, dst_stride), dst_y_height),
-    (src_uv_offset, _axis_lut(src_h // 2, dst_h // 2, dst_uv_height), _axis_lut(src_w // 2, dst_w // 2, dst_stride, channels=2), dst_uv_height),
+    # (source plane byte offset, row index, column index)
+    (0, _axis_lut(src_h, dst_h, dst_y_height), _axis_lut(src_w, dst_w, dst_stride)),
+    (src_uv_offset, _axis_lut(src_h // 2, dst_h // 2, dst_uv_height), _axis_lut(src_w // 2, dst_w // 2, dst_stride, channels=2)),
   ]
-  luts = [(offset, [Tensor(v, device=device).reshape(-1, 1).realize() for v in rows],
-           [Tensor(v, device=device).reshape(1, -1).realize() for v in cols], out_rows) for offset, rows, cols, out_rows in planes]
-
-  def resample_plane(src_flat, offset, rows, cols, out_rows):
-    y0, y1, fy = rows
-    x0, x1, fx = cols
-
-    def tap(yi, xi):
-      return src_flat[(yi * src_stride + xi + offset).reshape(-1)].reshape(out_rows, dst_stride).cast(dtypes.float32)
-    top = tap(y0, x0) * (1 - fx) + tap(y0, x1) * fx
-    bottom = tap(y1, x0) * (1 - fx) + tap(y1, x1) * fx
-    return (top * (1 - fy) + bottom * fy + 0.5).cast(dtypes.uint8).reshape(-1)
+  # the flat source index of every output byte, one gather per plane
+  luts = [Tensor((rows[:, None] * src_stride + cols[None, :] + offset).reshape(-1).astype(np.int32), device=device).realize()
+          for offset, rows, cols in planes]
 
   def downscale(frame):
-    y, uv = (resample_plane(frame, *lut).realize() for lut in luts)
+    y, uv = (frame[idx].realize() for idx in luts)
     return y.cat(uv)
 
   return downscale
@@ -122,9 +114,8 @@ def _dcache_invalidate():
 class FrameDownscaler:
   """Runs the resample on the device GPU and hands back host frames in the target NV12 layout."""
 
-  def __init__(self, src_size: tuple[int, int], dst_size: tuple[int, int], device: str):
+  def __init__(self, src_size: tuple[int, int], dst_size: tuple[int, int], device: str, keys: Iterable[str] = ('img', 'big_img')):
     from tinygrad.device import Device
-    from tinygrad.engine.jit import TinyJit
     from tinygrad.tensor import Tensor
     self._tensor = Tensor
     self._dev = Device[device]
@@ -134,36 +125,43 @@ class FrameDownscaler:
     dst_stride, dst_y_height, dst_uv_height, self.dst_buf_size = get_nv12_info(*dst_size)
     self.copy_size = dst_stride * (dst_y_height + dst_uv_height)
     self._blob_cache: dict[int, object] = {}
-    # one persistent host frame per model input, so a pointer taken to it stays valid across runs
-    self.frames: dict[str, np.ndarray] = {}
-
-    # The GPU writes the result straight into ordinary, cached host memory. QCOM allocations are mapped
-    # write-combined, and a CPU read of 1.6 MB of write-combined memory (what .numpy() does) costs more on
-    # Snapdragon than the USB transfer this whole thing saves. A cached memcpy is ~50x faster; the CPU cache
-    # just has to be invalidated over the output after every GPU write, see _dcache_invalidate.
-    self.out = np.zeros(self.copy_size, dtype=np.uint8)
-    self.out[:] = 0  # fault the pages in before mapping, so the map-time cache clean covers them and nothing is dirty later
     self._invalidate = _dcache_invalidate() if device.startswith('QCOM') else None
-    out_t = Tensor.from_blob(self.out.ctypes.data, (self.copy_size,), dtype='uint8', device=device)
-    downscale = make_downscale(src_size, dst_size, device)
-    self.jit = TinyJit(lambda frame: out_t.assign(downscale(frame)).realize(), prune=True)
+
+    # One persistent host frame per model input, written by the GPU directly: a pointer taken to it stays
+    # valid across runs. QCOM allocations are mapped write-combined, and a CPU read of 1.6 MB of
+    # write-combined memory (what .numpy() does) costs more on Snapdragon than the USB transfer this whole
+    # thing saves, whereas reading cached memory is ~50x faster; the CPU cache just has to be invalidated over
+    # the frame after every GPU write, see _dcache_invalidate.
+    self._downscale = make_downscale(src_size, dst_size, device)
+    self.frames: dict[str, np.ndarray] = {}
+    self.jits: dict[str, object] = {}
+    for key in keys:
+      self._add_output(key)
+
+  def _add_output(self, key: str) -> None:
+    from tinygrad.engine.jit import TinyJit
+    Tensor = self._tensor
+    frame = np.zeros(self.dst_buf_size, dtype=np.uint8)
+    frame[:] = 0  # fault the pages in before mapping, so the map-time cache clean covers them and nothing is dirty later
+    out_t = Tensor.from_blob(frame.ctypes.data, (self.copy_size,), dtype='uint8', device=self.device)
+    jit = TinyJit(lambda src: out_t.assign(self._downscale(src)).realize(), prune=True)
     for _ in range(3):  # capture the jit on dummy frames so the first camera frame replays it
-      self.jit(Tensor.zeros(self.src_buf_size, dtype='uint8', device=device).contiguous().realize())
+      jit(Tensor.zeros(self.src_buf_size, dtype='uint8', device=self.device).contiguous().realize())
     self._dev.synchronize()
+    self.frames[key], self.jits[key] = frame, jit
 
   def run(self, key: str, buf) -> np.ndarray:
     ptr = np.frombuffer(buf.data, dtype=np.uint8).ctypes.data
     if ptr not in self._blob_cache:
       self._blob_cache[ptr] = self._tensor.from_blob(ptr, (self.src_buf_size,), dtype='uint8', device=self.device)
     if key not in self.frames:
-      self.frames[key] = np.zeros(self.dst_buf_size, dtype=np.uint8)
-    self.jit(self._blob_cache[ptr])
+      self._add_output(key)
+    frame = self.frames[key]
+    self.jits[key](self._blob_cache[ptr])
     self._dev.synchronize()
     if self._invalidate is not None:
-      addr = self.out.ctypes.data
+      addr = frame.ctypes.data
       self._invalidate.fxn(ctypes.c_uint64(addr & ~63), -(-(addr + self.copy_size - (addr & ~63)) // 64))
-    frame = self.frames[key]
-    frame[:self.copy_size] = self.out
     return frame
 
 
@@ -193,18 +191,6 @@ if __name__ == "__main__":
   print(f"run (kernel + sync + copy): median {np.median(timings):.2f} ms, max {max(timings):.2f} ms over {args.runs} runs")
   st = time.perf_counter()
   for _ in range(args.runs):
-    downscaler.jit(downscaler._blob_cache[frame.ctypes.data])
+    downscaler.jits['img'](downscaler._blob_cache[frame.ctypes.data])
     downscaler._dev.synchronize()
   print(f"kernel only: {(time.perf_counter() - st) / args.runs * 1e3:.2f} ms")
-  st = time.perf_counter()
-  for _ in range(args.runs):
-    downscaler.jit(downscaler._blob_cache[frame.ctypes.data])
-    downscaler._dev.synchronize()
-    if downscaler._invalidate is not None:
-      addr = downscaler.out.ctypes.data
-      downscaler._invalidate.fxn(ctypes.c_uint64(addr & ~63), -(-(addr + downscaler.copy_size - (addr & ~63)) // 64))
-  print(f"kernel + cache invalidate: {(time.perf_counter() - st) / args.runs * 1e3:.2f} ms")
-  st = time.perf_counter()
-  for _ in range(args.runs):
-    downscaler.frames['img'][:downscaler.copy_size] = downscaler.out
-  print(f"host memcpy only: {(time.perf_counter() - st) / args.runs * 1e3:.2f} ms")

@@ -20,22 +20,13 @@ C4 = (1344, 760)
 DEVICE = 'CPU'
 
 
-def _bilinear_plane(plane: np.ndarray, rows, cols) -> np.ndarray:
-  y0, y1, fy = (v[:, None] for v in rows)
-  x0, x1, fx = (v[None, :] for v in cols)
-  p = plane.astype(np.float32)
-  top = p[y0, x0] * (1 - fx) + p[y0, x1] * fx
-  bottom = p[y1, x0] * (1 - fx) + p[y1, x1] * fx
-  return (top * (1 - fy) + bottom * fy + 0.5).astype(np.uint8)
-
-
 def _reference_downscale(frame: np.ndarray, src, dst) -> np.ndarray:
   src_stride, src_y_height, src_uv_height, _ = get_nv12_info(*src)
   dst_stride, dst_y_height, dst_uv_height, _ = get_nv12_info(*dst)
   y = frame[:src_stride * src_y_height].reshape(src_y_height, src_stride)
   uv = frame[src_stride * src_y_height:src_stride * (src_y_height + src_uv_height)].reshape(src_uv_height, src_stride)
-  ref_y = _bilinear_plane(y, _axis_lut(src[1], dst[1], dst_y_height), _axis_lut(src[0], dst[0], dst_stride))
-  ref_uv = _bilinear_plane(uv, _axis_lut(src[1] // 2, dst[1] // 2, dst_uv_height), _axis_lut(src[0] // 2, dst[0] // 2, dst_stride, channels=2))
+  ref_y = y[_axis_lut(src[1], dst[1], dst_y_height)[:, None], _axis_lut(src[0], dst[0], dst_stride)[None, :]]
+  ref_uv = uv[_axis_lut(src[1] // 2, dst[1] // 2, dst_uv_height)[:, None], _axis_lut(src[0] // 2, dst[0] // 2, dst_stride, channels=2)[None, :]]
   return np.concatenate([ref_y.reshape(-1), ref_uv.reshape(-1)])
 
 
@@ -80,6 +71,17 @@ class TestFrameScale(OpenpilotTestCase):
       np.testing.assert_allclose(cam_scaled, cam * np.array([C4[0] / C3X[0], C4[1] / C3X[1]]), rtol=1e-5)
 
 
+class TestAxisLut(OpenpilotTestCase):
+  def test_nearest_index_follows_pixel_centres(self):
+    idx = _axis_lut(1928, 1344, 1408)
+    assert idx[0] == 0 and idx[1343] == 1927
+    assert idx[672] == round((672 + 0.5) * 1928 / 1344 - 0.5)
+    assert (idx[1344:] == 1927).all()  # stride padding replicates the last column
+    uv = _axis_lut(964, 672, 1408, channels=2)
+    assert uv[0] == 0 and uv[1] == 1
+    assert (uv[0::2] % 2 == 0).all() and (uv[1::2] % 2 == 1).all()
+
+
 class TestDownscaleKernel(OpenpilotTestCase):
   def setUp(self):
     super().setUp()
@@ -87,12 +89,12 @@ class TestDownscaleKernel(OpenpilotTestCase):
     self.frame = rng.integers(0, 256, get_nv12_info(*C3X)[3], dtype=np.uint8)
     self.ref = _reference_downscale(self.frame, C3X, C4)
 
-  def test_matches_bilinear_reference_in_padded_layout(self):
+  def test_matches_nearest_reference_in_padded_layout(self):
     from tinygrad.tensor import Tensor
     out = make_downscale(C3X, C4, DEVICE)(Tensor(self.frame.copy(), device=DEVICE).realize()).realize().numpy()
     stride, y_height, uv_height, _ = get_nv12_info(*C4)
     assert out.shape == (stride * (y_height + uv_height),)
-    assert np.abs(out.astype(int) - self.ref.astype(int)).max() <= 1  # float rounding order
+    np.testing.assert_array_equal(out, self.ref)
 
     # stride and height padding replicate the last real pixel, so a warp that clips to cam_w/cam_h never sees garbage
     y = out[:stride * y_height].reshape(y_height, stride)
@@ -117,7 +119,7 @@ class TestDownscaleKernel(OpenpilotTestCase):
     first = downscaler.run('img', buf)
     second = downscaler.run('big_img', buf)
     assert first.shape == (get_nv12_info(*C4)[3],)
-    assert np.abs(first[:downscaler.copy_size].astype(int) - self.ref.astype(int)).max() <= 1
+    np.testing.assert_array_equal(first[:downscaler.copy_size], self.ref)
     assert np.array_equal(first[:downscaler.copy_size], second[:downscaler.copy_size])
     # the same input returns the same array object, so a pointer taken to it stays valid across runs
     assert downscaler.run('img', buf) is first
