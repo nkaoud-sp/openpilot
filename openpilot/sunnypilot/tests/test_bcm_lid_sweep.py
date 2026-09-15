@@ -442,3 +442,30 @@ class TestEffectMode:
   def test_quiet_identifier_is_not_reported(self):
     out = effect_sweep(FakeLink({}), [0x41], 0x08, 0.02, BCM_SUBADDR, log=lambda *_: None)
     assert out["effects"] == {}
+
+
+class TestPreflightForEffectMode:
+  """--effect exists because this ECU never answers here; requiring an answer would block it."""
+
+  BUS_TRAFFIC = [(0x620, b"\x10\x00\x00\x00\xf0\x00\x08\x5a")]
+
+  def test_a_silent_module_does_not_block_effect_mode(self):
+    link = FakeLink({}, awake=False, consumes_scripts=True, idle=self.BUS_TRAFFIC)
+    assert preflight(link, log=lambda *_: None, listen=0.05, timeout=0.05,
+                     require_answer=False) is True
+
+  def test_a_silent_module_still_blocks_a_read_sweep(self):
+    link = FakeLink({}, awake=False, consumes_scripts=True, idle=self.BUS_TRAFFIC)
+    assert preflight(link, log=lambda *_: None, listen=0.05, timeout=0.05) is False
+
+  def test_a_frame_that_never_left_still_blocks_effect_mode(self):
+    """Not answering is fine; not transmitting means nothing can be driven at all."""
+    link = FakeLink({}, awake=False, consumes_scripts=True, idle=self.BUS_TRAFFIC, transmits=False)
+    assert preflight(link, log=lambda *_: None, listen=0.05, timeout=0.05,
+                     require_answer=False) is False
+
+  def test_warns_that_an_asleep_bus_has_no_broadcasts_to_watch(self):
+    lines = []
+    link = FakeLink({}, awake=False, consumes_scripts=True, idle=[])
+    preflight(link, log=lines.append, listen=0.05, timeout=0.05, require_answer=False)
+    assert any("no broadcasts to watch" in ln for ln in lines)

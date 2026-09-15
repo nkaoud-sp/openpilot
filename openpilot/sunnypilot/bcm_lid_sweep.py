@@ -251,11 +251,14 @@ def _collect(link, seconds: float, watched: dict[int, bytes] | None = None) -> l
 
 
 def preflight(link, log=print, listen: float = 1.5, timeout: float = 1.0,
-              subaddr: int = BCM_SUBADDR) -> bool:
-  """Check the three things that make every identifier look absent, and name which one failed.
+              subaddr: int = BCM_SUBADDR, require_answer: bool = True) -> bool:
+  """Check the things that make every identifier look absent, and name which one failed.
 
   A silent sweep is ambiguous: an empty identifier space, a sleeping ECU and a panda that never
   transmitted all print the same thing. These separate them before 256 rows of "no response".
+
+  require_answer is False for --effect, whose whole premise is that this ECU never answers on
+  this bus. There, a silent module is the expected state, not a reason to stop.
   """
   ok = True
 
@@ -268,6 +271,10 @@ def preflight(link, log=print, listen: float = 1.5, timeout: float = 1.0,
       seen[addr] = seen.get(addr, 0) + 1
   quiet = "  (car appears to be off)" if not seen else ""
   log(f"  bus 0 traffic     {sum(seen.values())} frames from {len(seen)} addresses in {listen:.1f} s{quiet}")
+  if not seen and not require_answer:
+    log("                    -> with the bus asleep there are no broadcasts to watch, so an effect")
+    log("                       can only be seen on the car itself. Switch the ignition on (Always")
+    log("                       Offroad) to get the body ECU talking and have both.")
 
   # Walk the jitter so a phase-locked collision with pandad's NO_OUTPUT beat can't hide the
   # answer on every attempt.
@@ -308,8 +315,9 @@ def preflight(link, log=print, listen: float = 1.5, timeout: float = 1.0,
     log("  safety rejected   YES  -> the panda's safety model refused the frame, not the ECU.")
     ok = False
 
-  log(f"  0x{subaddr:02X} answers      {'yes' if answered else 'NO'}  (TesterPresent -> 0x7E)")
-  if transmitted and not answered:
+  suffix = "" if require_answer else "   (not needed: --effect reads results off the car, not the bus)"
+  log(f"  0x{subaddr:02X} answers      {'yes' if answered else 'NO'}  (TesterPresent -> 0x7E){suffix}")
+  if transmitted and not answered and require_answer:
     log(f"                    -> the frame reached the bus and (0x750, 0x{subaddr:02X}) did not answer, so")
     log("                       that module is asleep or not on this bus. A sweep now would report")
     log("                       every identifier absent whether or not it exists.")
@@ -565,7 +573,7 @@ def main():
 
   if not args.no_preflight:
     print("\npreflight:")
-    if not preflight(link, subaddr=subaddr) and not args.force:
+    if not preflight(link, subaddr=subaddr, require_answer=not args.effect) and not args.force:
       raise SystemExit("\npreflight failed; fix the above or pass --force to sweep anyway.")
 
   if args.effect:
