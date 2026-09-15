@@ -193,9 +193,9 @@ class TweaksLayout(Widget):
     mode = ui_state.params.get("ChestnutFrameMode") or "not run yet"
     try:
       proc = subprocess.run(FRAME_BENCHMARK_CMD, cwd=BASEDIR, capture_output=True, text=True, timeout=600)
-      output = (proc.stdout + proc.stderr).strip()[-1200:]
-      if proc.returncode != 0:
-        output = f"exit code {proc.returncode}\n{output}"
+      output = proc.stdout.strip()[-800:]
+      if proc.returncode != 0 or not output:
+        output = f"exit code {proc.returncode}\n{output}\n{proc.stderr.strip()[-600:]}"
     except Exception as e:
       output = f"failed to run: {e}"
     # picked up by the dialog's render, so its text is only touched from the UI thread
