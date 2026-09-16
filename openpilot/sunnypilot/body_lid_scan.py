@@ -224,6 +224,8 @@ class ScanRecorder:
     self.blinkers_frames = 0
     # Set by the runner: False when pandad never picked the script up, so nothing here means anything.
     self.script_played = True
+    # Called with the ProbeResult when its transmit echo arrives: the moment the control is live.
+    self.on_sent = None
     self.first_reply_at: float | None = None
     self._last_blinkers: bytes | None = None
     self.blinker_changes: list[tuple[float, str]] = []
@@ -244,6 +246,8 @@ class ScanRecorder:
           # order, so the next echo is the next unplaced probe.
           if self._next_echo < len(self.probes):
             self.probes[self._next_echo].sent_at = t
+            if self.on_sent is not None:
+              self.on_sent(self.probes[self._next_echo])
             self._next_echo += 1
             self.echoes += 1
         elif addr == REPLY_ADDR and src < 128 and len(data) > 0 and data[0] == self.sub_addr:
@@ -333,13 +337,24 @@ class ScanRecorder:
     return "\n".join(lines)
 
 
-def run_script_and_record(frames: Sequence[ScriptFrame], sub_addr: int, settle_s: float = 3.0) -> ScanRecorder:
+def announce(probe: ProbeResult) -> None:
+  """Live line per probe, so whoever is watching the car knows which control is active right now."""
+  if probe.control == DEFAULT_CONTROL:
+    print(f"  released  (probe #{probe.index})", flush=True)
+  else:
+    print(f"LID 0x{probe.lid:02X} ctrl {probe.control.hex(' ')}  <- live now  (probe #{probe.index})", flush=True)
+
+
+def run_script_and_record(frames: Sequence[ScriptFrame], sub_addr: int, settle_s: float = 3.0,
+                          live: bool = False) -> ScanRecorder:
   """Queue the script for pandad and record the bus until it has had time to finish."""
   import openpilot.cereal.messaging as messaging
   from openpilot.common.params import Params
   from openpilot.selfdrive.pandad import can_capnp_to_list
 
   recorder = ScanRecorder(frames, sub_addr)
+  if live:
+    recorder.on_sent = announce
   params = Params()
   # pandad decides offroad from deviceState.started, so ask the same source. If it does not answer
   # in time, go ahead: a script pandad never takes is caught after the run below.
@@ -386,6 +401,8 @@ def main(argv: list[str] | None = None) -> int:
   parser.add_argument("--last", type=lambda s: int(s, 0), default=0xFF, help="last LID to scan")
   parser.add_argument("--gap-ms", type=int, default=PROBE_GAP_MS, help="ms between scan probes")
   parser.add_argument("--combo", action="store_true", help="sweep selector byte 0x00..0x0F x each action bit instead of single bits")
+  parser.add_argument("--low-byte-only", action="store_true", help="sweep only the 8 bits of the second control byte")
+  parser.add_argument("--quiet", action="store_true", help="do not print each control as it goes live")
   parser.add_argument("--control", nargs="+", default=None,
                       help="with --lid: send just this control record (hex bytes, e.g. 00 20), hold it --on-ms, then release it")
   parser.add_argument("--repeat", type=int, default=1, help="with --control: how many times to set and release it")
@@ -400,6 +417,8 @@ def main(argv: list[str] | None = None) -> int:
     title = f"control {control.hex(' ')} x{max(1, args.repeat)} on LID 0x{args.lid:02X}"
   elif args.lid is not None:
     controls = combo_controls() if args.combo else sweep_controls()
+    if args.low_byte_only and not args.combo:
+      controls = controls[:8]
     frames = build_bit_sweep_frames(args.lid, args.sub_addr, args.on_ms, args.off_ms, controls)
     title = f"{'combo' if args.combo else 'bit'} sweep of LID 0x{args.lid:02X}"
   else:
@@ -407,7 +426,8 @@ def main(argv: list[str] | None = None) -> int:
     title = f"LID scan 0x{args.first:02X}..0x{args.last:02X}"
   title += f" on (0x{DIAG_ADDR:03X}, 0x{args.sub_addr:02X}) at {time.strftime('%Y-%m-%d %H:%M:%S')}"
 
-  recorder = run_script_and_record(frames, args.sub_addr)
+  print(f"{title}: {len(frames)} frames, about {script_duration_s(frames):.0f} s. Ignition off, watch the car.", flush=True)
+  recorder = run_script_and_record(frames, args.sub_addr, live=not args.quiet)
 
   path = report_path(args.out)
   with open(path, "w") as f:

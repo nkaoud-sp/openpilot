@@ -233,3 +233,11 @@ class TestScanRecorder:
     assert "SCRIPT NOT PLAYED" in report
     assert "probes were placed from the script timing" not in report
     assert "1 CAN frames recorded" in report
+
+  def test_on_sent_fires_once_per_echo_in_script_order(self):
+    frames = build_bit_sweep_frames(0x12, controls=sweep_controls()[:2])
+    rec = ScanRecorder(frames)
+    seen = []
+    rec.on_sent = lambda p: seen.append((p.index, p.control))
+    rec.update([_can(1.0 + i * 0.5, DIAG_ADDR, f.data, src=128) for i, f in enumerate(frames)])
+    assert seen == [(0, b"\x00\x01\x00"), (1, b"\x00\x00\x00"), (2, b"\x00\x02\x00"), (3, b"\x00\x00\x00")]
