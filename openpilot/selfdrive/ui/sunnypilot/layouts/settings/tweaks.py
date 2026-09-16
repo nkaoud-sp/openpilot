@@ -32,6 +32,7 @@ from openpilot.system.ui.widgets.scroller_tici import Scroller
 
 
 FRAME_BENCHMARK_CMD = ["python3", "-m", "openpilot.selfdrive.modeld.frame_downscale", "--device", "QCOM"]
+LID_SCAN_CMD = ["python3", "-m", "openpilot.sunnypilot.body_lid_scan"]
 
 
 class PanelType(IntEnum):
@@ -63,6 +64,8 @@ class TweaksLayout(Widget):
     self._hazard_flash_until = 0.0
     self._benchmark_thread: threading.Thread | None = None
     self._benchmark_result: str | None = None
+    self._lid_scan_thread: threading.Thread | None = None
+    self._lid_scan_result: str | None = None
     self._dynamic_follow_layout = DynamicFollowSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._launch_layout = LaunchAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._park_layout = ParkAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
@@ -145,6 +148,18 @@ class TweaksLayout(Widget):
       enabled=lambda: ui_state.is_offroad(),
     )
 
+    self._lid_scan = button_item_sp(
+      title=lambda: tr("Body ECU LID Scan"),
+      button_text=lambda: tr("Scan"),
+      description=lambda: tr("Probe every KWP 0x30 local identifier on the body ECU (0x750, 0x40) with an all-zero control " +
+                            "record, the way the auto-lock commands are sent, and report which ones the ECU accepts and " +
+                            "which touch the turn lamps. Looks for a hazard command that is not speed gated. Run it parked " +
+                            "with the trunk clear and watch the car: an unknown identifier may actuate something. Offroad " +
+                            "only, about a minute; the full report is written to /data/body_lid_scan.txt. Toyota/Lexus."),
+      callback=self._on_lid_scan,
+      enabled=lambda: ui_state.is_offroad(),
+    )
+
     self._auto_lock_button = simple_button_item_sp(
       button_text=lambda: tr("Auto Door Lock"),
       button_width=800,
@@ -180,6 +195,7 @@ class TweaksLayout(Widget):
       self._reverse_cruise,
       self._auto_lock_button,
       self._hazard_test,
+      self._lid_scan,
       self._chestnut_native_frames,
       self._frame_benchmark,
     ]
@@ -213,20 +229,48 @@ class TweaksLayout(Widget):
     except Exception as e:
       return f"chestnut bundle: could not check ({e})"
 
-  def _run_frame_benchmark(self):
-    mode = ui_state.params.get("ChestnutFrameMode") or "not run yet"
-    mode += "\n" + self._chestnut_bundle_status()
-    if error := ui_state.params.get("ChestnutLastError"):
-      mode += f"\nchestnut error: {error[-700:]}"
+  @staticmethod
+  def _run_tool(cmd: list[str], timeout: float) -> str:
+    """Run a command line tool and return the tail of what it printed, or why it failed."""
     try:
-      proc = subprocess.run(FRAME_BENCHMARK_CMD, cwd=BASEDIR, capture_output=True, text=True, timeout=600)
+      proc = subprocess.run(cmd, cwd=BASEDIR, capture_output=True, text=True, timeout=timeout)
       output = proc.stdout.strip()[-800:]
       if proc.returncode != 0 or not output:
         output = f"exit code {proc.returncode}\n{output}\n{proc.stderr.strip()[-600:]}"
     except Exception as e:
       output = f"failed to run: {e}"
+    return output
+
+  def _run_frame_benchmark(self):
+    mode = ui_state.params.get("ChestnutFrameMode") or "not run yet"
+    mode += "\n" + self._chestnut_bundle_status()
+    if error := ui_state.params.get("ChestnutLastError"):
+      mode += f"\nchestnut error: {error[-700:]}"
+    output = self._run_tool(FRAME_BENCHMARK_CMD, timeout=600)
     # picked up by the dialog's render, so its text is only touched from the UI thread
     self._benchmark_result = f"last drive: {mode}\n\n{output}"
+
+  def _on_lid_scan(self):
+    # The scan queues an OffroadCanScript, which pandad only plays offroad; the button is greyed
+    # out onroad too, this guards the callback itself.
+    if not ui_state.is_offroad():
+      return
+    if self._lid_scan_thread is not None and self._lid_scan_thread.is_alive():
+      return
+    # A scan and the hazard test share pandad's script slot; whichever is queued last plays.
+    self._hazard_flash_until = 0.0
+    self._lid_scan_result = None
+    gui_app.push_widget(_BenchmarkDialog(tr("Scanning the body ECU, this takes about a minute. Watch the car..."), self._take_lid_scan_result))
+    self._lid_scan_thread = threading.Thread(target=self._run_lid_scan, daemon=True)
+    self._lid_scan_thread.start()
+
+  def _take_lid_scan_result(self) -> str | None:
+    result, self._lid_scan_result = self._lid_scan_result, None
+    return result
+
+  def _run_lid_scan(self):
+    # 256 probes at 200 ms plus the settle time; the timeout only guards a hung recorder.
+    self._lid_scan_result = self._run_tool(LID_SCAN_CMD, timeout=180)
 
   def _on_hazard_test(self):
     # pandad plays the script offroad only, so don't leave one queued for the next time the car
