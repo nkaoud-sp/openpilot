@@ -14,6 +14,7 @@ from openpilot.sunnypilot.body_lid_scan import (
   REPLY_ADDR,
   SWEEP_OFF_MS,
   SWEEP_ON_MS,
+  NOT_PLAYED_WARNING,
   ScanRecorder,
   build_bit_sweep_frames,
   build_lid_scan_frames,
@@ -149,6 +150,7 @@ class TestScanRecorder:
 
     by_lid = {p.lid: p for p in rec.probes}
     assert rec.echoes == 4
+    assert rec.frames_seen == 11
     assert by_lid[0x10].verdict == "unsupported"
     assert by_lid[0x11].verdict == "positive"
     assert by_lid[0x12].verdict == "positive"
@@ -208,3 +210,13 @@ class TestScanRecorder:
     assert rec.probes[0].sent_at == pytest.approx(0.0)
     assert rec.probes[1].sent_at == pytest.approx(SWEEP_ON_MS / 1000)
     assert rec.probes[2].sent_at == pytest.approx((SWEEP_ON_MS + SWEEP_OFF_MS) / 1000)
+
+  def test_unplayed_script_is_reported_instead_of_no_replies(self):
+    rec = ScanRecorder(build_bit_sweep_frames(0x12))
+    rec.update([_can(1.0, BLINKERS_STATE_ADDR, BLINKERS_IDLE)])
+    rec.script_played = False
+    assert rec.summary() == NOT_PLAYED_WARNING
+    report = rec.report("test")
+    assert "SCRIPT NOT PLAYED" in report
+    assert "probes were placed from the script timing" not in report
+    assert "1 CAN frames recorded" in report

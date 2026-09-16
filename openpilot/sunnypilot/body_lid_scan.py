@@ -90,6 +90,13 @@ NRC_NAMES = {
 NRC_UNSUPPORTED = {0x12, 0x31}
 
 DEFAULT_REPORT_DIR = "/data"
+
+# pandad only plays OffroadCanScript offroad (ignition off) and clears it when the car goes onroad.
+NOT_PLAYED_WARNING = (
+  "SCRIPT NOT PLAYED: pandad never picked it up. It only plays offroad, so the ignition must be off " +
+  "(the body ECU and the hazards work without it). The script was removed so it does not run by itself " +
+  "at the next ignition off."
+)
 REPORT_NAME = "body_lid_scan.txt"
 
 
@@ -202,6 +209,9 @@ class ScanRecorder:
         self.probes.append(ProbeResult(i, lid, f.data[4:2 + f.data[1]]))
     self._next_echo = 0
     self.echoes = 0
+    self.frames_seen = 0
+    # Set by the runner: False when pandad never picked the script up, so nothing here means anything.
+    self.script_played = True
     self.first_reply_at: float | None = None
     self._last_blinkers: bytes | None = None
     self.blinker_changes: list[tuple[float, str]] = []
@@ -215,6 +225,7 @@ class ScanRecorder:
     for nanos, frames in can_msgs:
       t = nanos / 1e9
       for addr, data, src in frames:
+        self.frames_seen += 1
         data = bytes(data)
         if addr == DIAG_ADDR and src >= 128 and probe_lid(data, self.sub_addr) is not None:
           # The panda echoes what it sent with the bus offset by 128. Probes go out in script
@@ -261,8 +272,13 @@ class ScanRecorder:
 
   def report(self, title: str) -> str:
     known = KNOWN_LIDS.get(self.sub_addr, {})
-    lines = [title, f"sub-address 0x{self.sub_addr:02X}, {len(self.probes)} probes, {self.echoes} transmit echoes seen", ""]
-    if self.echoes == 0:
+    header = f"sub-address 0x{self.sub_addr:02X}, {len(self.probes)} probes, {self.echoes} transmit echoes seen, "
+    header += f"{self.frames_seen} CAN frames recorded"
+    lines = [title, header, ""]
+    if not self.script_played:
+      lines.append(NOT_PLAYED_WARNING)
+      lines.append("")
+    elif self.echoes == 0:
       lines.append("WARNING: no transmit echoes; probes were placed from the script timing, so attribution is approximate")
       lines.append("")
     positives = [p for p in self.probes if p.verdict == "positive"]
@@ -294,6 +310,8 @@ class ScanRecorder:
     positives = [p for p in self.probes if p.verdict == "positive"]
     negatives = [p for p in self.probes if p.verdict == "negative"]
     hits = [p for p in self.probes if p.blinker_changes]
+    if not self.script_played:
+      return NOT_PLAYED_WARNING
     unanswered = sum(1 for p in self.probes if p.verdict == "no reply")
     lines = [f"{len(self.probes)} probes to 0x{self.sub_addr:02X}, {self.echoes} echoes, {unanswered} unanswered"]
     lines.append("positive: " + (", ".join(f"0x{p.lid:02X}" for p in positives) if positives else "none"))
@@ -309,11 +327,17 @@ def run_script_and_record(frames: Sequence[ScriptFrame], sub_addr: int, settle_s
   from openpilot.selfdrive.pandad import can_capnp_to_list
 
   recorder = ScanRecorder(frames, sub_addr)
+  params = Params()
+  if params.get_bool("IsOnroad"):
+    # pandad would drop the script on the spot; say so instead of recording a minute of nothing.
+    recorder.script_played = False
+    return recorder
+
   can_sock = messaging.sub_sock("can", conflate=False, timeout=0)
   # Drain what is already queued so the first probe is not matched against stale frames.
   messaging.drain_sock_raw(can_sock)
 
-  Params().put("OffroadCanScript", encode_script(frames))
+  params.put("OffroadCanScript", encode_script(frames))
   # pandad polls the param every 100 ms; the rest is the script's own timing.
   deadline = time.monotonic() + 0.5 + script_duration_s(frames) + settle_s
   while time.monotonic() < deadline:
@@ -322,6 +346,11 @@ def run_script_and_record(frames: Sequence[ScriptFrame], sub_addr: int, settle_s
       recorder.update(can_capnp_to_list(raw))
     else:
       time.sleep(0.01)
+  if params.get("OffroadCanScript"):
+    # Still queued after the whole run: pandad never took it (went onroad, or is not running).
+    params.remove("OffroadCanScript")
+    recorder.script_played = False
+    return recorder
   recorder.place_by_schedule()
   return recorder
 
@@ -357,7 +386,7 @@ def main(argv: list[str] | None = None) -> int:
     f.write(recorder.report(title) + "\n")
   print(recorder.summary())
   print(f"report: {path}")
-  return 0
+  return 0 if recorder.script_played else 1
 
 
 if __name__ == "__main__":
