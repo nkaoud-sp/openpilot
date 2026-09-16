@@ -22,6 +22,7 @@ from openpilot.sunnypilot.body_lid_scan import (
   classify_reply,
   combo_controls,
   describe_blinkers_state,
+  probe_body,
   probe_lid,
   sweep_controls,
 )
@@ -254,3 +255,41 @@ class TestScanRecorder:
     assert "LID 0x12 ctrl 00 02 00: 40 02 70 12 00 00 00 00  [relay under the dash, load not yet identified]" in report
     assert "LID 0x12 ctrl 00 80 00: 40 02 70 12 00 00 00 00  [cabin light on]" in report
     assert "LID 0x12 ctrl 00 00 00: 40 02 70 12 00 00 00 00  [cabin light, dash relay]" in report
+
+
+class TestDirectAddressing:
+  """An ECU with its own address, like the meter at 0x7C0, gets plain ISO-TP frames."""
+
+  def test_probe_is_a_single_frame_without_sub_address(self):
+    assert build_probe(0x29, sub_addr=None) == bytes([0x05, 0x30, 0x29, 0x00, 0x00, 0x00, 0x00, 0x00])
+    assert probe_lid(build_probe(0x29, sub_addr=None), None) == 0x29
+    assert probe_lid(build_probe(0x29, sub_addr=None), 0x40) is None
+    assert probe_body(bytes.fromhex("03 7f 30 11 00 00 00 00"), None) == bytes.fromhex("7f 30 11")
+
+  def test_replies_classify_with_service_not_supported_kept_apart(self):
+    assert classify_reply(bytes.fromhex("03 7f 30 11 00 00 00 00"), None) == ("noservice", "NRC 0x11 serviceNotSupported")
+    assert classify_reply(bytes.fromhex("03 7f 30 12 00 00 00 00"), None)[0] == "unsupported"
+    assert classify_reply(bytes.fromhex("02 70 29 00 00 00 00 00"), None)[0] == "positive"
+    assert classify_reply(bytes.fromhex("40 03 7f 30 11 00 00 00"), 0x40)[0] == "noservice"
+
+  def test_scan_frames_go_to_the_direct_address(self):
+    frames = build_lid_scan_frames(range(3), sub_addr=None, addr=0x7C0)
+    assert all(f.addr == 0x7C0 for f in frames)
+    assert [f.data[2] for f in frames] == [0, 1, 2]
+
+  def test_recorder_matches_echo_and_reply_on_the_direct_addresses(self):
+    frames = build_lid_scan_frames(range(0x10, 0x12), sub_addr=None, addr=0x7C0)
+    rec = ScanRecorder(frames, None, tx_addr=0x7C0, rx_addr=0x7C8)
+    rec.update([
+      _can(1.0, 0x7C0, frames[0].data, src=128),
+      _can(1.01, 0x7C8, bytes.fromhex("03 7f 30 11 00 00 00 00")),
+      _can(1.02, REPLY_ADDR, bytes.fromhex("40 03 7f 30 12 00 00 00")),   # body ECU noise, wrong address
+      _can(1.2, 0x7C0, frames[1].data, src=128),
+      _can(1.21, 0x7C8, bytes.fromhex("02 70 11 00 00 00 00 00")),
+    ])
+    assert rec.echoes == 2
+    assert [p.verdict for p in rec.probes] == ["noservice", "positive"]
+    assert rec.probes[1].control == b"\x00\x00\x00"
+    assert "0x7C0 direct" in rec.summary()
+    assert "service 0x30 not supported: 1 probes" in rec.summary()
+    assert "does not implement service 0x30" in rec.report("t")

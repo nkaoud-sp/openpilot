@@ -102,6 +102,8 @@ NRC_NAMES = {
 }
 # NRCs that just mean "no such LID"; anything else means the ECU knows the LID.
 NRC_UNSUPPORTED = {0x12, 0x31}
+# The ECU does not implement service 0x30 at all (a UDS-only ECU answers every LID this way).
+NRC_SERVICE_NOT_SUPPORTED = 0x11
 
 DEFAULT_REPORT_DIR = "/data"
 
@@ -114,31 +116,47 @@ NOT_PLAYED_WARNING = (
 REPORT_NAME = "body_lid_scan.txt"
 
 
-def build_probe(lid: int, control: bytes = DEFAULT_CONTROL, sub_addr: int = SUB_ADDR_BODY) -> bytes:
-  """One 0x30 request: [sub_addr, len, 0x30, LID, control...], zero padded to 8 bytes."""
+def build_probe(lid: int, control: bytes = DEFAULT_CONTROL, sub_addr: int | None = SUB_ADDR_BODY) -> bytes:
+  """One 0x30 request, zero padded to 8 bytes.
+
+  Through the 0x750 gateway: [sub_addr, len, 0x30, LID, control...]. To an ECU with its own address
+  (sub_addr None, e.g. the meter at 0x7C0): a plain ISO-TP single frame [len, 0x30, LID, control...].
+  """
   if not 0 <= lid <= 0xFF:
     raise ValueError(f"LID out of range: {lid}")
-  if not 0 <= sub_addr <= 0xFF:
+  if sub_addr is not None and not 0 <= sub_addr <= 0xFF:
     raise ValueError(f"sub-address out of range: {sub_addr}")
   if not 1 <= len(control) <= 4:
     raise ValueError(f"control record must be 1 to 4 bytes: {control!r}")
   body = bytes([SERVICE_IO_CONTROL, lid]) + control
+  if sub_addr is None:
+    return bytes([len(body)]) + body.ljust(7, b"\x00")
   return bytes([sub_addr, len(body)]) + body.ljust(6, b"\x00")
 
 
-def probe_lid(data: bytes, sub_addr: int = SUB_ADDR_BODY) -> int | None:
-  """The LID of a probe frame this module built, or None for anything else on 0x750."""
-  if len(data) >= 4 and data[0] == sub_addr and data[2] == SERVICE_IO_CONTROL:
-    return data[3]
+def probe_body(data: bytes, sub_addr: int | None = SUB_ADDR_BODY) -> bytes | None:
+  """The KWP payload of a frame in the addressing this scan uses, or None if it is not one of ours."""
+  if sub_addr is None:
+    return data[1:1 + data[0]] if len(data) >= 2 and 1 <= data[0] <= 7 else None
+  if len(data) >= 3 and data[0] == sub_addr and 1 <= data[1] <= 6:
+    return data[2:2 + data[1]]
   return None
 
 
-def build_lid_scan_frames(lids: Iterable[int] = ALL_LIDS, sub_addr: int = SUB_ADDR_BODY,
-                          gap_ms: int = PROBE_GAP_MS) -> list[ScriptFrame]:
+def probe_lid(data: bytes, sub_addr: int | None = SUB_ADDR_BODY) -> int | None:
+  """The LID of a probe frame this module built, or None for anything else."""
+  body = probe_body(data, sub_addr)
+  if body is not None and len(body) >= 2 and body[0] == SERVICE_IO_CONTROL:
+    return body[1]
+  return None
+
+
+def build_lid_scan_frames(lids: Iterable[int] = ALL_LIDS, sub_addr: int | None = SUB_ADDR_BODY,
+                          gap_ms: int = PROBE_GAP_MS, addr: int = DIAG_ADDR) -> list[ScriptFrame]:
   """Probe every LID once with an all-zero control record."""
   frames = []
   for i, lid in enumerate(lids):
-    frames.append(ScriptFrame(0 if i == 0 else gap_ms, build_probe(lid, sub_addr=sub_addr), addr=DIAG_ADDR, bus=CMD_BUS))
+    frames.append(ScriptFrame(0 if i == 0 else gap_ms, build_probe(lid, sub_addr=sub_addr), addr=addr, bus=CMD_BUS))
   return frames
 
 
@@ -157,27 +175,33 @@ def combo_controls() -> list[bytes]:
   return [bytes([sel, 1 << b, 0]) for sel in range(0x10) for b in range(8)]
 
 
-def build_bit_sweep_frames(lid: int, sub_addr: int = SUB_ADDR_BODY,
+def build_bit_sweep_frames(lid: int, sub_addr: int | None = SUB_ADDR_BODY,
                            on_ms: int = SWEEP_ON_MS, off_ms: int = SWEEP_OFF_MS,
-                           controls: Sequence[bytes] | None = None) -> list[ScriptFrame]:
+                           controls: Sequence[bytes] | None = None, addr: int = DIAG_ADDR) -> list[ScriptFrame]:
   """Set each control record on its own, releasing it with all zeros before the next one."""
   frames = []
   for i, control in enumerate(sweep_controls() if controls is None else controls):
-    frames.append(ScriptFrame(0 if i == 0 else off_ms, build_probe(lid, control, sub_addr), addr=DIAG_ADDR, bus=CMD_BUS))
-    frames.append(ScriptFrame(on_ms, build_probe(lid, DEFAULT_CONTROL, sub_addr), addr=DIAG_ADDR, bus=CMD_BUS))
+    frames.append(ScriptFrame(0 if i == 0 else off_ms, build_probe(lid, control, sub_addr), addr=addr, bus=CMD_BUS))
+    frames.append(ScriptFrame(on_ms, build_probe(lid, DEFAULT_CONTROL, sub_addr), addr=addr, bus=CMD_BUS))
   return frames
 
 
-def classify_reply(data: bytes, sub_addr: int = SUB_ADDR_BODY) -> tuple[str, str]:
-  """Sort a 0x758 frame into ('positive' | 'unsupported' | 'negative' | 'other', detail)."""
-  if len(data) < 3 or data[0] != sub_addr:
+def classify_reply(data: bytes, sub_addr: int | None = SUB_ADDR_BODY) -> tuple[str, str]:
+  """Sort a reply frame into ('positive' | 'unsupported' | 'noservice' | 'negative' | 'other', detail).
+
+  'unsupported' is an NRC that means the LID does not exist; 'noservice' means the ECU does not
+  speak service 0x30 at all; any other NRC is 'negative', an LID the ECU knows but refused.
+  """
+  body = probe_body(data, sub_addr)
+  if body is None or len(body) < 1:
     return "other", data.hex(" ")
-  if data[2] == POSITIVE_IO_CONTROL:
+  if body[0] == POSITIVE_IO_CONTROL:
     return "positive", data.hex(" ")
-  if data[2] == NEGATIVE_RESPONSE and len(data) >= 5 and data[3] == SERVICE_IO_CONTROL:
-    nrc = data[4]
+  if body[0] == NEGATIVE_RESPONSE and len(body) >= 3 and body[1] == SERVICE_IO_CONTROL:
+    nrc = body[2]
     name = NRC_NAMES.get(nrc, "unknown")
-    return ("unsupported" if nrc in NRC_UNSUPPORTED else "negative"), f"NRC 0x{nrc:02X} {name}"
+    kind = "unsupported" if nrc in NRC_UNSUPPORTED else ("noservice" if nrc == NRC_SERVICE_NOT_SUPPORTED else "negative")
+    return kind, f"NRC 0x{nrc:02X} {name}"
   return "other", data.hex(" ")
 
 
@@ -211,6 +235,8 @@ class ProbeResult:
     kinds = {kind for kind, _ in self.replies}
     if "negative" in kinds:
       return "negative"
+    if "noservice" in kinds:
+      return "noservice"
     if "unsupported" in kinds:
       return "unsupported"
     return "no reply" if not self.replies else "other"
@@ -224,14 +250,17 @@ class ScanRecorder:
   timing relative to the first echo, or the first reply if there were no echoes at all.
   """
 
-  def __init__(self, frames: Sequence[ScriptFrame], sub_addr: int = SUB_ADDR_BODY):
+  def __init__(self, frames: Sequence[ScriptFrame], sub_addr: int | None = SUB_ADDR_BODY,
+               tx_addr: int = DIAG_ADDR, rx_addr: int = REPLY_ADDR):
     self.sub_addr = sub_addr
+    self.tx_addr = tx_addr
+    self.rx_addr = rx_addr
     self.frames = list(frames)
     self.probes: list[ProbeResult] = []
     for i, f in enumerate(self.frames):
       lid = probe_lid(f.data, sub_addr)
       if lid is not None:
-        self.probes.append(ProbeResult(i, lid, f.data[4:2 + f.data[1]]))
+        self.probes.append(ProbeResult(i, lid, probe_body(f.data, sub_addr)[2:]))
     self._next_echo = 0
     self.echoes = 0
     self.frames_seen = 0
@@ -255,7 +284,7 @@ class ScanRecorder:
       for addr, data, src in frames:
         self.frames_seen += 1
         data = bytes(data)
-        if addr == DIAG_ADDR and src >= 128 and probe_lid(data, self.sub_addr) is not None:
+        if addr == self.tx_addr and src >= 128 and probe_lid(data, self.sub_addr) is not None:
           # The panda echoes what it sent with the bus offset by 128. Probes go out in script
           # order, so the next echo is the next unplaced probe.
           if self._next_echo < len(self.probes):
@@ -264,7 +293,7 @@ class ScanRecorder:
               self.on_sent(self.probes[self._next_echo])
             self._next_echo += 1
             self.echoes += 1
-        elif addr == REPLY_ADDR and src < 128 and len(data) > 0 and data[0] == self.sub_addr:
+        elif addr == self.rx_addr and src < 128 and probe_body(data, self.sub_addr) is not None:
           if self.first_reply_at is None:
             self.first_reply_at = t
           probe = self._current_probe(t)
@@ -301,6 +330,12 @@ class ScanRecorder:
       if p.sent_at is None:
         p.sent_at = anchor_t + offsets[p.index] - base
 
+  @property
+  def target(self) -> str:
+    if self.sub_addr is None:
+      return f"0x{self.tx_addr:03X} direct (replies on 0x{self.rx_addr:03X})"
+    return f"(0x{self.tx_addr:03X}, 0x{self.sub_addr:02X})"
+
   def report(self, title: str) -> str:
     known_lids = KNOWN_LIDS.get(self.sub_addr, {})
     known_controls = KNOWN_CONTROLS.get(self.sub_addr, {})
@@ -308,7 +343,7 @@ class ScanRecorder:
     def label(p: ProbeResult) -> str:
       what = known_controls.get((p.lid, bytes(p.control[:2]))) or known_lids.get(p.lid)
       return f"  [{what}]" if what else ""
-    header = f"sub-address 0x{self.sub_addr:02X}, {len(self.probes)} probes, {self.echoes} transmit echoes seen, "
+    header = f"target {self.target}, {len(self.probes)} probes, {self.echoes} transmit echoes seen, "
     header += f"{self.frames_seen} CAN frames recorded, {self.blinkers_frames} of them BLINKERS_STATE (0x614)"
     lines = [title, header, ""]
     if not self.script_played:
@@ -321,6 +356,11 @@ class ScanRecorder:
     negatives = [p for p in self.probes if p.verdict == "negative"]
     silent = [p for p in self.probes if p.verdict == "no reply"]
     hits = [p for p in self.probes if p.blinker_changes]
+    noservice = [p for p in self.probes if p.verdict == "noservice"]
+    if noservice:
+      lines.append(f"{len(noservice)} probes answered NRC 0x11 serviceNotSupported: this ECU does not implement service 0x30"
+                   + (" at all" if len(noservice) == len(self.probes) else ""))
+      lines.append("")
     lines.append("LIDs answering positive (exist, may have actuated):")
     lines += [f"  LID 0x{p.lid:02X} ctrl {p.control.hex(' ')}: {', '.join(d for _, d in p.replies)}"
               + label(p) for p in positives] or ["  none"]
@@ -349,7 +389,10 @@ class ScanRecorder:
     if not self.script_played:
       return NOT_PLAYED_WARNING
     unanswered = sum(1 for p in self.probes if p.verdict == "no reply")
-    lines = [f"{len(self.probes)} probes to 0x{self.sub_addr:02X}, {self.echoes} echoes, {unanswered} unanswered"]
+    noservice = sum(1 for p in self.probes if p.verdict == "noservice")
+    lines = [f"{len(self.probes)} probes to {self.target}, {self.echoes} echoes, {unanswered} unanswered"]
+    if noservice:
+      lines.append(f"service 0x30 not supported: {noservice} probes" + (" (all of them)" if noservice == len(self.probes) else ""))
     lines.append("positive: " + (", ".join(f"0x{p.lid:02X}" for p in positives) if positives else "none"))
     lines.append("refused: " + (", ".join(f"0x{p.lid:02X}" for p in negatives) if negatives else "none"))
     lines.append("0x614 hits: " + ("; ".join(f"0x{p.lid:02X} {p.control.hex(' ')} -> {' / '.join(p.blinker_changes)}" for p in hits) if hits else "none"))
@@ -364,14 +407,14 @@ def announce(probe: ProbeResult) -> None:
     print(f"LID 0x{probe.lid:02X} ctrl {probe.control.hex(' ')}  <- live now  (probe #{probe.index})", flush=True)
 
 
-def run_script_and_record(frames: Sequence[ScriptFrame], sub_addr: int, settle_s: float = 3.0,
-                          live: bool = False) -> ScanRecorder:
+def run_script_and_record(frames: Sequence[ScriptFrame], sub_addr: int | None, settle_s: float = 3.0,
+                          live: bool = False, tx_addr: int = DIAG_ADDR, rx_addr: int = REPLY_ADDR) -> ScanRecorder:
   """Queue the script for pandad and record the bus until it has had time to finish."""
   import openpilot.cereal.messaging as messaging
   from openpilot.common.params import Params
   from openpilot.selfdrive.pandad import can_capnp_to_list
 
-  recorder = ScanRecorder(frames, sub_addr)
+  recorder = ScanRecorder(frames, sub_addr, tx_addr, rx_addr)
   if live:
     recorder.on_sent = announce
   params = Params()
@@ -415,6 +458,8 @@ def report_path(out: str | None) -> str:
 def main(argv: list[str] | None = None) -> int:
   parser = argparse.ArgumentParser(description="scan a body ECU for 0x30 local identifiers, or sweep one LID's control bits")
   parser.add_argument("--sub-addr", type=lambda s: int(s, 0), default=SUB_ADDR_BODY, help="0x750 sub-address (default 0x40, main body ECU)")
+  parser.add_argument("--direct", type=lambda s: int(s, 0), default=None,
+                      help="address an ECU directly instead of through 0x750, e.g. 0x7C0 for the combination meter (replies on address + 8)")
   parser.add_argument("--lid", type=lambda s: int(s, 0), default=None, help="sweep this LID's 16 control bits instead of scanning")
   parser.add_argument("--first", type=lambda s: int(s, 0), default=0, help="first LID to scan")
   parser.add_argument("--last", type=lambda s: int(s, 0), default=0xFF, help="last LID to scan")
@@ -430,23 +475,30 @@ def main(argv: list[str] | None = None) -> int:
   parser.add_argument("--out", default=None, help=f"report file (default {DEFAULT_REPORT_DIR}/{REPORT_NAME})")
   args = parser.parse_args(argv)
 
+  if args.direct is not None:
+    sub_addr, tx_addr, rx_addr = None, args.direct, args.direct + 8
+    target = f"0x{tx_addr:03X} direct"
+  else:
+    sub_addr, tx_addr, rx_addr = args.sub_addr, DIAG_ADDR, REPLY_ADDR
+    target = f"(0x{tx_addr:03X}, 0x{sub_addr:02X})"
+
   if args.lid is not None and args.control is not None:
     control = bytes(int(b, 16) for b in args.control).ljust(len(DEFAULT_CONTROL), b"\x00")
-    frames = build_bit_sweep_frames(args.lid, args.sub_addr, args.on_ms, args.off_ms, [control] * max(1, args.repeat))
+    frames = build_bit_sweep_frames(args.lid, sub_addr, args.on_ms, args.off_ms, [control] * max(1, args.repeat), tx_addr)
     title = f"control {control.hex(' ')} x{max(1, args.repeat)} on LID 0x{args.lid:02X}"
   elif args.lid is not None:
     controls = combo_controls() if args.combo else sweep_controls()
     if args.low_byte_only and not args.combo:
       controls = controls[:8]
-    frames = build_bit_sweep_frames(args.lid, args.sub_addr, args.on_ms, args.off_ms, controls)
+    frames = build_bit_sweep_frames(args.lid, sub_addr, args.on_ms, args.off_ms, controls, tx_addr)
     title = f"{'combo' if args.combo else 'bit'} sweep of LID 0x{args.lid:02X}"
   else:
-    frames = build_lid_scan_frames(range(args.first, args.last + 1), args.sub_addr, args.gap_ms)
+    frames = build_lid_scan_frames(range(args.first, args.last + 1), sub_addr, args.gap_ms, tx_addr)
     title = f"LID scan 0x{args.first:02X}..0x{args.last:02X}"
-  title += f" on (0x{DIAG_ADDR:03X}, 0x{args.sub_addr:02X}) at {time.strftime('%Y-%m-%d %H:%M:%S')}"
+  title += f" on {target} at {time.strftime('%Y-%m-%d %H:%M:%S')}"
 
   print(f"{title}: {len(frames)} frames, about {script_duration_s(frames):.0f} s. Ignition off, watch the car.", flush=True)
-  recorder = run_script_and_record(frames, args.sub_addr, live=not args.quiet)
+  recorder = run_script_and_record(frames, sub_addr, live=not args.quiet, tx_addr=tx_addr, rx_addr=rx_addr)
 
   path = report_path(args.out)
   with open(path, "w") as f:
