@@ -133,11 +133,22 @@ def sweep_controls() -> list[bytes]:
   return [bytes([0, 1 << b, 0]) for b in range(8)] + [bytes([1 << b, 0, 0]) for b in range(8)]
 
 
+def combo_controls() -> list[bytes]:
+  """Selector plus action, the shape of the window command (30 01 05 20: window 5, action 0x20).
+
+  A LID that addresses several outputs may need a non-zero first byte before any bit in the second
+  does anything, so this pairs every first byte 0x00..0x0F with each single bit of the second.
+  The single-bit sweep is the selector-0 row of this table.
+  """
+  return [bytes([sel, 1 << b, 0]) for sel in range(0x10) for b in range(8)]
+
+
 def build_bit_sweep_frames(lid: int, sub_addr: int = SUB_ADDR_BODY,
-                           on_ms: int = SWEEP_ON_MS, off_ms: int = SWEEP_OFF_MS) -> list[ScriptFrame]:
-  """Set each control bit on its own, releasing it with all zeros before the next one."""
+                           on_ms: int = SWEEP_ON_MS, off_ms: int = SWEEP_OFF_MS,
+                           controls: Sequence[bytes] | None = None) -> list[ScriptFrame]:
+  """Set each control record on its own, releasing it with all zeros before the next one."""
   frames = []
-  for i, control in enumerate(sweep_controls()):
+  for i, control in enumerate(sweep_controls() if controls is None else controls):
     frames.append(ScriptFrame(0 if i == 0 else off_ms, build_probe(lid, control, sub_addr), addr=DIAG_ADDR, bus=CMD_BUS))
     frames.append(ScriptFrame(on_ms, build_probe(lid, DEFAULT_CONTROL, sub_addr), addr=DIAG_ADDR, bus=CMD_BUS))
   return frames
@@ -210,6 +221,7 @@ class ScanRecorder:
     self._next_echo = 0
     self.echoes = 0
     self.frames_seen = 0
+    self.blinkers_frames = 0
     # Set by the runner: False when pandad never picked the script up, so nothing here means anything.
     self.script_played = True
     self.first_reply_at: float | None = None
@@ -243,6 +255,7 @@ class ScanRecorder:
           else:
             probe.replies.append(classify_reply(data, self.sub_addr))
         elif addr == BLINKERS_STATE_ADDR and src < 128:
+          self.blinkers_frames += 1
           if self._last_blinkers is not None and self._last_blinkers != data:
             what = describe_blinkers_state(self._last_blinkers, data)
             self.blinker_changes.append((t, what))
@@ -273,7 +286,7 @@ class ScanRecorder:
   def report(self, title: str) -> str:
     known = KNOWN_LIDS.get(self.sub_addr, {})
     header = f"sub-address 0x{self.sub_addr:02X}, {len(self.probes)} probes, {self.echoes} transmit echoes seen, "
-    header += f"{self.frames_seen} CAN frames recorded"
+    header += f"{self.frames_seen} CAN frames recorded, {self.blinkers_frames} of them BLINKERS_STATE (0x614)"
     lines = [title, header, ""]
     if not self.script_played:
       lines.append(NOT_PLAYED_WARNING)
@@ -368,12 +381,16 @@ def main(argv: list[str] | None = None) -> int:
   parser.add_argument("--first", type=lambda s: int(s, 0), default=0, help="first LID to scan")
   parser.add_argument("--last", type=lambda s: int(s, 0), default=0xFF, help="last LID to scan")
   parser.add_argument("--gap-ms", type=int, default=PROBE_GAP_MS, help="ms between scan probes")
+  parser.add_argument("--combo", action="store_true", help="sweep selector byte 0x00..0x0F x each action bit instead of single bits")
+  parser.add_argument("--on-ms", type=int, default=SWEEP_ON_MS, help="ms a sweep control is held before it is released")
+  parser.add_argument("--off-ms", type=int, default=SWEEP_OFF_MS, help="ms between a release and the next sweep control")
   parser.add_argument("--out", default=None, help=f"report file (default {DEFAULT_REPORT_DIR}/{REPORT_NAME})")
   args = parser.parse_args(argv)
 
   if args.lid is not None:
-    frames = build_bit_sweep_frames(args.lid, args.sub_addr)
-    title = f"bit sweep of LID 0x{args.lid:02X}"
+    controls = combo_controls() if args.combo else sweep_controls()
+    frames = build_bit_sweep_frames(args.lid, args.sub_addr, args.on_ms, args.off_ms, controls)
+    title = f"{'combo' if args.combo else 'bit'} sweep of LID 0x{args.lid:02X}"
   else:
     frames = build_lid_scan_frames(range(args.first, args.last + 1), args.sub_addr, args.gap_ms)
     title = f"LID scan 0x{args.first:02X}..0x{args.last:02X}"

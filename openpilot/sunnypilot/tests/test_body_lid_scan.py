@@ -20,6 +20,7 @@ from openpilot.sunnypilot.body_lid_scan import (
   build_lid_scan_frames,
   build_probe,
   classify_reply,
+  combo_controls,
   describe_blinkers_state,
   probe_lid,
   sweep_controls,
@@ -89,6 +90,17 @@ class TestScripts:
     assert all(probe_lid(f.data) == 0x15 for f in frames)
 
 
+  def test_combo_sweep_pairs_every_selector_with_every_action_bit(self):
+    controls = combo_controls()
+    assert len(controls) == 128
+    assert len(set(controls)) == 128
+    assert controls[:8] == sweep_controls()[:8], "selector 0 is the single-bit sweep's second byte"
+    assert bytes([0x05, 0x20, 0x00]) in controls, "the window command's shape is covered"
+    frames = build_bit_sweep_frames(0x12, on_ms=500, off_ms=300, controls=controls)
+    assert len(frames) == 256
+    assert frames[1].delay_ms == 500 and frames[2].delay_ms == 300
+
+
 class TestClassifyReply:
   def test_positive(self):
     assert classify_reply(bytes.fromhex("40 03 70 11 00 00 00 00"))[0] == "positive"
@@ -151,6 +163,7 @@ class TestScanRecorder:
     by_lid = {p.lid: p for p in rec.probes}
     assert rec.echoes == 4
     assert rec.frames_seen == 11
+    assert rec.blinkers_frames == 2
     assert by_lid[0x10].verdict == "unsupported"
     assert by_lid[0x11].verdict == "positive"
     assert by_lid[0x12].verdict == "positive"
