@@ -341,7 +341,11 @@ def run_script_and_record(frames: Sequence[ScriptFrame], sub_addr: int, settle_s
 
   recorder = ScanRecorder(frames, sub_addr)
   params = Params()
-  if params.get_bool("IsOnroad"):
+  # pandad decides offroad from deviceState.started, so ask the same source. If it does not answer
+  # in time, go ahead: a script pandad never takes is caught after the run below.
+  sm = messaging.SubMaster(["deviceState"])
+  sm.update(1000)
+  if sm.updated["deviceState"] and sm["deviceState"].started:
     # pandad would drop the script on the spot; say so instead of recording a minute of nothing.
     recorder.script_played = False
     return recorder
