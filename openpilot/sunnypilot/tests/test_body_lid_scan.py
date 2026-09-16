@@ -176,7 +176,7 @@ class TestScanRecorder:
     assert "positive: 0x11, 0x12" in summary
     assert "0x614 hits: 0x12 00 00 00 -> event pulse on, HAZARD_LIGHT=1" in summary
     report = rec.report("test")
-    assert "LID 0x11 ctrl 00 00 00: 40 03 70 11 00 00 00 00  [door lock/unlock]" in report
+    assert "LID 0x11 ctrl 00 00 00: 40 03 70 11 00 00 00 00  [door locks]" in report
     assert "WARNING" not in report
 
   def test_places_unechoed_probes_from_the_script_timing(self):
@@ -241,3 +241,16 @@ class TestScanRecorder:
     rec.on_sent = lambda p: seen.append((p.index, p.control))
     rec.update([_can(1.0 + i * 0.5, DIAG_ADDR, f.data, src=128) for i, f in enumerate(frames)])
     assert seen == [(0, b"\x00\x01\x00"), (1, b"\x00\x00\x00"), (2, b"\x00\x02\x00"), (3, b"\x00\x00\x00")]
+
+  def test_report_labels_known_controls(self):
+    frames = build_bit_sweep_frames(0x12, controls=[b"\x00\x02\x00", b"\x00\x80\x00"])
+    rec = ScanRecorder(frames)
+    msgs = []
+    for i, f in enumerate(frames):
+      msgs.append(_can(1.0 + i, DIAG_ADDR, f.data, src=128))
+      msgs.append(_can(1.1 + i, REPLY_ADDR, bytes.fromhex("40 02 70 12 00 00 00 00")))
+    rec.update(msgs)
+    report = rec.report("test")
+    assert "LID 0x12 ctrl 00 02 00: 40 02 70 12 00 00 00 00  [relay under the dash, load not yet identified]" in report
+    assert "LID 0x12 ctrl 00 80 00: 40 02 70 12 00 00 00 00  [cabin light on]" in report
+    assert "LID 0x12 ctrl 00 00 00: 40 02 70 12 00 00 00 00  [cabin light, dash relay]" in report

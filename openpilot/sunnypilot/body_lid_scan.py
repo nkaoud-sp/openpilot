@@ -69,9 +69,23 @@ ALL_LIDS = range(0x100)
 # Three bytes, like the lock command: the two the known commands use as a bitfield plus a zero.
 DEFAULT_CONTROL = b"\x00\x00\x00"
 
-# LIDs on the body ECU this fork already drives. They are reported, but a hit on them is not news.
+# What the body ECU's 0x30 identifiers are known to drive, from the auto-lock commands and from
+# eyes-on bit sweeps of a 2020 Lexus ES 350 (ignition off). Labels in the reports, nothing more.
 KNOWN_LIDS = {
-  SUB_ADDR_BODY: {0x11: "door lock/unlock"},
+  SUB_ADDR_BODY: {
+    0x11: "door locks",
+    0x12: "cabin light, dash relay",
+    0x19: "rear sunshade",
+  },
+}
+KNOWN_CONTROLS = {
+  SUB_ADDR_BODY: {
+    (0x11, b"\x00\x80"): "door lock",
+    (0x11, b"\x00\x40"): "door unlock",
+    (0x12, b"\x00\x02"): "relay under the dash, load not yet identified",
+    (0x12, b"\x00\x80"): "cabin light on",
+    (0x19, b"\x00\x40"): "rear sunshade open",
+  },
 }
 
 NRC_NAMES = {
@@ -288,7 +302,12 @@ class ScanRecorder:
         p.sent_at = anchor_t + offsets[p.index] - base
 
   def report(self, title: str) -> str:
-    known = KNOWN_LIDS.get(self.sub_addr, {})
+    known_lids = KNOWN_LIDS.get(self.sub_addr, {})
+    known_controls = KNOWN_CONTROLS.get(self.sub_addr, {})
+
+    def label(p: ProbeResult) -> str:
+      what = known_controls.get((p.lid, bytes(p.control[:2]))) or known_lids.get(p.lid)
+      return f"  [{what}]" if what else ""
     header = f"sub-address 0x{self.sub_addr:02X}, {len(self.probes)} probes, {self.echoes} transmit echoes seen, "
     header += f"{self.frames_seen} CAN frames recorded, {self.blinkers_frames} of them BLINKERS_STATE (0x614)"
     lines = [title, header, ""]
@@ -304,7 +323,7 @@ class ScanRecorder:
     hits = [p for p in self.probes if p.blinker_changes]
     lines.append("LIDs answering positive (exist, may have actuated):")
     lines += [f"  LID 0x{p.lid:02X} ctrl {p.control.hex(' ')}: {', '.join(d for _, d in p.replies)}"
-              + (f"  [{known[p.lid]}]" if p.lid in known else "") for p in positives] or ["  none"]
+              + label(p) for p in positives] or ["  none"]
     lines.append("LIDs answering with another negative code (exist, refused):")
     lines += [f"  LID 0x{p.lid:02X} ctrl {p.control.hex(' ')}: {', '.join(d for _, d in p.replies)}" for p in negatives] or ["  none"]
     lines.append("BLINKERS_STATE (0x614) changes during a probe:")
