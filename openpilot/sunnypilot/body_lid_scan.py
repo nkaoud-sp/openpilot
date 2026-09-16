@@ -382,12 +382,19 @@ def main(argv: list[str] | None = None) -> int:
   parser.add_argument("--last", type=lambda s: int(s, 0), default=0xFF, help="last LID to scan")
   parser.add_argument("--gap-ms", type=int, default=PROBE_GAP_MS, help="ms between scan probes")
   parser.add_argument("--combo", action="store_true", help="sweep selector byte 0x00..0x0F x each action bit instead of single bits")
+  parser.add_argument("--control", nargs="+", default=None,
+                      help="with --lid: send just this control record (hex bytes, e.g. 00 20), hold it --on-ms, then release it")
+  parser.add_argument("--repeat", type=int, default=1, help="with --control: how many times to set and release it")
   parser.add_argument("--on-ms", type=int, default=SWEEP_ON_MS, help="ms a sweep control is held before it is released")
   parser.add_argument("--off-ms", type=int, default=SWEEP_OFF_MS, help="ms between a release and the next sweep control")
   parser.add_argument("--out", default=None, help=f"report file (default {DEFAULT_REPORT_DIR}/{REPORT_NAME})")
   args = parser.parse_args(argv)
 
-  if args.lid is not None:
+  if args.lid is not None and args.control is not None:
+    control = bytes(int(b, 16) for b in args.control).ljust(len(DEFAULT_CONTROL), b"\x00")
+    frames = build_bit_sweep_frames(args.lid, args.sub_addr, args.on_ms, args.off_ms, [control] * max(1, args.repeat))
+    title = f"control {control.hex(' ')} x{max(1, args.repeat)} on LID 0x{args.lid:02X}"
+  elif args.lid is not None:
     controls = combo_controls() if args.combo else sweep_controls()
     frames = build_bit_sweep_frames(args.lid, args.sub_addr, args.on_ms, args.off_ms, controls)
     title = f"{'combo' if args.combo else 'bit'} sweep of LID 0x{args.lid:02X}"
