@@ -31,7 +31,7 @@ from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.scroller_tici import Scroller
 
 
-FRAME_BENCHMARK_CMD = ["python3", "-m", "openpilot.selfdrive.modeld.frame_downscale", "--device", "QCOM"]
+FRAME_BENCHMARK_CMD = ["python3", "-m", "openpilot.selfdrive.modeld.chestnut_frames", "--device", "QCOM"]
 
 
 class PanelType(IntEnum):
@@ -159,11 +159,21 @@ class TweaksLayout(Widget):
       param="ChestnutNativeFrames",
     )
 
+    self._chestnut_ray_matching = toggle_item_sp(
+      title=lambda: tr("Chestnut C4 Ray Matching"),
+      description=lambda: tr("Trace every comma four pixel through the measured 3X lenses instead of plain resampling, so " +
+                            "the chestnut model sees true comma four camera geometry: the wide fisheye reprojected, and the " +
+                            "narrow built from the 3X narrow inset over the wide surround. Costs a little more GPU time than " +
+                            "resampling. Needs both cameras. comma 3X only, applies on the next drive."),
+      param="ChestnutRayMatching",
+      enabled=lambda: not ui_state.params.get_bool("ChestnutNativeFrames"),
+    )
+
     self._frame_benchmark = button_item_sp(
       title=lambda: tr("Chestnut Frame Benchmark"),
       button_text=lambda: tr("Run"),
-      description=lambda: tr("Time the comma four frame resample on this device's GPU and show the numbers on screen, " +
-                            "along with the frame mode modeld used on the last drive. Offroad only, takes about a minute."),
+      description=lambda: tr("Time both frame modes on this device's GPU and show the numbers on screen, along with " +
+                            "the mode modeld used on the last drive. Offroad only, takes a couple of minutes."),
       callback=self._on_frame_benchmark,
       enabled=lambda: ui_state.is_offroad(),
     )
@@ -181,6 +191,7 @@ class TweaksLayout(Widget):
       self._auto_lock_button,
       self._hazard_test,
       self._chestnut_native_frames,
+      self._chestnut_ray_matching,
       self._frame_benchmark,
     ]
 

@@ -19,7 +19,8 @@ from tinygrad.tensor import Tensor
 import openpilot.cereal.messaging as messaging
 from openpilot.common.hardware import COMMA_HARDWARE
 from openpilot.selfdrive.modeld.helpers import chestnut_present
-from openpilot.selfdrive.modeld.frame_downscale import FrameDownscaler, select_frame_size
+from openpilot.selfdrive.modeld.frame_downscale import select_frame_size
+from openpilot.selfdrive.modeld.chestnut_frames import frame_mode, make_frame_stage
 from openpilot.cereal import log
 from opendbc.car.structs import car
 from openpilot.cereal.services import SERVICE_LIST
@@ -96,7 +97,7 @@ class ModelState(ModelStateBase):
   inputs: dict[str, np.ndarray]
   prev_desire: np.ndarray
 
-  def __init__(self, cam_w: int, cam_h: int, chestnut: bool = False):
+  def __init__(self, cam_w: int, cam_h: int, chestnut: bool = False, both_cameras: bool = True):
     ModelStateBase.__init__(self)
 
     env_pkl = os.environ.get('COMBINED_MODEL_PKL')
@@ -115,9 +116,9 @@ class ModelState(ModelStateBase):
 
     pkl_path = _find_driving_pkl(model_bundle)
     assert pkl_path is not None, f"No driving pkl found for {'chestnut' if chestnut else 'small model'} — all models must be compiled with compile_modeld.py"
-    self._init_combined(pkl_path, cam_w, cam_h, model_bundle)
+    self._init_combined(pkl_path, cam_w, cam_h, model_bundle, both_cameras)
 
-  def _init_combined(self, pkl_path, cam_w, cam_h, bundle):
+  def _init_combined(self, pkl_path, cam_w, cam_h, bundle, both_cameras=True):
     cloudlog.warning(f"loading combined pkl: {pkl_path}")
     jits = load_oob(open_file_chunked(pkl_path))
 
@@ -127,17 +128,20 @@ class ModelState(ModelStateBase):
     self.QUEUE_DEV = self.DEV
     self.is_run_model = 'run_model' in jits
 
-    # chestnut runs comma four sized frames: on a bigger camera, resample on the device GPU before the frames cross the link
+    # chestnut runs comma four sized frames: on a bigger camera, convert on the device GPU before the frames cross the link
     frame_w, frame_h = cam_w, cam_h
-    self.downscaler: FrameDownscaler | None = None
+    self.stage = None
     if self.chestnut:
+      mode = frame_mode()
       available = jits['run_model'] if self.is_run_model else [k for k in jits if isinstance(k, tuple)]
-      frame_w, frame_h = select_frame_size(available, cam_w, cam_h, native=Params().get_bool("ChestnutNativeFrames"))
+      frame_w, frame_h = select_frame_size(available, cam_w, cam_h, native=(mode == "native"))
       if (frame_w, frame_h) != (cam_w, cam_h):
-        self.downscaler = FrameDownscaler((cam_w, cam_h), (frame_w, frame_h), 'QCOM' if COMMA_HARDWARE else 'CPU')
-      cloudlog.warning(f"chestnut frames: {cam_w}x{cam_h} camera -> {frame_w}x{frame_h} model input")
-      Params().put("ChestnutFrameMode", f"{cam_w}x{cam_h} camera -> {frame_w}x{frame_h} model input")
-    self.frame_scale = self.downscaler.scale if self.downscaler is not None else np.eye(3, dtype=np.float32)
+        self.stage = make_frame_stage((cam_w, cam_h), 'QCOM' if COMMA_HARDWARE else 'CPU', mode, both_cameras)
+      note = f"{mode}: {cam_w}x{cam_h} camera -> {frame_w}x{frame_h} model input"
+      cloudlog.warning(f"chestnut frames: {note}")
+      Params().put("ChestnutFrameMode", note)
+    self.frame_scale = self.stage.scale if self.stage is not None else np.eye(3, dtype=np.float32)
+    self.c4_intrinsics = self.stage is not None and self.stage.c4_intrinsics
 
     nv12_info = get_nv12_info(frame_w, frame_h)
     self.frame_copy_size = nv12_copy_size(*nv12_info[:3])
@@ -232,15 +236,16 @@ class ModelState(ModelStateBase):
           inputs: dict[str, np.ndarray],
           after_enqueue: Callable[[], None] | None = None) -> dict[str, np.ndarray] | None:
     # warmup passes frames already at the model input size as numpy arrays
-    resample = self.downscaler is not None and not any(isinstance(buf, np.ndarray) for buf in bufs.values())
+    converted = (self.stage.process(bufs, inputs.get('reproj_gains', (1.0, 1.0)))
+                 if self.stage is not None and not any(isinstance(buf, np.ndarray) for buf in bufs.values()) else None)
     if self.is_run_model:
       for key, buf in bufs.items():
-        data = self.downscaler.run(key, buf) if resample else (buf.data if hasattr(buf, 'data') else buf)
+        data = converted[key] if converted is not None else (buf.data if hasattr(buf, 'data') else buf)
         np.copyto(self.frame_buffers[key], np.frombuffer(data, dtype=np.uint8, count=self.frame_copy_size))
     else:
       for key, buf in bufs.items():
-        if resample:
-          buf = self.downscaler.run(key, buf)  # persistent per-key host frame, so the pointer below stays valid
+        if converted is not None:
+          buf = converted[key]  # persistent per-key host frame, so the pointer below stays valid
         ptr = np.frombuffer(buf.data, dtype=np.uint8).ctypes.data
         cache_key = (key, ptr)
         if cache_key not in self._blob_cache:
@@ -382,7 +387,7 @@ def main(demo=False):
     def load_big():
       nonlocal big_model
       try:
-        m = ModelState(cam_w=vipc_client_main.width, cam_h=vipc_client_main.height, chestnut=True)
+        m = ModelState(cam_w=vipc_client_main.width, cam_h=vipc_client_main.height, chestnut=True, both_cameras=use_extra_client)
         m.warmup()
         big_model = m
         params.put("ChestnutLastError", "")
@@ -409,7 +414,8 @@ def main(demo=False):
   # messaging
   pub_socks = ["modelV2", "drivingModelData", "cameraOdometry", "modelDataV2SP"] + (["chestnutState"] if CHESTNUT else [])
   pm = PubMaster(pub_socks)
-  sm = SubMaster(["deviceState", "carState", "narrowRoadCameraState", "extrinsicsCalibration", "driverMonitoringState", "carControl", "lateralDelay"])
+  sm = SubMaster(["deviceState", "carState", "narrowRoadCameraState", "wideRoadCameraState", "extrinsicsCalibration",
+                  "driverMonitoringState", "carControl", "lateralDelay"])
 
   publish_state = PublishState()
   chestnut_state = ChestnutState(pm, model.chestnut) if CHESTNUT else None
@@ -423,6 +429,7 @@ def main(demo=False):
   model_transform_main = np.zeros((3, 3), dtype=np.float32)
   model_transform_extra = np.zeros((3, 3), dtype=np.float32)
   live_calib_seen = False
+  warp_c4_intrinsics = model.c4_intrinsics  # recompute the warp when a fallback changes the frame geometry
   buf_main, buf_extra = None, None
   meta_main = FrameMeta()
   meta_extra = FrameMeta()
@@ -486,9 +493,13 @@ def main(demo=False):
       model.PLANPLUS_CONTROL = params.get("PlanplusControl", return_default=True)
       camera_offset_helper.set_offset(params.get("CameraOffset", return_default=True))
     lat_delay = model.lat_delay + model.LAT_SMOOTH_SECONDS
-    if sm.updated["extrinsicsCalibration"] and sm.seen['narrowRoadCameraState'] and sm.seen['deviceState']:
+    if ((sm.updated["extrinsicsCalibration"] or warp_c4_intrinsics != model.c4_intrinsics)
+        and sm.seen['extrinsicsCalibration'] and sm.seen['narrowRoadCameraState'] and sm.seen['deviceState']):
+      warp_c4_intrinsics = model.c4_intrinsics
       device_from_calib_euler = np.array(sm["extrinsicsCalibration"].rpyCalib, dtype=np.float32)
-      dc = DEVICE_CAMERAS[(str(sm['deviceState'].deviceType), str(sm['narrowRoadCameraState'].sensor))]
+      # ray matching hands the model comma 4 camera geometry, so the warp is built from comma 4 intrinsics
+      dc = DEVICE_CAMERAS[("mici", "os04c10") if model.c4_intrinsics else
+                          (str(sm['deviceState'].deviceType), str(sm['narrowRoadCameraState'].sensor))]
       main_intrinsics = dc.wide_road.intrinsics if main_wide_camera else dc.narrow_road.intrinsics
       model_transform_main = get_warp_matrix(device_from_calib_euler, main_intrinsics, False).astype(np.float32)
       model_transform_extra = get_warp_matrix(device_from_calib_euler, dc.wide_road.intrinsics, True).astype(np.float32)
@@ -530,6 +541,13 @@ def main(demo=False):
 
     if 'action_t' in model.numpy_inputs:
       inputs['action_t'] = np.array([lat_action_t, long_action_t], dtype=np.float32)
+
+    if model.c4_intrinsics:
+      # exposure-match the wide surround to the narrow inset from the sensors' own exposure settings
+      ncs, wcs = sm['narrowRoadCameraState'], sm['wideRoadCameraState']
+      wide_exposure = wcs.gain * wcs.integLines
+      ratio = (ncs.gain * ncs.integLines) / wide_exposure if sm.seen['wideRoadCameraState'] and wide_exposure > 0 else 1.0
+      inputs['reproj_gains'] = (float(np.clip(ratio, 0.25, 4.0)),) * 2
 
     mt1 = time.perf_counter()
     try:

@@ -94,7 +94,7 @@ def make_downscale(src_size: tuple[int, int], dst_size: tuple[int, int], device:
 
 
 @functools.cache
-def _dcache_invalidate():
+def dcache_invalidate():
   # Userspace clean+invalidate of the CPU data cache over a byte range, mirroring tinygrad's dcache_flush (ops_qcom.py).
   # Adreno writes bypass the CPU caches, so lines the CPU read from the output on the previous frame must be dropped
   # before it reads the new frame. dc civac is permitted at EL0 (SCTLR_EL1.UCI), unlike a plain invalidate.
@@ -112,7 +112,13 @@ def _dcache_invalidate():
 
 
 class FrameDownscaler:
-  """Runs the resample on the device GPU and hands back host frames in the target NV12 layout."""
+  """Chestnut frame stage: runs the resample on the device GPU and hands back host frames in the target NV12 layout.
+
+  Same output contract as Reprojector in reproject_c4.py, so modeld can hold either. This one only changes the
+  frame's resolution, so the warp keeps this device's own intrinsics and is scaled by `scale`.
+  """
+
+  c4_intrinsics = False
 
   def __init__(self, src_size: tuple[int, int], dst_size: tuple[int, int], device: str, keys: Iterable[str] = ('img', 'big_img')):
     from tinygrad.device import Device
@@ -125,13 +131,13 @@ class FrameDownscaler:
     dst_stride, dst_y_height, dst_uv_height, self.dst_buf_size = get_nv12_info(*dst_size)
     self.copy_size = dst_stride * (dst_y_height + dst_uv_height)
     self._blob_cache: dict[int, object] = {}
-    self._invalidate = _dcache_invalidate() if device.startswith('QCOM') else None
+    self._invalidate = dcache_invalidate() if device.startswith('QCOM') else None
 
     # One persistent host frame per model input, written by the GPU directly: a pointer taken to it stays
     # valid across runs. QCOM allocations are mapped write-combined, and a CPU read of 1.6 MB of
     # write-combined memory (what .numpy() does) costs more on Snapdragon than the USB transfer this whole
     # thing saves, whereas reading cached memory is ~50x faster; the CPU cache just has to be invalidated over
-    # the frame after every GPU write, see _dcache_invalidate.
+    # the frame after every GPU write, see dcache_invalidate.
     self._downscale = make_downscale(src_size, dst_size, device)
     self.frames: dict[str, np.ndarray] = {}
     self.jits: dict[str, object] = {}
@@ -164,33 +170,5 @@ class FrameDownscaler:
       self._invalidate.fxn(ctypes.c_uint64(addr & ~63), -(-(addr + self.copy_size - (addr & ~63)) // 64))
     return frame
 
-
-if __name__ == "__main__":
-  # on-device timing: python3 -m openpilot.selfdrive.modeld.frame_downscale [--device QCOM]
-  import argparse
-  import os
-  import time
-  import types
-  p = argparse.ArgumentParser()
-  # never ask tinygrad for a default device here: with a chestnut attached it probes the AMD card and fetches firmware
-  p.add_argument('--device', default='QCOM' if os.path.exists('/dev/kgsl-3d0') else 'CPU')
-  p.add_argument('--runs', type=int, default=50)
-  args = p.parse_args()
-  src, dst = (1928, 1208), CHESTNUT_FRAME_SIZE
-  frame = np.random.default_rng(0).integers(0, 256, get_nv12_info(*src)[3], dtype=np.uint8)
-  st = time.perf_counter()
-  downscaler = FrameDownscaler(src, dst, args.device)
-  print(f"init (kernel compile + jit capture): {(time.perf_counter() - st) * 1e3:.1f} ms")
-  buf = types.SimpleNamespace(data=frame)
-  downscaler.run('img', buf)
-  timings = []
-  for _ in range(args.runs):
-    st = time.perf_counter()
-    downscaler.run('img', buf)
-    timings.append((time.perf_counter() - st) * 1e3)
-  print(f"run (kernel + sync + copy): median {np.median(timings):.2f} ms, max {max(timings):.2f} ms over {args.runs} runs")
-  st = time.perf_counter()
-  for _ in range(args.runs):
-    downscaler.jits['img'](downscaler._blob_cache[frame.ctypes.data])
-    downscaler._dev.synchronize()
-  print(f"kernel only: {(time.perf_counter() - st) / args.runs * 1e3:.2f} ms")
+  def process(self, bufs: dict, gains: tuple[float, float] = (1.0, 1.0)) -> dict[str, np.ndarray]:
+    return {key: self.run(key, buf) for key, buf in bufs.items()}

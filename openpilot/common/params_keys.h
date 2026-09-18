@@ -160,6 +160,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"ChestnutFrameMode", {CLEAR_ON_MANAGER_START, STRING}},
     {"ChestnutLastError", {CLEAR_ON_MANAGER_START, STRING}},
     {"ChestnutNativeFrames", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"ChestnutRayMatching", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"ChevronInfo", {PERSISTENT | BACKUP, INT, "4"}},
     {"CompletedSunnylinkConsentVersion", {PERSISTENT, STRING, "0"}},
     {"CustomAccIncrementsEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
