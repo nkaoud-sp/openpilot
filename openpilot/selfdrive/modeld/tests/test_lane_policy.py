@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 
 from openpilot.cereal import log
-from openpilot.selfdrive.modeld import modeld
+from openpilot.selfdrive.modeld import lane_policy as modeld
 from openpilot.selfdrive.modeld.constants import ModelConstants
 
 

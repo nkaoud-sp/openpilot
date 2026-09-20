@@ -29,6 +29,7 @@ from openpilot.common.transformations.model import get_warp_matrix
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
 from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, should_stop, smooth_value, get_curvature_from_plan
 from openpilot.selfdrive.modeld.parse_model_outputs import Parser
+from openpilot.selfdrive.modeld import lane_policy
 from openpilot.selfdrive.modeld.compile_modeld import make_input_queues, nv12_copy_size, MODELD_INPUTS
 from openpilot.selfdrive.modeld.fill_model_msg import fill_model_msg, fill_driving_model_data, fill_pose_msg, PublishState
 from openpilot.common.file_chunker import open_file_chunked
@@ -383,9 +384,9 @@ def get_action_from_model(model_output: dict[str, np.ndarray], prev_action: log.
   else:
     desired_accel = model_output['action'][0,1]
     desired_curvature = model_output['action'][0,0] / (max(1.0, v_ego))**2
-  desired_curvature = apply_lane_lock(model_output, desired_curvature, v_ego, blinkers_active,
-                                      lane_policy_enabled, one_line_fallback_enabled,
-                                      lead_fallback_enabled)
+  desired_curvature = lane_policy.apply_lane_lock(model_output, desired_curvature, v_ego, blinkers_active,
+                                                  lane_policy_enabled, one_line_fallback_enabled,
+                                                  lead_fallback_enabled)
   stop = should_stop(v_ego, desired_accel)
   desired_accel = smooth_value(desired_accel, prev_action.desiredAcceleration, LONG_SMOOTH_SECONDS)
   if v_ego > MIN_LAT_CONTROL_SPEED:
@@ -823,8 +824,9 @@ def main(demo=False):
       action = get_action_from_model(model_output, prev_action, lat_action_t, long_action_t, v_ego,
                                      blinkers_active, lane_policy_enabled, one_line_fallback_enabled,
                                      lead_fallback_enabled)
-      lane_policy_ui_params.put("LanePolicyMode", int(_lane_policy_mode))
-      lane_policy_ui_params.put("LanePolicyCorrection", float(_lane_policy_correction))
+      mode, correction = lane_policy.get_lane_policy_status()
+      lane_policy_ui_params.put("LanePolicyMode", int(mode))
+      lane_policy_ui_params.put("LanePolicyCorrection", float(correction))
       prev_action = action
       fill_model_msg(modelv2_send, model_output, action,
                      publish_state, meta_main.frame_id, meta_extra.frame_id, frame_id,

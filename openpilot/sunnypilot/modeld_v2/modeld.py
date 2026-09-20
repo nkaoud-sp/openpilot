@@ -40,6 +40,7 @@ from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
 from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, smooth_value
 from openpilot.selfdrive.modeld.modeld import ChestnutState
+from openpilot.selfdrive.modeld import lane_policy
 
 from openpilot.selfdrive.modeld.compile_modeld import (
   MODELD_INPUTS,
@@ -314,7 +315,10 @@ class ModelState(ModelStateBase):
     return outputs
 
   def get_action_from_model(self, model_output: dict[str, np.ndarray], prev_action: log.ModelDataV2.Action,
-                            lat_action_t: float, long_action_t: float, v_ego: float) -> log.ModelDataV2.Action:
+                            lat_action_t: float, long_action_t: float, v_ego: float,
+                            blinkers_active: bool = False, lane_policy_enabled: bool = False,
+                            one_line_fallback_enabled: bool = True,
+                            lead_fallback_enabled: bool = False) -> log.ModelDataV2.Action:
     if 'action' not in model_output:
       plan = model_output['plan'][0]
       desired_accel = get_accel_from_plan(plan[:, Plan.VELOCITY][:, 0], plan[:, Plan.ACCELERATION][:, 0], self.constants.T_IDXS,
@@ -326,6 +330,10 @@ class ModelState(ModelStateBase):
     else:
       desired_accel = model_output['action'][0, 1]
       desired_curvature = model_output['action'][0, 0] / (max(1.0, v_ego))**2
+
+    desired_curvature = lane_policy.apply_lane_lock(model_output, desired_curvature, v_ego, blinkers_active,
+                                                    lane_policy_enabled, one_line_fallback_enabled,
+                                                    lead_fallback_enabled)
 
     stop = v_ego < 0.3 and desired_accel < 0.1
     desired_accel = smooth_value(desired_accel, prev_action.desiredAcceleration, self.LONG_SMOOTH_SECONDS)
@@ -418,6 +426,7 @@ def main(demo=False):
                   "driverMonitoringState", "carControl", "lateralDelay"])
 
   publish_state = PublishState()
+  lane_policy_ui_params = Params("/dev/shm/params")
   chestnut_state = ChestnutState(pm, model.chestnut) if CHESTNUT else None
 
   # setup filter to track dropped frames
@@ -576,7 +585,16 @@ def main(demo=False):
       posenet_send = messaging.new_message('cameraOdometry')
       mdv2sp_send = messaging.new_message('modelDataV2SP')
 
-      action = model.get_action_from_model(model_output, prev_action, lat_action_t, long_action_t, v_ego)
+      blinkers_active = sm["carState"].leftBlinker or sm["carState"].rightBlinker
+      lane_policy_enabled = params.get_bool(lane_policy.LANE_POLICY_ENABLED_PARAM)
+      one_line_fallback_enabled = params.get_bool("LanePolicyOneLineFallback")
+      lead_fallback_enabled = params.get_bool("LanePolicyLeadFallback")
+      action = model.get_action_from_model(model_output, prev_action, lat_action_t, long_action_t, v_ego,
+                                           blinkers_active, lane_policy_enabled, one_line_fallback_enabled,
+                                           lead_fallback_enabled)
+      mode, correction = lane_policy.get_lane_policy_status()
+      lane_policy_ui_params.put("LanePolicyMode", int(mode))
+      lane_policy_ui_params.put("LanePolicyCorrection", float(correction))
       prev_action = action
       fill_model_msg(drivingdata_send, modelv2_send, model_output, action,
                      publish_state, meta_main.frame_id, meta_extra.frame_id, frame_id,
