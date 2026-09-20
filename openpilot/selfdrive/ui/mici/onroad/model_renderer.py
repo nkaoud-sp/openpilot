@@ -1,4 +1,5 @@
 import colorsys
+import platform
 import numpy as np
 import pyray as rl
 from openpilot.cereal import messaging
@@ -95,7 +96,8 @@ class ModelRenderer(Widget, ModelRendererSP):
     self._counter = -1
     self._camera_offset = ui_state.params.get("CameraOffset", return_default=True) if ui_state.active_bundle else 0.0
     self._lane_policy_visual_enabled = ui_state.params.get_bool("LanePolicyVisualIndicator")
-    self._lane_policy_ui_params = Params("/dev/shm/params")
+    # /dev/shm does not exist on macOS, where the UI is also run for development.
+    self._lane_policy_ui_params = Params("/dev/shm/params") if platform.system() != "Darwin" else ui_state.params
 
     self._exp_gradient = Gradient(
       start=(0.0, 1.0),  # Bottom of path
