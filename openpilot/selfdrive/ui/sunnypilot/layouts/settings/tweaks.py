@@ -56,22 +56,19 @@ class LanePolicySettingsLayout(Widget):
     )
     self._one_line_fallback = toggle_item_sp(
       title=lambda: tr("One-Line Fallback"),
-      description=lambda: tr("If one lane line briefly disappears, use the remaining line plus the learned lane width "
-                             "for a short lane-centering hold before falling back."),
+      description=lambda: tr("If one lane line briefly disappears, hold lane centering using the remaining line and the learned lane width."),
       param="LanePolicyOneLineFallback",
       enabled=lambda: ui_state.params.get_bool("LanePolicyEnabled"),
     )
     self._lead_fallback = toggle_item_sp(
       title=lambda: tr("Lead Fallback"),
-      description=lambda: tr("When lane-line fallback is unavailable, use a detected lead vehicle as a low-authority "
-                             "lateral reference before returning to the normal model path."),
+      description=lambda: tr("When lane-line fallback is unavailable, use a detected lead vehicle as a low-authority lateral reference."),
       param="LanePolicyLeadFallback",
       enabled=lambda: ui_state.params.get_bool("LanePolicyEnabled"),
     )
     self._visual_indicator = toggle_item_sp(
       title=lambda: tr("Colored Lane-Line Indicator"),
-      description=lambda: tr("Highlight the lane line in the direction of the policy correction. Green shows two-line "
-                             "lane centering, yellow shows one-line fallback, and purple shows lead fallback."),
+      description=lambda: tr("Highlight the lane line the correction steers toward: green two-line, yellow one-line, purple lead fallback."),
       param="LanePolicyVisualIndicator",
       enabled=lambda: ui_state.params.get_bool("LanePolicyEnabled"),
     )
@@ -156,9 +153,7 @@ class TweaksLayout(Widget):
 
     self._lane_policy = toggle_item_sp(
       title=lambda: tr("Lane Centering Policy"),
-      description=lambda: tr("When both lane lines are clean, add a bounded lane-centering correction to the model's "
-                             "curvature. Falls back to the normal model path when lane geometry is unclear, blinkers "
-                             "are active, or a lane change is predicted."),
+      description=lambda: tr("When both lane lines are clean, add a bounded lane-centering correction to the model's curvature."),
       param="LanePolicyEnabled",
     )
     self._lane_policy_button = simple_button_item_sp(
