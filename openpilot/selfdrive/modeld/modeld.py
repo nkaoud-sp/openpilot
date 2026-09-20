@@ -81,6 +81,10 @@ LANE_LOCK_LEAD_MIN_DISTANCE = 8.0
 LANE_LOCK_LEAD_MAX_DISTANCE = 60.0
 LANE_LOCK_LEAD_MAX_LATERAL = 2.0
 LANE_LOCK_LEAD_MAX_CORRECTION = 0.00020
+LANE_POLICY_MODE_INACTIVE = 0
+LANE_POLICY_MODE_TWO_LINE = 1
+LANE_POLICY_MODE_ONE_LINE = 2
+LANE_POLICY_MODE_LEAD = 3
 
 _lane_lock_weight = 0.0
 _lane_lock_lane_curvature = 0.0
@@ -101,6 +105,8 @@ _lane_lock_last_curve_target_sign = 0
 _lane_lock_curve_reversal_hold_time = 0.0
 _lane_lock_last_logged_mode = None
 _lane_lock_last_log_time = 0.0
+_lane_policy_mode = LANE_POLICY_MODE_INACTIVE
+_lane_policy_correction = 0.0
 
 
 def reset_lane_lock() -> None:
@@ -111,6 +117,7 @@ def reset_lane_lock() -> None:
   global _lane_lock_center_correction, _lane_lock_has_center_correction
   global _lane_lock_one_line_hold, _lane_lock_last_turn_sign, _lane_lock_turn_release_time
   global _lane_lock_last_curve_target_sign, _lane_lock_curve_reversal_hold_time
+  global _lane_policy_mode, _lane_policy_correction
   _lane_lock_weight = 0.0
   _lane_lock_lane_curvature = 0.0
   _lane_lock_has_lane_curvature = False
@@ -127,6 +134,8 @@ def reset_lane_lock() -> None:
   _lane_lock_turn_release_time = 0.0
   _lane_lock_last_curve_target_sign = 0
   _lane_lock_curve_reversal_hold_time = 0.0
+  _lane_policy_mode = LANE_POLICY_MODE_INACTIVE
+  _lane_policy_correction = 0.0
 
 
 def log_lane_lock_mode(mode: str) -> None:
@@ -191,6 +200,7 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
   global _lane_lock_one_line_hold, _lane_lock_error_logged
   global _lane_lock_last_turn_sign, _lane_lock_turn_release_time
   global _lane_lock_last_curve_target_sign, _lane_lock_curve_reversal_hold_time
+  global _lane_policy_mode, _lane_policy_correction
 
   if not lane_policy_enabled:
     reset_lane_lock()
@@ -336,6 +346,10 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
     if lead_center_correction is None:
       _lane_lock_full_active = True
       _lane_lock_ready = True
+    _lane_policy_mode = (LANE_POLICY_MODE_LEAD if lead_center_correction is not None else
+                         LANE_POLICY_MODE_ONE_LINE if _lane_lock_one_line_hold else
+                         LANE_POLICY_MODE_TWO_LINE)
+    _lane_policy_correction = float(_lane_lock_center_correction)
     _lane_lock_error_logged = False
     log_lane_lock_mode("lead vehicle fallback" if lead_center_correction is not None else
                        "lane center hold" if _lane_lock_one_line_hold else "full lane center")
@@ -654,6 +668,7 @@ def main(demo=False):
 
   publish_state = PublishState()
   params = Params()
+  lane_policy_ui_params = Params("/dev/shm/params")
   chestnut_state = ChestnutState(pm, model.chestnut) if CHESTNUT else None
 
   # setup filter to track dropped frames
@@ -808,6 +823,8 @@ def main(demo=False):
       action = get_action_from_model(model_output, prev_action, lat_action_t, long_action_t, v_ego,
                                      blinkers_active, lane_policy_enabled, one_line_fallback_enabled,
                                      lead_fallback_enabled)
+      lane_policy_ui_params.put("LanePolicyMode", int(_lane_policy_mode))
+      lane_policy_ui_params.put("LanePolicyCorrection", float(_lane_policy_correction))
       prev_action = action
       fill_model_msg(modelv2_send, model_output, action,
                      publish_state, meta_main.frame_id, meta_extra.frame_id, frame_id,

@@ -17,6 +17,16 @@ from openpilot.selfdrive.ui.sunnypilot.onroad.model_renderer import ChevronMetri
 CLIP_MARGIN = 500
 MIN_DRAW_DISTANCE = 10.0
 MAX_DRAW_DISTANCE = 100.0
+LANE_POLICY_MODE_TWO_LINE = 1
+LANE_POLICY_MODE_ONE_LINE = 2
+LANE_POLICY_MODE_LEAD = 3
+LANE_POLICY_VISUAL_DEADBAND = 0.000012
+LANE_POLICY_MAX_VISUAL_CORRECTION = 0.00045
+LANE_POLICY_COLORS = {
+  LANE_POLICY_MODE_TWO_LINE: rl.Color(0, 255, 90, 230),
+  LANE_POLICY_MODE_ONE_LINE: rl.Color(255, 210, 0, 230),
+  LANE_POLICY_MODE_LEAD: rl.Color(170, 80, 255, 230),
+}
 
 THROTTLE_COLORS = [
   rl.Color(13, 248, 122, 102),   # HSLF(148/360, 0.94, 0.51, 0.4)
@@ -59,6 +69,8 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
     self._path_offset_z = HEIGHT_INIT[0]
     self._counter = -1
     self._camera_offset = ui_state.params.get("CameraOffset", return_default=True) if ui_state.active_bundle else 0.0
+    self._lane_policy_visual_enabled = ui_state.params.get_bool("LanePolicyVisualIndicator")
+    self._lane_policy_ui_params = Params("/dev/shm/params")
     # Initialize ModelPoints objects
     self._path = ModelPoints()
     self._lane_lines = [ModelPoints() for _ in range(4)]
@@ -107,6 +119,7 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
 
     if self._counter % 60 == 0:
       self._camera_offset = ui_state.params.get("CameraOffset", return_default=True) if ui_state.active_bundle else 0.0
+      self._lane_policy_visual_enabled = ui_state.params.get_bool("LanePolicyVisualIndicator")
     self._counter += 1
 
     if sm.updated['carParams']:
@@ -276,6 +289,8 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
       color = rl.Color(255, 255, 255, int(alpha * 255))
       draw_polygon(self._rect, lane_line.projected_points, color)
 
+    self._draw_lane_policy_indicator()
+
     for i, road_edge in enumerate(self._road_edges):
       if road_edge.projected_points.size == 0:
         continue
@@ -283,6 +298,43 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
       alpha = np.clip(1.0 - self._road_edge_stds[i], 0.0, 1.0)
       color = rl.Color(255, 0, 0, int(alpha * 255))
       draw_polygon(self._rect, road_edge.projected_points, color)
+
+  def _get_lane_policy_visual(self) -> tuple[int, float]:
+    if not self._lane_policy_visual_enabled:
+      return 0, 0.0
+    try:
+      mode = int(self._lane_policy_ui_params.get("LanePolicyMode", return_default=True) or 0)
+      correction = float(self._lane_policy_ui_params.get("LanePolicyCorrection", return_default=True) or 0.0)
+    except (TypeError, ValueError):
+      return 0, 0.0
+    if mode not in LANE_POLICY_COLORS or abs(correction) < LANE_POLICY_VISUAL_DEADBAND:
+      return 0, 0.0
+    return mode, correction
+
+  def _draw_lane_policy_indicator(self):
+    mode, correction = self._get_lane_policy_visual()
+    if mode == 0:
+      return
+
+    lane_idx = 2 if correction > 0.0 else 1
+    lane_line = self._lane_lines[lane_idx]
+    if lane_line.raw_points.shape[0] == 0:
+      return
+
+    strength = float(np.clip(abs(correction) / LANE_POLICY_MAX_VISUAL_CORRECTION, 0.0, 1.0))
+    path_x_array = self._path.raw_points[:, 0]
+    if path_x_array.size == 0:
+      return
+    max_distance = np.clip(path_x_array[-1], MIN_DRAW_DISTANCE, MAX_DRAW_DISTANCE)
+    max_idx = self._get_path_length_idx(lane_line.raw_points[:, 0], max_distance)
+    width = np.interp(strength, [0.0, 1.0], [0.035, 0.085])
+    points = self._map_line_to_polygon(lane_line.raw_points, width, 0.0, max_idx, max_distance)
+    if points.size == 0:
+      return
+
+    base = LANE_POLICY_COLORS[mode]
+    alpha = int(np.interp(strength, [0.0, 1.0], [140, base.a]))
+    draw_polygon(self._rect, points, rl.Color(base.r, base.g, base.b, alpha))
 
   def _draw_path(self, sm):
     """Draw path with dynamic coloring based on mode and throttle state."""

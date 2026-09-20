@@ -68,11 +68,19 @@ class LanePolicySettingsLayout(Widget):
       param="LanePolicyLeadFallback",
       enabled=lambda: ui_state.params.get_bool("LanePolicyEnabled"),
     )
+    self._visual_indicator = toggle_item_sp(
+      title=lambda: tr("Colored Lane-Line Indicator"),
+      description=lambda: tr("Highlight the lane line in the direction of the policy correction. Green shows two-line "
+                             "lane centering, yellow shows one-line fallback, and purple shows lead fallback."),
+      param="LanePolicyVisualIndicator",
+      enabled=lambda: ui_state.params.get_bool("LanePolicyEnabled"),
+    )
 
     self._scroller = Scroller([
       self._back_button,
       self._one_line_fallback,
       self._lead_fallback,
+      self._visual_indicator,
     ], line_separator=True, spacing=0)
 
   def _render(self, rect):
