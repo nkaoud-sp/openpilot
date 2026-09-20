@@ -182,6 +182,66 @@ class TestLanePolicy(unittest.TestCase):
                                             one_line_fallback_enabled=False,
                                             lead_fallback_enabled=True), 0.0010)
 
+  def test_centers_the_car_not_the_camera(self):
+    # The car's centerline sits at y = -CAMERA_OFFSET in the model frame, so a
+    # lane midpoint sitting exactly there means the car is already centered and
+    # nothing should be commanded.
+    from openpilot.selfdrive.controls.lib.ldw import CAMERA_OFFSET
+    self.arm_lane_policy(make_model_output(lane_center=-CAMERA_OFFSET))
+    curvature = modeld.apply_lane_lock(make_model_output(lane_center=-CAMERA_OFFSET), 0.0, 20.0,
+                                       lane_policy_enabled=True)
+    self.assertEqual(curvature, 0.0)
+
+    # Centering the camera instead leaves the car CAMERA_OFFSET to the left of
+    # the lane, so a midpoint at y=0 must command a correction back to the right.
+    modeld.reset_lane_lock()
+    self.arm_lane_policy()
+    curvature = modeld.apply_lane_lock(make_model_output(), 0.0, 20.0, lane_policy_enabled=True)
+    self.assertGreater(curvature, 0.0)
+
+  def test_lead_gate_rejects_adjacent_lane_lead_up_close(self):
+    # 1.2 m off the nose at 10 m is ~7 degrees: the next lane over, and inside
+    # the old flat 2.0 m gate.
+    near = make_model_output(left_prob=0.10, right_prob=0.10, lead_prob=0.90,
+                             lead_x=10.0, lead_y=1.2)
+    self.assertEqual(modeld.apply_lane_lock(near, 0.0010, 20.0, lane_policy_enabled=True,
+                                            one_line_fallback_enabled=False,
+                                            lead_fallback_enabled=True), 0.0010)
+
+    # The same lateral offset at 40 m is within the corridor and is accepted.
+    modeld.reset_lane_lock()
+    far = make_model_output(left_prob=0.10, right_prob=0.10, lead_prob=0.90,
+                            lead_x=40.0, lead_y=1.2)
+    self.assertGreater(modeld.apply_lane_lock(far, 0.0010, 20.0, lane_policy_enabled=True,
+                                              one_line_fallback_enabled=False,
+                                              lead_fallback_enabled=True), 0.0010)
+
+  def test_lead_fallback_exit_still_requires_the_arm_timer(self):
+    self.arm_lane_policy()
+    lead_only = make_model_output(left_prob=0.10, right_prob=0.10, lead_prob=0.90, lead_x=40.0, lead_y=0.6)
+    modeld.apply_lane_lock(lead_only, 0.0, 20.0, lane_policy_enabled=True,
+                           one_line_fallback_enabled=False, lead_fallback_enabled=True)
+    self.assertFalse(modeld._lane_lock_full_active)
+    self.assertEqual(modeld._lane_lock_arm_time, 0.0)
+
+    # Good two-line geometry returns: the policy must spend the full arm time
+    # re-qualifying rather than snapping back to engaged on the first frame.
+    clean = make_model_output()
+    modeld.apply_lane_lock(clean, 0.0, 20.0, lane_policy_enabled=True, lead_fallback_enabled=True)
+    self.assertFalse(modeld._lane_lock_full_active)
+    self.apply_for(clean, modeld.LANE_LOCK_ARM_TIME)
+    self.assertTrue(modeld._lane_lock_full_active)
+
+  def test_runner_constants_drive_the_horizon_check(self):
+    class ShortHorizonConstants:
+      X_IDXS = list(ModelConstants.X_IDXS[:-1])
+
+    output = make_model_output(lane_center=0.45)
+    # The bundle's horizon no longer matches the lane-line array, so the policy
+    # has to fall back rather than fit against the wrong distances.
+    self.assertEqual(modeld.apply_lane_lock(output, 0.0010, 20.0, lane_policy_enabled=True,
+                                            constants=ShortHorizonConstants), 0.0010)
+
   def test_blinker_releases_lane_lock(self):
     output = self.arm_lane_policy()
     self.assertEqual(modeld.apply_lane_lock(output, 0.0123, 20.0, blinkers_active=True, lane_policy_enabled=True), 0.0123)

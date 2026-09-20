@@ -4,6 +4,7 @@ import logging
 import numpy as np
 
 from openpilot.cereal import log
+from openpilot.selfdrive.controls.lib.ldw import CAMERA_OFFSET
 from openpilot.selfdrive.modeld.constants import ModelConstants
 
 try:
@@ -42,6 +43,12 @@ LANE_LOCK_LEAD_MIN_PROB = 0.60
 LANE_LOCK_LEAD_MIN_DISTANCE = 8.0
 LANE_LOCK_LEAD_MAX_DISTANCE = 60.0
 LANE_LOCK_LEAD_MAX_LATERAL = 2.0
+# The absolute gate alone accepts a lead 2 m off the nose at the 8 m minimum
+# distance -- about 14 degrees, which is the next lane over, and exactly where
+# the correction has the most authority. Gate on the angle as well so the
+# accepted corridor narrows with distance; the absolute limit still caps the
+# far end, where 0.08 * lead_x would be far too generous.
+LANE_LOCK_LEAD_MAX_LATERAL_RATIO = 0.08
 LANE_LOCK_LEAD_MAX_CORRECTION = 0.00020
 LANE_POLICY_MODE_INACTIVE = 0
 LANE_POLICY_MODE_TWO_LINE = 1
@@ -194,18 +201,36 @@ def get_lead_center_correction(model_output: dict[str, np.ndarray], v_ego: float
   if (not np.isfinite(lead_prob_now) or not np.isfinite(lead_x) or not np.isfinite(lead_y) or
       lead_prob_now < LANE_LOCK_LEAD_MIN_PROB or
       lead_x < LANE_LOCK_LEAD_MIN_DISTANCE or lead_x > LANE_LOCK_LEAD_MAX_DISTANCE or
-      abs(lead_y) > LANE_LOCK_LEAD_MAX_LATERAL):
+      abs(lead_y) > min(LANE_LOCK_LEAD_MAX_LATERAL, LANE_LOCK_LEAD_MAX_LATERAL_RATIO * lead_x)):
     return None
 
   lookahead = float(np.clip(min(lead_x, 2.0 * v_ego), LANE_LOCK_MIN_LOOKAHEAD, LANE_LOCK_MAX_LOOKAHEAD))
-  correction = 2.0 * lead_y / (lookahead * lookahead)
+  # Align the car's centerline with the lead, not the camera's. See the note on
+  # CAMERA_OFFSET in apply_lane_lock.
+  correction = 2.0 * (lead_y + CAMERA_OFFSET) / (lookahead * lookahead)
   return float(np.clip(correction, -LANE_LOCK_LEAD_MAX_CORRECTION, LANE_LOCK_LEAD_MAX_CORRECTION))
 
 
 def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v_ego: float,
                     blinkers_active: bool = False, lane_policy_enabled: bool = False,
                     one_line_fallback_enabled: bool = True,
-                    lead_fallback_enabled: bool = False) -> float:
+                    lead_fallback_enabled: bool = False,
+                    constants: type = ModelConstants) -> float:
+  """Anchor the e2e curvature to a stable lane midpoint with a bounded correction.
+
+  'constants' is the model constants of the runner that produced model_output.
+  The two runners can carry different ones (sunnypilot's ModelState picks
+  SplitModelConstants for split bundles), and the lane-line horizon has to match
+  the bundle's own X_IDXS or the fit is meaningless.
+
+  Lateral geometry is in the model frame: +y is to the right, and the car's
+  centerline sits at y = -CAMERA_OFFSET because the camera is mounted that far
+  to the right of it. ldw.py derives its asymmetric departure thresholds from
+  the same offset. On sunnypilot's runner the user's CameraOffset param is
+  already baked into the lane lines by CameraOffsetHelper, which shears the
+  model input, so it must not be applied a second time here -- only the fixed
+  camera-to-centerline offset is ours to correct.
+  """
   global _lane_lock_weight, _lane_lock_lane_curvature
   global _lane_lock_has_lane_curvature, _lane_lock_full_active
   global _lane_lock_ready, _lane_lock_arm_time
@@ -232,10 +257,10 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
     if lane_change_prob > LANE_LOCK_MAX_LANE_CHANGE_PROB:
       return release_lane_lock(e2e_curvature, "stock-e2e fallback: lane-change intent")
 
-    x = np.asarray(ModelConstants.X_IDXS, dtype=np.float64)
+    x = np.asarray(constants.X_IDXS, dtype=np.float64)
     fit = (x >= LANE_LOCK_FIT_START) & (x <= LANE_LOCK_FIT_END)
     if x.shape != left_y.shape or np.count_nonzero(fit) < 3:
-      raise ValueError("lane-line horizon does not match ModelConstants.X_IDXS")
+      raise ValueError(f"lane-line horizon {left_y.shape} does not match {constants.__name__}.X_IDXS {x.shape}")
 
     valid_left = (np.isfinite(left_prob) and left_prob >= LANE_LOCK_RETAIN_LINE_PROB and
                   np.all(np.isfinite(left_y[fit])))
@@ -304,8 +329,15 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
       _lane_lock_one_line_hold = False
       _lane_lock_ready = False
       _lane_lock_full_active = False
+      # Dropping _lane_lock_full_active sends the next two-line frame back
+      # through the arming branch, so the arm timer has to go with it. Left
+      # saturated from the previous engagement it would satisfy
+      # `arm_time + DT_MDL >= LANE_LOCK_ARM_TIME` on the very first frame and
+      # the 0.75 s confidence gate would be skipped entirely.
+      _lane_lock_arm_time = 0.0
     else:
       _, heading, offset = np.polyfit(x[fit], center_y[fit], 2)
+      offset += CAMERA_OFFSET
       lookahead = float(np.clip(2.0 * v_ego, LANE_LOCK_MIN_LOOKAHEAD, LANE_LOCK_MAX_LOOKAHEAD))
       heading_scale = min(1.0, LANE_LOCK_HEADING_CURVATURE_FADE / max(abs(e2e_curvature), 1e-6))
       center_correction = (2.0 * (LANE_LOCK_HEADING_GAIN * heading_scale * heading * lookahead + offset) /

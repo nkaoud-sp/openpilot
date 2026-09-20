@@ -333,7 +333,7 @@ class ModelState(ModelStateBase):
 
     desired_curvature = lane_policy.apply_lane_lock(model_output, desired_curvature, v_ego, blinkers_active,
                                                     lane_policy_enabled, one_line_fallback_enabled,
-                                                    lead_fallback_enabled)
+                                                    lead_fallback_enabled, type(self.constants))
 
     stop = v_ego < 0.3 and desired_accel < 0.1
     desired_accel = smooth_value(desired_accel, prev_action.desiredAcceleration, self.LONG_SMOOTH_SECONDS)
