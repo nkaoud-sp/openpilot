@@ -50,10 +50,14 @@ LANE_LOCK_LEAD_MAX_LATERAL = 2.0
 # far end, where 0.08 * lead_x would be far too generous.
 LANE_LOCK_LEAD_MAX_LATERAL_RATIO = 0.08
 LANE_LOCK_LEAD_MAX_CORRECTION = 0.00020
-LANE_POLICY_MODE_INACTIVE = 0
-LANE_POLICY_MODE_TWO_LINE = 1
-LANE_POLICY_MODE_ONE_LINE = 2
-LANE_POLICY_MODE_LEAD = 3
+# These are the names of custom.capnp's ModelDataV2SP.LanePolicyMode enumerants.
+# Keeping them as the capnp names means the publishers can assign the status
+# straight onto the message and the UI can switch on it, with no int mapping in
+# between to drift out of sync with the schema.
+LANE_POLICY_MODE_INACTIVE = 'inactive'
+LANE_POLICY_MODE_TWO_LINE = 'twoLine'
+LANE_POLICY_MODE_ONE_LINE = 'oneLine'
+LANE_POLICY_MODE_LEAD = 'lead'
 
 _lane_lock_weight = 0.0
 _lane_lock_lane_curvature = 0.0
@@ -78,7 +82,9 @@ _lane_policy_mode = LANE_POLICY_MODE_INACTIVE
 _lane_policy_correction = 0.0
 
 
-def get_lane_policy_status() -> tuple[int, float]:
+def get_lane_policy_status() -> tuple[str, float]:
+  """Current mode as a ModelDataV2SP.LanePolicyMode enumerant name, and the
+  curvature correction being applied, for publishing on modelDataV2SP."""
   return _lane_policy_mode, _lane_policy_correction
 
 

@@ -462,11 +462,20 @@ struct ModelDataV2SP @0xa1680744031fdb2d {
   laneTurnDirection @0 :TurnDirection;
   leftLaneChangeEdgeBlock @1 :Bool;
   rightLaneChangeEdgeBlock @2 :Bool;
+  lanePolicyMode @3 :LanePolicyMode;
+  lanePolicyCorrection @4 :Float32;  # 1/m added to the e2e curvature
 
   enum TurnDirection {
     none @0;
     turnLeft @1;
     turnRight @2;
+  }
+
+  enum LanePolicyMode {
+    inactive @0;
+    twoLine @1;
+    oneLine @2;
+    lead @3;
   }
 }
 

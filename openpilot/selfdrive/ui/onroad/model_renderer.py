@@ -1,5 +1,4 @@
 import colorsys
-import platform
 import numpy as np
 import pyray as rl
 from openpilot.cereal import messaging
@@ -8,6 +7,7 @@ from dataclasses import dataclass, field
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.params import Params
 from openpilot.selfdrive.locationd.calibrationd import HEIGHT_INIT
+from openpilot.selfdrive.modeld import lane_policy
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.shader_polygon import draw_polygon, Gradient
@@ -18,15 +18,14 @@ from openpilot.selfdrive.ui.sunnypilot.onroad.model_renderer import ChevronMetri
 CLIP_MARGIN = 500
 MIN_DRAW_DISTANCE = 10.0
 MAX_DRAW_DISTANCE = 100.0
-LANE_POLICY_MODE_TWO_LINE = 1
-LANE_POLICY_MODE_ONE_LINE = 2
-LANE_POLICY_MODE_LEAD = 3
-LANE_POLICY_VISUAL_DEADBAND = 0.000012
-LANE_POLICY_MAX_VISUAL_CORRECTION = 0.00045
+# Thresholds and mode names come from the policy itself so the indicator cannot
+# disagree with the corrections it is drawing.
+LANE_POLICY_VISUAL_DEADBAND = lane_policy.LANE_LOCK_CORRECTION_DEADBAND
+LANE_POLICY_MAX_VISUAL_CORRECTION = lane_policy.LANE_LOCK_MAX_CENTER_CORRECTION
 LANE_POLICY_COLORS = {
-  LANE_POLICY_MODE_TWO_LINE: rl.Color(0, 255, 90, 230),
-  LANE_POLICY_MODE_ONE_LINE: rl.Color(255, 210, 0, 230),
-  LANE_POLICY_MODE_LEAD: rl.Color(170, 80, 255, 230),
+  lane_policy.LANE_POLICY_MODE_TWO_LINE: rl.Color(0, 255, 90, 230),
+  lane_policy.LANE_POLICY_MODE_ONE_LINE: rl.Color(255, 210, 0, 230),
+  lane_policy.LANE_POLICY_MODE_LEAD: rl.Color(170, 80, 255, 230),
 }
 
 THROTTLE_COLORS = [
@@ -71,8 +70,8 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
     self._counter = -1
     self._camera_offset = ui_state.params.get("CameraOffset", return_default=True) if ui_state.active_bundle else 0.0
     self._lane_policy_visual_enabled = ui_state.params.get_bool("LanePolicyVisualIndicator")
-    # /dev/shm does not exist on macOS, where the UI is also run for development.
-    self._lane_policy_ui_params = Params("/dev/shm/params") if platform.system() != "Darwin" else ui_state.params
+    self._lane_policy_mode = lane_policy.LANE_POLICY_MODE_INACTIVE
+    self._lane_policy_correction = 0.0
     # Initialize ModelPoints objects
     self._path = ModelPoints()
     self._lane_lines = [ModelPoints() for _ in range(4)]
@@ -126,6 +125,15 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
 
     if sm.updated['carParams']:
       self._longitudinal_control = sm['carParams'].openpilotLongitudinalControl
+
+    if sm.updated['modelDataV2SP']:
+      model_data_sp = sm['modelDataV2SP']
+      self._lane_policy_mode = str(model_data_sp.lanePolicyMode)
+      self._lane_policy_correction = model_data_sp.lanePolicyCorrection
+    elif not sm.valid['modelDataV2SP']:
+      # Don't leave the indicator latched on the last correction if modeld stops.
+      self._lane_policy_mode = lane_policy.LANE_POLICY_MODE_INACTIVE
+      self._lane_policy_correction = 0.0
 
     model = sm['modelV2']
     radar_state = sm['radarState'] if sm.valid['radarState'] else None
@@ -301,21 +309,16 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
       color = rl.Color(255, 0, 0, int(alpha * 255))
       draw_polygon(self._rect, road_edge.projected_points, color)
 
-  def _get_lane_policy_visual(self) -> tuple[int, float]:
-    if not self._lane_policy_visual_enabled:
-      return 0, 0.0
-    try:
-      mode = int(self._lane_policy_ui_params.get("LanePolicyMode", return_default=True) or 0)
-      correction = float(self._lane_policy_ui_params.get("LanePolicyCorrection", return_default=True) or 0.0)
-    except (TypeError, ValueError):
-      return 0, 0.0
-    if mode not in LANE_POLICY_COLORS or abs(correction) < LANE_POLICY_VISUAL_DEADBAND:
-      return 0, 0.0
+  def _get_lane_policy_visual(self) -> tuple[str | None, float]:
+    mode, correction = self._lane_policy_mode, self._lane_policy_correction
+    if (not self._lane_policy_visual_enabled or mode not in LANE_POLICY_COLORS or
+        abs(correction) < LANE_POLICY_VISUAL_DEADBAND):
+      return None, 0.0
     return mode, correction
 
   def _draw_lane_policy_indicator(self):
     mode, correction = self._get_lane_policy_visual()
-    if mode == 0:
+    if mode is None:
       return
 
     lane_idx = 2 if correction > 0.0 else 1

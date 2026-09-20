@@ -62,6 +62,9 @@ from openpilot.sunnypilot.selfdrive.controls.lib.relc import RoadEdgeLaneChangeC
 
 PROCESS_NAME = "openpilot.selfdrive.modeld.modeld_tinygrad"
 BIG_MODEL_TIMEOUT = 60
+# See the note in selfdrive/modeld/modeld.py: the lane-policy toggles live on
+# persistent storage, so they are polled about once a second rather than per frame.
+LANE_POLICY_PARAM_INTERVAL = ModelConstants.MODEL_RUN_FREQ
 
 
 def _pkl_exists(path):
@@ -426,8 +429,11 @@ def main(demo=False):
                   "driverMonitoringState", "carControl", "lateralDelay"])
 
   publish_state = PublishState()
-  lane_policy_ui_params = Params("/dev/shm/params")
   chestnut_state = ChestnutState(pm, model.chestnut) if CHESTNUT else None
+
+  lane_policy_enabled = params.get_bool(lane_policy.LANE_POLICY_ENABLED_PARAM)
+  one_line_fallback_enabled = params.get_bool("LanePolicyOneLineFallback")
+  lead_fallback_enabled = params.get_bool("LanePolicyLeadFallback")
 
   # setup filter to track dropped frames
   frame_dropped_filter = FirstOrderFilter(0., 10., 1. / model.constants.MODEL_FREQ)
@@ -586,15 +592,13 @@ def main(demo=False):
       mdv2sp_send = messaging.new_message('modelDataV2SP')
 
       blinkers_active = sm["carState"].leftBlinker or sm["carState"].rightBlinker
-      lane_policy_enabled = params.get_bool(lane_policy.LANE_POLICY_ENABLED_PARAM)
-      one_line_fallback_enabled = params.get_bool("LanePolicyOneLineFallback")
-      lead_fallback_enabled = params.get_bool("LanePolicyLeadFallback")
+      if sm.frame % LANE_POLICY_PARAM_INTERVAL == 0:
+        lane_policy_enabled = params.get_bool(lane_policy.LANE_POLICY_ENABLED_PARAM)
+        one_line_fallback_enabled = params.get_bool("LanePolicyOneLineFallback")
+        lead_fallback_enabled = params.get_bool("LanePolicyLeadFallback")
       action = model.get_action_from_model(model_output, prev_action, lat_action_t, long_action_t, v_ego,
                                            blinkers_active, lane_policy_enabled, one_line_fallback_enabled,
                                            lead_fallback_enabled)
-      mode, correction = lane_policy.get_lane_policy_status()
-      lane_policy_ui_params.put("LanePolicyMode", int(mode))
-      lane_policy_ui_params.put("LanePolicyCorrection", float(correction))
       prev_action = action
       fill_model_msg(drivingdata_send, modelv2_send, model_output, action,
                      publish_state, meta_main.frame_id, meta_extra.frame_id, frame_id,
@@ -611,6 +615,9 @@ def main(demo=False):
       modelv2_send.modelV2.meta.laneChangeDirection = DH.lane_change_direction
       mdv2sp_send.valid = modelv2_send.valid
       mdv2sp_send.modelDataV2SP.laneTurnDirection = DH.lane_turn_direction
+      lane_policy_mode, lane_policy_correction = lane_policy.get_lane_policy_status()
+      mdv2sp_send.modelDataV2SP.lanePolicyMode = lane_policy_mode
+      mdv2sp_send.modelDataV2SP.lanePolicyCorrection = lane_policy_correction
       drivingdata_send.drivingModelData.meta.laneChangeState = DH.lane_change_state
       drivingdata_send.drivingModelData.meta.laneChangeDirection = DH.lane_change_direction
 
