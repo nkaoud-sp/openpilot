@@ -113,6 +113,47 @@ def log_lane_lock_mode(mode: str) -> None:
     _lane_lock_last_log_time = now
 
 
+def ramp_out_correction(e2e_curvature: float) -> float:
+  """Step the applied correction one frame toward zero and return the result.
+
+  Callers must use this instead of returning a bare e2e_curvature once a
+  correction has been applied. Dropping straight back to e2e steps desired
+  curvature by up to LANE_LOCK_MAX_CENTER_CORRECTION within a single model
+  frame, and nothing downstream smooths that edge: modeld's LAT_SMOOTH_SECONDS
+  is 0.0, so the only thing left is clip_curvature's MAX_LATERAL_JERK limiter,
+  which spreads the step over ~80 ms at highway speed while flagging
+  curvatureLimited the whole way. Releases are the common case (a blinker, one
+  briefly lost line, a lane-change desire blip), so they need to walk out at the
+  same rate the policy already uses to back off a correction while engaged.
+  """
+  global _lane_lock_center_correction, _lane_policy_correction
+  # x -= clip(x, -s, s) lands exactly on zero once |x| <= s.
+  _lane_lock_center_correction -= float(np.clip(_lane_lock_center_correction,
+                                                -LANE_LOCK_CORRECTION_RELEASE_STEP,
+                                                LANE_LOCK_CORRECTION_RELEASE_STEP))
+  if abs(_lane_lock_center_correction) < LANE_LOCK_CORRECTION_DEADBAND:
+    _lane_lock_center_correction = 0.0
+  _lane_policy_correction = float(_lane_lock_center_correction)
+  return float(e2e_curvature + _lane_lock_center_correction)
+
+
+def release_lane_lock(e2e_curvature: float, mode: str | None = None) -> float:
+  """Drop all policy engagement state, but ramp the applied correction out.
+
+  The policy has to re-arm from scratch after this, so the reported mode goes
+  straight to inactive; only the decaying correction survives, and only until it
+  reaches zero.
+  """
+  global _lane_lock_center_correction, _lane_lock_has_center_correction
+  correction = _lane_lock_center_correction
+  reset_lane_lock()
+  _lane_lock_center_correction = correction
+  _lane_lock_has_center_correction = True
+  if mode is not None:
+    log_lane_lock_mode(mode)
+  return ramp_out_correction(e2e_curvature)
+
+
 def get_inner_lane_line_probs(model_output: dict[str, np.ndarray]) -> tuple[float, float]:
   lane_line_probs = np.asarray(model_output['lane_lines_prob'])
   if lane_line_probs.shape != (1, 8):
@@ -136,15 +177,22 @@ def get_lane_width_measurement(left_y: np.ndarray, right_y: np.ndarray,
 def get_lead_center_correction(model_output: dict[str, np.ndarray], v_ego: float) -> float | None:
   lead_prob = np.asarray(model_output['lead_prob'])
   leads = np.asarray(model_output['lead'])
-  if lead_prob.ndim != 2 or leads.ndim != 4 or leads.shape[-1] < 2:
+  if (lead_prob.ndim != 2 or leads.ndim != 4 or leads.shape[-1] < 2 or
+      lead_prob.shape[1] < 1 or leads.shape[1] < 1):
     raise ValueError(f"unexpected lead shapes: lead_prob={lead_prob.shape}, lead={leads.shape}")
 
-  best_idx = int(np.argmax(lead_prob[0]))
-  best_prob = float(lead_prob[0, best_idx])
-  lead_x = float(leads[0, best_idx, 0, 0])
-  lead_y = float(leads[0, best_idx, 0, 1])
-  if (not np.isfinite(best_prob) or not np.isfinite(lead_x) or not np.isfinite(lead_y) or
-      best_prob < LANE_LOCK_LEAD_MIN_PROB or
+  # 'lead_prob' and 'lead' are indexed by LEAD_T_OFFSETS, not by candidate
+  # confidence: entry i is "probability this is your lead at t = 0 / 2 / 4 s"
+  # together with that hypothesis' trajectory (see fill_model_msg, which pairs
+  # them into leadsV3[i].prob / .probTime). Only entry 0 describes the car in
+  # front right now, which is what radard treats as leadOne, so an argmax over
+  # the time offsets would happily steer us at the car the model expects to be
+  # our lead in four seconds.
+  lead_prob_now = float(lead_prob[0, 0])
+  lead_x = float(leads[0, 0, 0, 0])
+  lead_y = float(leads[0, 0, 0, 1])
+  if (not np.isfinite(lead_prob_now) or not np.isfinite(lead_x) or not np.isfinite(lead_y) or
+      lead_prob_now < LANE_LOCK_LEAD_MIN_PROB or
       lead_x < LANE_LOCK_LEAD_MIN_DISTANCE or lead_x > LANE_LOCK_LEAD_MAX_DISTANCE or
       abs(lead_y) > LANE_LOCK_LEAD_MAX_LATERAL):
     return None
@@ -169,13 +217,10 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
   global _lane_policy_mode, _lane_policy_correction
 
   if not lane_policy_enabled:
-    reset_lane_lock()
-    return float(e2e_curvature)
+    return release_lane_lock(e2e_curvature)
 
   if blinkers_active:
-    reset_lane_lock()
-    log_lane_lock_mode("stock-e2e fallback: blinker")
-    return float(e2e_curvature)
+    return release_lane_lock(e2e_curvature, "stock-e2e fallback: blinker")
 
   try:
     left_y = model_output['lane_lines'][0, 1, :, 0].astype(np.float64)
@@ -185,9 +230,7 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
     lane_change_prob = float(desire_state[log.Desire.laneChangeLeft] +
                              desire_state[log.Desire.laneChangeRight])
     if lane_change_prob > LANE_LOCK_MAX_LANE_CHANGE_PROB:
-      reset_lane_lock()
-      log_lane_lock_mode("stock-e2e fallback: lane-change intent")
-      return float(e2e_curvature)
+      return release_lane_lock(e2e_curvature, "stock-e2e fallback: lane-change intent")
 
     x = np.asarray(ModelConstants.X_IDXS, dtype=np.float64)
     fit = (x >= LANE_LOCK_FIT_START) & (x <= LANE_LOCK_FIT_END)
@@ -232,9 +275,7 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
       if lead_fallback_enabled:
         lead_center_correction = get_lead_center_correction(model_output, v_ego)
       if lead_center_correction is None:
-        reset_lane_lock()
-        log_lane_lock_mode("stock-e2e fallback: lane geometry or confidence")
-        return float(e2e_curvature)
+        return release_lane_lock(e2e_curvature, "stock-e2e fallback: lane geometry or confidence")
 
     if center_y is not None and not _lane_lock_full_active:
       if two_line_geometry and two_line_confidence >= LANE_LOCK_ARM_LINE_PROB:
@@ -246,8 +287,13 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
       if not _lane_lock_ready:
         _lane_lock_has_lane_curvature = False
         _lane_lock_one_line_hold = False
+        _lane_policy_mode = LANE_POLICY_MODE_INACTIVE
         log_lane_lock_mode("stock-e2e fallback: arming lane confidence")
-        return float(e2e_curvature)
+        # Ramp rather than release: this path runs while the arm timer is still
+        # counting up, and reset_lane_lock would zero it every frame so the
+        # policy could never arm. A correction can be left over here after a
+        # lead-fallback episode, which clears _lane_lock_full_active.
+        return ramp_out_correction(e2e_curvature)
 
       _lane_lock_full_active = True
       _lane_lock_weight = 1.0
@@ -322,9 +368,7 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
     return _lane_lock_lane_curvature
 
   except (KeyError, IndexError, TypeError, ValueError, FloatingPointError, np.linalg.LinAlgError) as err:
-    reset_lane_lock()
     if not _lane_lock_error_logged:
       cloudlog.warning(f"lane-policy input error: {type(err).__name__}: {err}")
       _lane_lock_error_logged = True
-    log_lane_lock_mode("stock-e2e fallback: lane-policy input error")
-    return float(e2e_curvature)
+    return release_lane_lock(e2e_curvature, "stock-e2e fallback: lane-policy input error")

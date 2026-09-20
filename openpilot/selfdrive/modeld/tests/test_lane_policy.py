@@ -131,6 +131,57 @@ class TestLanePolicy(unittest.TestCase):
     self.assertTrue(modeld._lane_lock_one_line_hold)
     self.assertGreater(curvature, 0.0)
 
+  def engage_max_correction(self) -> dict[str, np.ndarray]:
+    self.arm_lane_policy()
+    offset = make_model_output(lane_center=0.45)
+    self.apply_for(offset, 0.5)
+    self.assertAlmostEqual(modeld._lane_lock_center_correction, modeld.LANE_LOCK_MAX_CENTER_CORRECTION)
+    return offset
+
+  def test_release_ramps_correction_out_instead_of_stepping(self):
+    offset = self.engage_max_correction()
+
+    # e2e is 0.0 here, so the returned curvature is exactly the applied
+    # correction. It must walk down at the release rate, not drop in one frame.
+    previous = modeld._lane_lock_center_correction
+    first = modeld.apply_lane_lock(offset, 0.0, 20.0, blinkers_active=True, lane_policy_enabled=True)
+    self.assertGreater(first, 0.0)
+    self.assertLessEqual(previous - first, modeld.LANE_LOCK_CORRECTION_RELEASE_STEP + 1e-12)
+    self.assertFalse(modeld._lane_lock_full_active)
+
+    previous = first
+    for _ in range(5):
+      curvature = modeld.apply_lane_lock(offset, 0.0, 20.0, blinkers_active=True, lane_policy_enabled=True)
+      self.assertLessEqual(previous - curvature, modeld.LANE_LOCK_CORRECTION_RELEASE_STEP + 1e-12)
+      previous = curvature
+    self.assertEqual(previous, 0.0)
+
+  def test_disabling_policy_mid_drive_ramps_out(self):
+    offset = self.engage_max_correction()
+    first = modeld.apply_lane_lock(offset, 0.0, 20.0, lane_policy_enabled=False)
+    self.assertGreater(first, 0.0)
+    curvature = first
+    for _ in range(5):
+      curvature = modeld.apply_lane_lock(offset, 0.0, 20.0, lane_policy_enabled=False)
+    self.assertEqual(curvature, 0.0)
+
+  def test_release_ramp_converges_to_exact_e2e(self):
+    offset = self.engage_max_correction()
+    for _ in range(6):
+      curvature = modeld.apply_lane_lock(offset, -0.0012, 20.0, blinkers_active=True, lane_policy_enabled=True)
+    self.assertEqual(curvature, -0.0012)
+
+  def test_lead_reference_uses_the_present_lead_not_the_likeliest_horizon(self):
+    # lead_prob is indexed by time offset, so a confident 4 s lead must not
+    # override a t=0 hypothesis the gates would otherwise reject.
+    bad_lanes = make_model_output(left_prob=0.10, right_prob=0.10)
+    bad_lanes['lead_prob'][0, 0] = 0.10
+    bad_lanes['lead_prob'][0, 2] = 0.99
+    bad_lanes['lead'][0, 2, 0, 1] = 1.5
+    self.assertEqual(modeld.apply_lane_lock(bad_lanes, 0.0010, 20.0, lane_policy_enabled=True,
+                                            one_line_fallback_enabled=False,
+                                            lead_fallback_enabled=True), 0.0010)
+
   def test_blinker_releases_lane_lock(self):
     output = self.arm_lane_policy()
     self.assertEqual(modeld.apply_lane_lock(output, 0.0123, 20.0, blinkers_active=True, lane_policy_enabled=True), 0.0123)
