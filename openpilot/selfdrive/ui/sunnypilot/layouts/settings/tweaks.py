@@ -41,6 +41,45 @@ class PanelType(IntEnum):
   DYNAMIC_FOLLOW = 3
   SPEED_ASSIST = 4
   AUTO_LOCK = 5
+  LANE_POLICY = 6
+
+
+class LanePolicySettingsLayout(Widget):
+  def __init__(self, back_callback: Callable):
+    super().__init__()
+    self._back_callback = back_callback
+
+    self._back_button = simple_button_item_sp(
+      button_text=lambda: tr("Back"),
+      button_width=800,
+      callback=self._back_callback,
+    )
+    self._one_line_fallback = toggle_item_sp(
+      title=lambda: tr("One-Line Fallback"),
+      description=lambda: tr("If one lane line briefly disappears, use the remaining line plus the learned lane width "
+                             "for a short lane-centering hold before falling back."),
+      param="LanePolicyOneLineFallback",
+      enabled=lambda: ui_state.params.get_bool("LanePolicyEnabled"),
+    )
+    self._lead_fallback = toggle_item_sp(
+      title=lambda: tr("Lead Fallback"),
+      description=lambda: tr("When lane-line fallback is unavailable, use a detected lead vehicle as a low-authority "
+                             "lateral reference before returning to the normal model path."),
+      param="LanePolicyLeadFallback",
+      enabled=lambda: ui_state.params.get_bool("LanePolicyEnabled"),
+    )
+
+    self._scroller = Scroller([
+      self._back_button,
+      self._one_line_fallback,
+      self._lead_fallback,
+    ], line_separator=True, spacing=0)
+
+  def _render(self, rect):
+    self._scroller.render(rect)
+
+  def show_event(self):
+    self._scroller.show_event()
 
 
 class _BenchmarkDialog(ConfirmDialog):
@@ -68,6 +107,7 @@ class TweaksLayout(Widget):
     self._park_layout = ParkAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._speed_assist_layout = SpeedAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._auto_lock_layout = AutoLockSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
+    self._lane_policy_layout = LanePolicySettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
 
     items = self._initialize_items()
     self._scroller = Scroller(items, line_separator=True, spacing=0)
@@ -104,6 +144,19 @@ class TweaksLayout(Widget):
       button_text=lambda: tr("Manage Launch Assist Settings"),
       button_width=800,
       callback=lambda: self._set_current_panel(PanelType.LAUNCH),
+    )
+
+    self._lane_policy = toggle_item_sp(
+      title=lambda: tr("Lane Centering Policy"),
+      description=lambda: tr("When both lane lines are clean, add a bounded lane-centering correction to the model's "
+                             "curvature. Falls back to the normal model path when lane geometry is unclear, blinkers "
+                             "are active, or a lane change is predicted."),
+      param="LanePolicyEnabled",
+    )
+    self._lane_policy_button = simple_button_item_sp(
+      button_text=lambda: tr("Manage Lane Policy Settings"),
+      button_width=800,
+      callback=lambda: self._set_current_panel(PanelType.LANE_POLICY),
     )
 
     self._park_assist = toggle_item_sp(
@@ -184,6 +237,8 @@ class TweaksLayout(Widget):
       self._dynamic_follow_button,
       self._launch_assist,
       self._launch_assist_button,
+      self._lane_policy,
+      self._lane_policy_button,
       self._park_assist,
       self._park_assist_button,
       self._speed_assist_button,
@@ -272,6 +327,8 @@ class TweaksLayout(Widget):
       self._speed_assist_layout.render(rect)
     elif self._current_panel == PanelType.AUTO_LOCK:
       self._auto_lock_layout.render(rect)
+    elif self._current_panel == PanelType.LANE_POLICY:
+      self._lane_policy_layout.render(rect)
     else:
       self._scroller.render(rect)
 
@@ -291,9 +348,12 @@ class TweaksLayout(Widget):
       self._speed_assist_layout.show_event()
     elif panel == PanelType.AUTO_LOCK:
       self._auto_lock_layout.show_event()
+    elif panel == PanelType.LANE_POLICY:
+      self._lane_policy_layout.show_event()
 
   def _update_state(self):
     super()._update_state()
     self._dynamic_follow_button.action_item.set_enabled(self._dynamic_follow.action_item.get_state())
     self._launch_assist_button.action_item.set_enabled(self._launch_assist.action_item.get_state())
+    self._lane_policy_button.action_item.set_enabled(self._lane_policy.action_item.get_state())
     self._park_assist_button.action_item.set_enabled(self._park_assist.action_item.get_state())
