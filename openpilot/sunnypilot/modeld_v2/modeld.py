@@ -21,11 +21,12 @@ from tinygrad.tensor import Tensor
 try:
   from tinygrad.device import Buffer
   from tinygrad.dtype import DType, dtypes
+  from tinygrad.engine.jit import TinyJit
   from tinygrad.engine.realize import lower_and_compile
   from tinygrad.helpers import round_up
   from tinygrad.uop.ops import UOp
 except ImportError:
-  Buffer = DType = UOp = None
+  Buffer = DType = TinyJit = UOp = None
   try:
     from tinygrad import dtypes
   except ImportError:
@@ -80,7 +81,7 @@ from openpilot.sunnypilot.models.helpers import get_active_bundle
 from openpilot.sunnypilot.selfdrive.controls.lib.relc import RoadEdgeLaneChangeController
 
 PROCESS_NAME = "openpilot.selfdrive.modeld.modeld_tinygrad"
-BIG_MODEL_TIMEOUT = 60
+BIG_MODEL_TIMEOUT = 180
 MODELD_MODELS_DIR = MODELS_DIR
 # See the note in selfdrive/modeld/modeld.py: the lane-policy toggles live on
 # persistent storage, so they are polled about once a second rather than per frame.
@@ -285,11 +286,7 @@ class ModelState(ModelStateBase):
     self.frame_buf_params = dict.fromkeys(self._vision_input_names, nv12_info)
     self._pack_upstream_inputs()
 
-    warp_path = MODELD_MODELS_DIR / f'{"big_" if self.chestnut else ""}driving_warp_{cam_w}x{cam_h}_tinygrad.pkl'
-    if not warp_path.is_file():
-      raise FileNotFoundError(f"Missing tinygrad driving warp pkl for upstream run-schema model: {warp_path}")
-    with open(warp_path, 'rb') as f:
-      self.run_warp = pickle.load(f)['run']
+    self.run_warp = self._load_upstream_warp(cam_w, cam_h, nv12_info)
 
     self.run_model = jits['run']
     if hasattr(self.run_model, 'captured') and hasattr(self.run_model.captured, '_linear'):
@@ -312,6 +309,24 @@ class ModelState(ModelStateBase):
 
     self.parser = Parser()
     self.prev_desire = np.zeros(self.constants.DESIRE_LEN, dtype=np.float32)
+
+  def _load_upstream_warp(self, cam_w, cam_h, nv12_info):
+    warp_path = MODELD_MODELS_DIR / f'{"big_" if self.chestnut else ""}driving_warp_{cam_w}x{cam_h}_tinygrad.pkl'
+    if warp_path.is_file():
+      with open(warp_path, 'rb') as f:
+        return pickle.load(f)['run']
+
+    if TinyJit is None:
+      raise FileNotFoundError(f"Missing tinygrad driving warp pkl for upstream run-schema model: {warp_path}")
+
+    from openpilot.selfdrive.modeld.compile_modeld import NV12Frame
+    from openpilot.selfdrive.modeld.compile_driving_warp import make_driving_warp
+
+    new_img_shape = self.input_shapes['new_img']
+    model_h, model_w = new_img_shape[-2] * 2, new_img_shape[-1] * 2
+    cloudlog.warning(f"missing {warp_path}; compiling driving warp at runtime for {cam_w}x{cam_h} -> {model_w}x{model_h}")
+    nv12 = NV12Frame(cam_w, cam_h, *nv12_info)
+    return TinyJit(make_driving_warp(nv12, model_w, model_h), prune=True)
 
   def _pack_upstream_inputs(self):
     self.input_queues = {
@@ -595,6 +610,8 @@ def main(demo=False):
     loader.start()
     loader.join(BIG_MODEL_TIMEOUT)
     model = big_model
+    if model is None and loader.is_alive():
+      params.put("ChestnutLastError", f"load timed out after {BIG_MODEL_TIMEOUT}s while loading/warming big model")
     if model is None:
       params.put_bool("ChestnutModelError", True)
     params.put_bool("ChestnutActive", model is not None)
