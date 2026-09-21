@@ -18,22 +18,11 @@ import time
 import traceback
 from setproctitle import setproctitle
 from tinygrad.tensor import Tensor
-try:
-  from tinygrad.device import Buffer
-  from tinygrad.dtype import DType, dtypes
-  from tinygrad.engine.realize import lower_and_compile
-  from tinygrad.helpers import round_up
-  from tinygrad.uop.ops import UOp
-except ImportError:
-  Buffer = DType = UOp = None
-  try:
-    from tinygrad import dtypes
-  except ImportError:
-    dtypes = None
-  def lower_and_compile(linear):
-    return linear
-  def round_up(num, amt):
-    return ((num + amt - 1) // amt) * amt
+from tinygrad.device import Buffer
+from tinygrad.dtype import DType, dtypes
+from tinygrad.engine.realize import lower_and_compile
+from tinygrad.helpers import round_up
+from tinygrad.uop.ops import UOp
 
 import openpilot.cereal.messaging as messaging
 from openpilot.common.hardware import COMMA_HARDWARE
@@ -80,7 +69,8 @@ from openpilot.sunnypilot.models.helpers import get_active_bundle
 from openpilot.sunnypilot.selfdrive.controls.lib.relc import RoadEdgeLaneChangeController
 
 PROCESS_NAME = "openpilot.selfdrive.modeld.modeld_tinygrad"
-BIG_MODEL_TIMEOUT = 60
+# the upstream run-schema models link their kernels on load, which takes longer than the old ones
+BIG_MODEL_TIMEOUT = 180
 MODELD_MODELS_DIR = MODELS_DIR
 # See the note in selfdrive/modeld/modeld.py: the lane-policy toggles live on
 # persistent storage, so they are polled about once a second rather than per frame.
@@ -108,8 +98,6 @@ def _find_driving_pkl(bundle):
 
 
 def _tensor_dtype(dtype):
-  if dtypes is None:
-    raise RuntimeError("tinygrad dtype helpers are required for upstream run-schema driving models")
   if isinstance(dtype, str):
     return getattr(dtypes, dtype)
   if isinstance(dtype, np.dtype):
@@ -118,8 +106,6 @@ def _tensor_dtype(dtype):
 
 
 def input_view(buffer: Buffer, shape: tuple[int, ...], dtype: DType, offset: int) -> Tensor:
-  if UOp is None:
-    raise RuntimeError("tinygrad UOp.from_buffer is required for upstream run-schema driving models")
   view = buffer.view(math.prod(shape), dtype, offset).ensure_allocated()
   return Tensor(UOp.from_buffer(view)).reshape(shape)
 
@@ -595,6 +581,9 @@ def main(demo=False):
     loader.start()
     loader.join(BIG_MODEL_TIMEOUT)
     model = big_model
+    if model is None and loader.is_alive():
+      # a silent timeout is indistinguishable from a silent crash, so say which one it was
+      params.put("ChestnutLastError", f"load timed out after {BIG_MODEL_TIMEOUT}s while loading the big model")
     if model is None:
       params.put_bool("ChestnutModelError", True)
     params.put_bool("ChestnutActive", model is not None)

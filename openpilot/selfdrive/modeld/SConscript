@@ -9,6 +9,7 @@ from openpilot.common.transformations.model import MEDMODEL_INPUT_SIZE, DM_INPUT
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.modeld.helpers import TG_INPUT_DEVICES_PATH, chestnut_present, modeld_pkl_path
 from openpilot.selfdrive.modeld.frame_downscale import downscale_target
+from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
 
 
 Import('env', 'arch')
@@ -46,7 +47,7 @@ tg_devices = { # which device to put jit inputs to at runtime
 
 CHESTNUT = chestnut_present()
 if CHESTNUT:
-  chestnut_tg_flags = 'DEBUG=1 DEV=USB+AMD:LLVM FRAME_DEV=CPU FLOAT16=1 JIT_BATCH_SIZE=0 GMMU=0 TC_OPT=2 TC_OCCUPANCY_OPT=1'
+  chestnut_tg_flags = 'DEBUG=1 DEV=USB+AMD:LLVM FRAME_DEV=CPU FLOAT16=1 JIT_BATCH_SIZE=0 GMMU=0 TC_OPT=2 TC_MIN_GLOBALS=32'
   # the USB+AMD GPU takes an exclusive flock; serialize all targets that touch it
   chestnut_lock = File("models/.chestnut.lock").abspath
 
@@ -113,16 +114,24 @@ if not os.getenv('SKIP_TINYGRAD_COMPILE'):
     if chestnut:
       lenv.SideEffect(chestnut_lock, node)
 
-  compile_driving_warp_script = [File(f"{modeld_dir}/compile_driving_warp.py")]
+  # the upstream run-schema models take their image input from a separately compiled warp,
+  # built by tinygrad's own compiler so the artifact matches what those models expect
+  warp_compiler = File('#tinygrad_repo/examples/openpilot/compile_warp.py').abspath
+  # compile_warp.py imports examples.openpilot.helpers, so tinygrad_repo has to be on the path
+  warp_pythonpath = 'PYTHONPATH="${PYTHONPATH}:' + env.Dir("#tinygrad_repo").abspath + '"'
+  warp_deps = [File("#openpilot/system/camerad/cameras/nv12_info.py")]
   for chestnut in [False, True] if CHESTNUT else [False]:
     file_prefix, cmd_flags = ('big_', chestnut_tg_flags) if chestnut else ('', tg_flags)
     for cam_w, cam_h in camera_configs:
       warp_pkl_path = File(f"models/{file_prefix}driving_warp_{cam_w}x{cam_h}_tinygrad.pkl").abspath
-      cmd = (f'{cmd_flags} {mac_brew_string} {taskset}python3 {modeld_dir}/compile_driving_warp.py '
-             f'--camera-resolution {cam_w}x{cam_h} --warp-to {model_w}x{model_h} '
+      stride, y_height, uv_height, _ = get_nv12_info(cam_w, cam_h)
+      cmd = (f'{warp_pythonpath} {cmd_flags} {mac_brew_string} {taskset}python3 "{warp_compiler}" '
+             f'--frame {cam_w},{cam_h},{stride},{y_height},{uv_height},{stride * (y_height + uv_height)} '
+             f'--warp-to {model_w}x{model_h} --layout yuv420 --frames 2 '
              f'--output {warp_pkl_path}')
       def do_compile_warp(target, source, env, command=cmd):
         from openpilot.system.hardware.chestnut.flash import link_up
+        # chestnut can enumerate before its PCIe link is up, so give it a moment
         for _ in range(10):
           if link_up():
             break
@@ -132,11 +141,7 @@ if not os.getenv('SKIP_TINYGRAD_COMPILE'):
           return
         return env.Execute(command)
       actions = Action(do_compile_warp, "  [CHESTNUT] $TARGET") if chestnut else cmd
-      node = lenv.Command(
-        warp_pkl_path,
-        tinygrad_files + compile_driving_warp_script + compile_modeld_script + [Value(cmd), tg_devices_node],
-        actions,
-      )
+      node = lenv.Command(warp_pkl_path, tinygrad_files + warp_deps + [Value(cmd)], actions)
       if chestnut:
         lenv.SideEffect(chestnut_lock, node)
 
