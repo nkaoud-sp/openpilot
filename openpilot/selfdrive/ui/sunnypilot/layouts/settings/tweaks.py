@@ -32,6 +32,15 @@ from openpilot.system.ui.widgets.scroller_tici import Scroller
 
 
 FRAME_BENCHMARK_CMD = ["python3", "-m", "openpilot.selfdrive.modeld.chestnut_frames", "--device", "QCOM"]
+MODEL_PROBE_CMD = ["python3", "-m", "openpilot.sunnypilot.models.pkl_probe"]
+JOB_TIMEOUT = 600
+
+
+def as_html(text: str) -> str:
+  # the html renderer drops whitespace between tokens, so every line needs its own paragraph,
+  # and stray angle brackets in a traceback would be eaten as tags
+  safe = text.replace('<', '[').replace('>', ']')
+  return "".join(f"<p>{line if line.strip() else ' '}</p>" for line in safe.splitlines())
 
 
 class PanelType(IntEnum):
@@ -87,15 +96,16 @@ class LanePolicySettingsLayout(Widget):
     self._scroller.show_event()
 
 
-class _BenchmarkDialog(ConfirmDialog):
-  # a modal hides the layout below it, so the dialog polls for the benchmark result itself
-  def __init__(self, text: str, take_result: Callable[[], str | None]):
-    super().__init__(text, tr("OK"), cancel_text="")
+class _JobDialog(ConfirmDialog):
+  # a modal hides the layout below it, so the dialog polls for the job's result itself
+  def __init__(self, text: str, take_result: Callable[[], str | None], rich: bool = False):
+    super().__init__(as_html(text) if rich else text, tr("OK"), cancel_text="", rich=rich)
     self._take_result = take_result
+    self._rich_text = rich
 
   def _render(self, rect):
     if (result := self._take_result()) is not None:
-      self.set_text(result)
+      self.set_text(as_html(result) if self._rich_text else result)
     super()._render(rect)
 
 
@@ -105,8 +115,8 @@ class TweaksLayout(Widget):
 
     self._current_panel = PanelType.TWEAKS
     self._hazard_flash_until = 0.0
-    self._benchmark_thread: threading.Thread | None = None
-    self._benchmark_result: str | None = None
+    self._job_thread: threading.Thread | None = None
+    self._job_result: str | None = None
     self._dynamic_follow_layout = DynamicFollowSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._launch_layout = LaunchAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._park_layout = ParkAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
@@ -234,6 +244,17 @@ class TweaksLayout(Widget):
       enabled=lambda: ui_state.is_offroad(),
     )
 
+    self._model_probe = button_item_sp(
+      title=lambda: tr("Model Pkl Diagnostics"),
+      button_text=lambda: tr("Run"),
+      description=lambda: tr("Inspect the selected chestnut model file on disk and show what is wrong with it: which " +
+                            "loader schema it was built for, how its weights are packed, and what the loader raises " +
+                            "when it opens the file. Run this when a big model fails to load. Offroad only, takes a " +
+                            "minute."),
+      callback=self._on_model_probe,
+      enabled=lambda: ui_state.is_offroad(),
+    )
+
     return [
       self._remember_experimental_mode,
       self._dynamic_follow,
@@ -251,6 +272,7 @@ class TweaksLayout(Widget):
       self._chestnut_native_frames,
       self._chestnut_ray_matching,
       self._frame_benchmark,
+      self._model_probe,
     ]
 
   def _hazard_flashing(self) -> bool:
@@ -258,17 +280,40 @@ class TweaksLayout(Widget):
     # queued. Going onroad drops it, so that counts as the run being over.
     return ui_state.is_offroad() and time.monotonic() < self._hazard_flash_until
 
-  def _on_frame_benchmark(self):
-    if self._benchmark_thread is not None and self._benchmark_thread.is_alive():
+  def _start_job(self, message: str, work: Callable[[], str], rich: bool = False):
+    # one job at a time: there is a single result slot, and both jobs are heavy subprocesses
+    if self._job_thread is not None and self._job_thread.is_alive():
       return
-    self._benchmark_result = None
-    gui_app.push_widget(_BenchmarkDialog(tr("Running the chestnut frame benchmark, this takes about a minute..."), self._take_benchmark_result))
-    self._benchmark_thread = threading.Thread(target=self._run_frame_benchmark, daemon=True)
-    self._benchmark_thread.start()
+    self._job_result = None
+    gui_app.push_widget(_JobDialog(message, self._take_job_result, rich=rich))
+    self._job_thread = threading.Thread(target=self._run_job, args=(work,), daemon=True)
+    self._job_thread.start()
 
-  def _take_benchmark_result(self) -> str | None:
-    result, self._benchmark_result = self._benchmark_result, None
+  def _run_job(self, work: Callable[[], str]):
+    try:
+      result = work()
+    except Exception as e:
+      result = f"failed to run: {e}"
+    # picked up by the dialog's render, so its text is only touched from the UI thread
+    self._job_result = result
+
+  def _take_job_result(self) -> str | None:
+    result, self._job_result = self._job_result, None
     return result
+
+  def _on_frame_benchmark(self):
+    self._start_job(tr("Running the chestnut frame benchmark, this takes about a minute..."), self._run_frame_benchmark)
+
+  def _on_model_probe(self):
+    self._start_job(tr("Inspecting the selected chestnut model file, this takes a minute..."), self._run_model_probe, rich=True)
+
+  @staticmethod
+  def _run_model_probe() -> str:
+    proc = subprocess.run(MODEL_PROBE_CMD, cwd=BASEDIR, capture_output=True, text=True, timeout=JOB_TIMEOUT)
+    output = proc.stdout.strip()
+    if proc.returncode != 0 or not output:
+      output = f"exit code {proc.returncode}\n{output}\n{proc.stderr.strip()[-800:]}"
+    return output
 
   @staticmethod
   def _chestnut_bundle_status() -> str:
@@ -282,20 +327,16 @@ class TweaksLayout(Widget):
     except Exception as e:
       return f"chestnut bundle: could not check ({e})"
 
-  def _run_frame_benchmark(self):
+  def _run_frame_benchmark(self) -> str:
     mode = ui_state.params.get("ChestnutFrameMode") or "not run yet"
     mode += "\n" + self._chestnut_bundle_status()
     if error := ui_state.params.get("ChestnutLastError"):
       mode += f"\nchestnut error: {error[-700:]}"
-    try:
-      proc = subprocess.run(FRAME_BENCHMARK_CMD, cwd=BASEDIR, capture_output=True, text=True, timeout=600)
-      output = proc.stdout.strip()[-800:]
-      if proc.returncode != 0 or not output:
-        output = f"exit code {proc.returncode}\n{output}\n{proc.stderr.strip()[-600:]}"
-    except Exception as e:
-      output = f"failed to run: {e}"
-    # picked up by the dialog's render, so its text is only touched from the UI thread
-    self._benchmark_result = f"last drive: {mode}\n\n{output}"
+    proc = subprocess.run(FRAME_BENCHMARK_CMD, cwd=BASEDIR, capture_output=True, text=True, timeout=JOB_TIMEOUT)
+    output = proc.stdout.strip()[-800:]
+    if proc.returncode != 0 or not output:
+      output = f"exit code {proc.returncode}\n{output}\n{proc.stderr.strip()[-600:]}"
+    return f"last drive: {mode}\n\n{output}"
 
   def _on_hazard_test(self):
     # pandad plays the script offroad only, so don't leave one queued for the next time the car
