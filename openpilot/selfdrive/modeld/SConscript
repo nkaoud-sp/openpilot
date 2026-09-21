@@ -63,6 +63,8 @@ tg_devices_node = lenv.Command(
 
 # tinygrad calls brew which needs a $HOME in the env
 mac_brew_string = f'HOME={os.path.expanduser("~")}' if arch == 'Darwin' else ''
+# CPU 7 is isolated with isolcpus on AGNOS, so explicitly pin tinygrad compilation to it.
+taskset = 'taskset -c 7 ' if arch == 'comma_arm64' else ''
 
 modeld_dir = Dir("#openpilot/selfdrive/modeld").abspath
 compile_modeld_script = [
@@ -80,8 +82,6 @@ if not os.getenv('SKIP_TINYGRAD_COMPILE'):
     file_prefix, cmd_flags = ('big_', chestnut_tg_flags) if chestnut else ('', tg_flags)
     driving_onnx_deps = get_existing_chunks(File(f"models/{file_prefix}driving_supercombo.onnx").abspath)
     camera_res_args = ' '.join(f'{cw}x{ch}' for cw, ch in (chestnut_camera_configs if chestnut else camera_configs))
-    # CPU 7 is isolated with isolcpus on AGNOS, so explicitly pin the compiler to it.
-    taskset = 'taskset -c 7 ' if arch == 'comma_arm64' else ''
     cmd = (f'{cmd_flags} {mac_brew_string} {taskset}python3 {modeld_dir}/compile_modeld.py '
           f'--model-size {model_w}x{model_h} '
           f'--camera-resolutions {camera_res_args} '
@@ -112,6 +112,33 @@ if not os.getenv('SKIP_TINYGRAD_COMPILE'):
     )
     if chestnut:
       lenv.SideEffect(chestnut_lock, node)
+
+  compile_driving_warp_script = [File(f"{modeld_dir}/compile_driving_warp.py")]
+  for chestnut in [False, True] if CHESTNUT else [False]:
+    file_prefix, cmd_flags = ('big_', chestnut_tg_flags) if chestnut else ('', tg_flags)
+    for cam_w, cam_h in camera_configs:
+      warp_pkl_path = File(f"models/{file_prefix}driving_warp_{cam_w}x{cam_h}_tinygrad.pkl").abspath
+      cmd = (f'{cmd_flags} {mac_brew_string} {taskset}python3 {modeld_dir}/compile_driving_warp.py '
+             f'--camera-resolution {cam_w}x{cam_h} --warp-to {model_w}x{model_h} '
+             f'--output {warp_pkl_path}')
+      def do_compile_warp(target, source, env, command=cmd):
+        from openpilot.system.hardware.chestnut.flash import link_up
+        for _ in range(10):
+          if link_up():
+            break
+          time.sleep(1)
+        else:
+          print("Chestnut not ready, skipping driving warp build")
+          return
+        return env.Execute(command)
+      actions = Action(do_compile_warp, "  [CHESTNUT] $TARGET") if chestnut else cmd
+      node = lenv.Command(
+        warp_pkl_path,
+        tinygrad_files + compile_driving_warp_script + compile_modeld_script + [Value(cmd), tg_devices_node],
+        actions,
+      )
+      if chestnut:
+        lenv.SideEffect(chestnut_lock, node)
 
 # get model metadata
 fn = File(f"models/dmonitoring_model").abspath
