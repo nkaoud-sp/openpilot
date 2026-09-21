@@ -29,6 +29,8 @@ READ_BLOCK = 4 << 20
 # no single tinygrad buffer is a terabyte, so a length this large means we are not reading lengths
 MAX_RECORD = 1 << 40
 MAX_ERROR_CHARS = 240
+# the device upstream's loader names for the eGPU; the pkl's buffers are bound to it
+CHESTNUT_DEV = 'USB+AMD:LLVM'
 
 SCHEMA_KEYS = ('run', 'run_model', 'run_policy', 'input_specs', 'output_specs',
                'metadata', 'input_shapes', 'output_shapes', 'output_slices')
@@ -100,12 +102,39 @@ def probe(path: str, attempt_load: bool = True) -> list[str]:
   lines.append(f"  - buffers: {walk_buffers(f)}")
 
   if attempt_load:
-    try:
-      jits = load_oob(open_file_chunked(path))
-      lines.append(f"  - load_oob: ok, top level {', '.join(sorted(str(k) for k in jits))}")
-    except Exception as e:
-      lines.append(f"  - load_oob: {type(e).__name__}: {str(e)[:MAX_ERROR_CHARS]}")
+    lines += attempt_loads(path)
   return lines
+
+
+def attempt_loads(path: str) -> list[str]:
+  """Open the pkl the way modeld does, then the way upstream does.
+
+  Upstream's loader wraps the unpickle in the model's device context, which modeld_v2 does not.
+  Trying both tells a container format mismatch (fails either way) apart from a device that only
+  resolves under Context(DEV=...) (fails plain, loads on AMD).
+  """
+  ok, lines = _try_load(path)
+  if ok:
+    return lines
+
+  try:
+    from tinygrad import Context
+  except Exception as e:
+    return lines + [f"  - load_oob on {CHESTNUT_DEV}: tinygrad unavailable ({e})"]
+
+  try:
+    with Context(DEV=CHESTNUT_DEV):
+      return lines + _try_load(path, label=f"load_oob on {CHESTNUT_DEV}")[1]
+  except Exception as e:
+    return lines + [f"  - load_oob on {CHESTNUT_DEV}: {type(e).__name__}: {str(e)[:MAX_ERROR_CHARS]}"]
+
+
+def _try_load(path: str, label: str = "load_oob") -> tuple[bool, list[str]]:
+  try:
+    jits = load_oob(open_file_chunked(path))
+  except Exception as e:
+    return False, [f"  - {label}: {type(e).__name__}: {str(e)[:MAX_ERROR_CHARS]}"]
+  return True, [f"  - {label}: ok, top level {', '.join(sorted(str(k) for k in jits))}"]
 
 
 def tinygrad_head() -> str:

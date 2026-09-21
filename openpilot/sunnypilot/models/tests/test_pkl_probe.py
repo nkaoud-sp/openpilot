@@ -13,7 +13,8 @@ import tempfile
 
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.selfdrive.modeld.helpers import dump_oob
-from openpilot.sunnypilot.models.pkl_probe import key_marker, probe, schema_of, walk_buffers
+from openpilot.sunnypilot.models.pkl_probe import (CHESTNUT_DEV, attempt_loads, key_marker, probe, schema_of,
+                                                   walk_buffers)
 
 
 def _write_persistent_id_pkl(path: str, payload: bytes) -> None:
@@ -99,3 +100,26 @@ class TestWalkBuffers(OpenpilotTestCase):
   def test_unreadable_path(self):
     lines = probe('/nonexistent/driving_missing_tinygrad.pkl', attempt_load=False)
     assert any("unreadable" in line for line in lines), lines
+
+
+class TestAttemptLoads(OpenpilotTestCase):
+  def test_plain_load_reports_top_level_keys_and_skips_the_retry(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      path = os.path.join(tmp, 'driving_ok_tinygrad.pkl')
+      with open(path, 'wb') as f:
+        dump_oob({'run_model': {}, 'metadata': {}}, f)
+
+      lines = attempt_loads(path)
+      assert len(lines) == 1, lines
+      assert "load_oob: ok, top level metadata, run_model" in lines[0], lines
+
+  def test_failed_load_retries_in_the_chestnut_device_context(self):
+    with tempfile.TemporaryDirectory() as tmp:
+      path = os.path.join(tmp, 'driving_v3_tinygrad.pkl')
+      _write_persistent_id_pkl(path, b'\xff' * 8192)
+
+      lines = attempt_loads(path)
+      # the plain attempt, then whatever the retry under Context(DEV=...) managed
+      assert len(lines) == 2, lines
+      assert lines[0].startswith("  - load_oob: UnpicklingError"), lines
+      assert CHESTNUT_DEV in lines[1], lines
