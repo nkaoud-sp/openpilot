@@ -5,6 +5,9 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 
+import base64
+import pickle
+
 from openpilot.common.parameterized import parameterized
 
 import openpilot.sunnypilot.models.helpers as helpers
@@ -119,6 +122,60 @@ class TestStockEquivalence(OpenpilotTestCase):
     assert state.is_run_model and state.run_model is not None
     assert state.run_policy is None and state.warp is None
     assert 'img' in state.frame_views and 'big_img' in state.frame_views
+
+  def test_upstream_run_schema_model(self, tmp_path, monkeypatch, patch_modeld):
+    from openpilot.common.hardware import hw
+    from openpilot.selfdrive.modeld.helpers import dump_oob
+
+    state_shape = (1, 8)
+    output_slices = {'plan': slice(0, 495), 'hidden_state': slice(495, 1007), 'meta': slice(1007, 1062)}
+    output_slices_b64 = base64.b64encode(pickle.dumps(output_slices)).decode()
+    input_specs = {
+      'new_img': ((2, 6, 128, 256), 'uint8', 'NPY'),
+      'desire': ((8,), 'float32', 'NPY'),
+      'traffic_convention': ((1, 2), 'float32', 'NPY'),
+      'action_t': ((1, 2), 'float32', 'NPY'),
+      'state_img_q': (state_shape, 'float32', 'NPY'),
+      'state_desire_q': (state_shape, 'float32', 'NPY'),
+      'state_feat_q': (state_shape, 'float32', 'NPY'),
+    }
+    output_specs = {
+      'outputs': ((1, 1062), 'float32', 'NPY'),
+      'next_state_img_q': (state_shape, 'float32', 'NPY'),
+      'next_state_desire_q': (state_shape, 'float32', 'NPY'),
+      'next_state_feat_q': (state_shape, 'float32', 'NPY'),
+    }
+    pkl_data = {
+      'metadata': {
+        'metadata': {'output_slices': output_slices_b64},
+        'output_shapes': {name: shape for name, (shape, _dtype, _device) in output_specs.items()},
+      },
+      'input_specs': input_specs,
+      'output_specs': output_specs,
+      'run': tests_helpers._noop_jit,
+    }
+    with open(tmp_path / 'driving_upstream_tinygrad.pkl', 'wb') as f:
+      dump_oob(pkl_data, f)
+    with open(tmp_path / f'big_driving_warp_{CAM_W}x{CAM_H}_tinygrad.pkl', 'wb') as f:
+      pickle.dump({'run': tests_helpers._noop_jit}, f)
+
+    bundle = DummyBundle(models=[DummyModel('supercombo', 'driving_upstream_tinygrad.pkl')], is_20hz=True, generation=12)
+    patch_modeld(bundle)
+    monkeypatch.setattr(hw.Paths, 'model_root', staticmethod(lambda: str(tmp_path)))
+    monkeypatch.setattr(modeld_module, 'MODELD_MODELS_DIR', tmp_path)
+
+    state = ModelState(cam_w=CAM_W, cam_h=CAM_H, chestnut=True)
+    assert state.is_upstream_run
+    assert state.run_model is tests_helpers._noop_jit
+    assert state.run_warp is tests_helpers._noop_jit
+    assert state.vision_input_names == ['img', 'big_img']
+    assert state.desire_key == 'desire'
+    assert state.state_pairs == {
+      'state_img_q': 'next_state_img_q',
+      'state_desire_q': 'next_state_desire_q',
+      'state_feat_q': 'next_state_feat_q',
+    }
+    assert set(state.warp_inputs) == {'input_frame', 'M_inv'}
 
 
 ARCHETYPE_NAMES = list(ARCHETYPES.keys())

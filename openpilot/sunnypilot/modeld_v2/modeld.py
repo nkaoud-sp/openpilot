@@ -7,18 +7,37 @@ See the LICENSE.md file in the root directory for more details.
 """
 
 from collections.abc import Callable
+import base64
+import math
 import os
 os.environ['GMMU'] = '0'
+import pickle
 import numpy as np
 import threading
 import time
 import traceback
 from setproctitle import setproctitle
 from tinygrad.tensor import Tensor
+try:
+  from tinygrad.device import Buffer
+  from tinygrad.dtype import DType, dtypes
+  from tinygrad.engine.realize import lower_and_compile
+  from tinygrad.helpers import round_up
+  from tinygrad.uop.ops import UOp
+except ImportError:
+  Buffer = DType = UOp = None
+  try:
+    from tinygrad import dtypes
+  except ImportError:
+    dtypes = None
+  def lower_and_compile(linear):
+    return linear
+  def round_up(num, amt):
+    return ((num + amt - 1) // amt) * amt
 
 import openpilot.cereal.messaging as messaging
 from openpilot.common.hardware import COMMA_HARDWARE
-from openpilot.selfdrive.modeld.helpers import chestnut_present
+from openpilot.selfdrive.modeld.helpers import MODELS_DIR, chestnut_present
 from openpilot.selfdrive.modeld.frame_downscale import select_frame_size
 from openpilot.selfdrive.modeld.chestnut_frames import frame_mode, make_frame_stage
 from openpilot.cereal import log
@@ -62,6 +81,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.relc import RoadEdgeLaneChangeC
 
 PROCESS_NAME = "openpilot.selfdrive.modeld.modeld_tinygrad"
 BIG_MODEL_TIMEOUT = 60
+MODELD_MODELS_DIR = MODELS_DIR
 # See the note in selfdrive/modeld/modeld.py: the lane-policy toggles live on
 # persistent storage, so they are polled about once a second rather than per frame.
 LANE_POLICY_PARAM_INTERVAL = ModelConstants.MODEL_RUN_FREQ
@@ -85,6 +105,23 @@ def _find_driving_pkl(bundle):
   if _pkl_exists(pkl_path):
     return pkl_path
   return None
+
+
+def _tensor_dtype(dtype):
+  if dtypes is None:
+    raise RuntimeError("tinygrad dtype helpers are required for upstream run-schema driving models")
+  if isinstance(dtype, str):
+    return getattr(dtypes, dtype)
+  if isinstance(dtype, np.dtype):
+    return getattr(dtypes, dtype.name)
+  return dtype
+
+
+def input_view(buffer: Buffer, shape: tuple[int, ...], dtype: DType, offset: int) -> Tensor:
+  if UOp is None:
+    raise RuntimeError("tinygrad UOp.from_buffer is required for upstream run-schema driving models")
+  view = buffer.view(math.prod(shape), dtype, offset).ensure_allocated()
+  return Tensor(UOp.from_buffer(view)).reshape(shape)
 
 
 class FrameMeta:
@@ -131,6 +168,10 @@ class ModelState(ModelStateBase):
     self.DEV = ('AMD' if self.chestnut else 'QCOM') if COMMA_HARDWARE else 'CPU'
     self.QUEUE_DEV = self.DEV
     self.is_run_model = 'run_model' in jits
+    self.is_upstream_run = 'run' in jits and 'input_specs' in jits and 'output_specs' in jits
+    if self.is_upstream_run:
+      self._init_upstream_run(jits, cam_w, cam_h, bundle)
+      return
 
     # chestnut runs comma four sized frames: on a bigger camera, convert on the device GPU before the frames cross the link
     frame_w, frame_h = cam_w, cam_h
@@ -206,7 +247,115 @@ class ModelState(ModelStateBase):
       self.full_frames = {k: Tensor(np.zeros(nv12_info[3], dtype=np.uint8), device=self.WARP_DEV).contiguous().realize() for k in self._vision_input_names}
       self.warp(**{k: self.input_queues[k] for k in WARP_INPUTS}, frame=self.full_frames[self._road_key], big_frame=self.full_frames[self._wide_key])
 
+  def _init_upstream_run(self, jits, cam_w, cam_h, bundle):
+    self.is_run_model = True
+    self.run_policy = None
+    self.warp = None
+    self.stage = None
+    self.frame_scale = np.eye(3, dtype=np.float32)
+    self.c4_intrinsics = False
+    self.full_frames = {}
+    self._blob_cache = {}
+    self.frame_buffers = {}
+    self.frame_skip = 1
+
+    input_specs = jits['input_specs']
+    output_specs = jits['output_specs']
+    self.model_device = input_specs['new_img'][2]
+    self.input_shapes = {name: tuple(shape) for name, (shape, _dtype, _device) in input_specs.items()}
+    self.input_dtypes = {name: np.dtype(dtype) for name, (_shape, dtype, _device) in input_specs.items()}
+    self.output_dtypes = {name: np.dtype(dtype) for name, (_shape, dtype, _device) in output_specs.items()}
+
+    output_shapes = jits['metadata'].get('output_shapes', {})
+    self.state_pairs = {
+      name: next_name for name in self.input_shapes
+      if (next_name := f'next_{name}') in output_shapes or next_name in output_specs
+    }
+    self._vision_input_names = ['img', 'big_img']
+    self._road_key = 'img'
+    self._wide_key = 'big_img'
+    self._desire_key = 'desire'
+    self.vision_output_slices = pickle.loads(base64.b64decode(jits['metadata']['metadata']['output_slices']))
+    self.policy_output_slices = {}
+    self._policy_slices_list = []
+    self._combined_model_type = 'supercombo'
+
+    nv12_info = get_nv12_info(cam_w, cam_h)
+    self.frame_copy_size = nv12_copy_size(*nv12_info[:3])
+    self.frame_buf_params = dict.fromkeys(self._vision_input_names, nv12_info)
+    self._pack_upstream_inputs()
+
+    warp_path = MODELD_MODELS_DIR / f'{"big_" if self.chestnut else ""}driving_warp_{cam_w}x{cam_h}_tinygrad.pkl'
+    if not warp_path.is_file():
+      raise FileNotFoundError(f"Missing tinygrad driving warp pkl for upstream run-schema model: {warp_path}")
+    with open(warp_path, 'rb') as f:
+      self.run_warp = pickle.load(f)['run']
+
+    self.run_model = jits['run']
+    if hasattr(self.run_model, 'captured') and hasattr(self.run_model.captured, '_linear'):
+      self.run_model.captured._linear = lower_and_compile(self.run_model.captured._linear)
+
+    self.outputs = {
+      name: Tensor(np.zeros(tuple(shape), dtype=np.dtype(dtype)), device=device).realize()
+      for name, (shape, dtype, device) in output_specs.items()
+    }
+    for name, next_name in self.state_pairs.items():
+      state = self.input_queues[name]
+      self.outputs[next_name] = input_view(state._buffer(), state.shape, state.dtype, 0)
+
+    is_20hz = bundle.is20hz if bundle else True
+    if is_20hz:
+      from openpilot.sunnypilot.models.split_model_constants import SplitModelConstants
+      self.constants = SplitModelConstants()
+    else:
+      self.constants = ModelConstants()
+
+    self.parser = Parser()
+    self.prev_desire = np.zeros(self.constants.DESIRE_LEN, dtype=np.float32)
+
+  def _pack_upstream_inputs(self):
+    self.input_queues = {
+      name: Tensor(np.zeros(self.input_shapes[name], dtype=self.input_dtypes[name]), device=self.model_device).realize()
+      for name in self.state_pairs
+    }
+
+    shapes = {'tfm': (2, 3, 3)}
+    shapes.update({
+      name: shape for name, shape in self.input_shapes.items()
+      if name not in self.state_pairs and name != 'new_img'
+    })
+    npy_size = sum(round_up(math.prod(shape) * np.dtype(np.float32).itemsize, 128) for shape in shapes.values())
+    self.packed_input = np.zeros(npy_size + 2 * self.frame_copy_size, dtype=np.uint8)
+    self.input_host = Tensor(self.packed_input, device='NPY')._buffer()
+    self.input_device = Tensor(self.packed_input, device=self.model_device)._buffer()
+    self.numpy_inputs = {}
+    self.npy = self.numpy_inputs
+
+    offset = 0
+    for name, shape in shapes.items():
+      size = math.prod(shape) * np.dtype(np.float32).itemsize
+      self.numpy_inputs[name] = self.packed_input[offset:offset + size].view(np.float32).reshape(shape)
+      self.input_queues[name] = input_view(self.input_device, shape, _tensor_dtype(np.dtype(np.float32)), offset)
+      offset += round_up(size, 128)
+
+    self.frames = self.packed_input[npy_size:].reshape(2, self.frame_copy_size)
+    self.warp_inputs = {
+      'input_frame': input_view(self.input_device, self.frames.shape, _tensor_dtype(np.dtype(np.uint8)), npy_size),
+      'M_inv': self.input_queues.pop('tfm'),
+    }
+
   def warmup(self) -> None:
+    if self.is_upstream_run:
+      dummy_frames = {k: np.zeros(self.frame_copy_size, dtype=np.uint8) for k in self._vision_input_names}
+      transforms = {k: np.eye(3, dtype=np.float32) for k in (self._road_key, self._wide_key)}
+      dummy_inputs = {k: np.zeros(v.shape, dtype=v.dtype) for k, v in self.numpy_inputs.items() if k != 'tfm'}
+      self.run(dummy_frames, transforms, dummy_inputs)
+      self.packed_input[:] = 0
+      for key in self.state_pairs:
+        self.input_queues[key].assign(0).realize()
+      self.prev_desire[:] = 0
+      return
+
     dummy_size = self.frame_copy_size if self.is_run_model else self.frame_buf_params[self._road_key][3]
     dummy_frames = {k: np.zeros(dummy_size, dtype=np.uint8) for k in self._vision_input_names}
     transforms = {k: np.eye(3, dtype=np.float32) for k in [self._road_key, self._wide_key] if k}
@@ -239,6 +388,9 @@ class ModelState(ModelStateBase):
   def run(self, bufs: dict[str, VisionBuf], transforms: dict[str, np.ndarray],
           inputs: dict[str, np.ndarray],
           after_enqueue: Callable[[], None] | None = None) -> dict[str, np.ndarray] | None:
+    if self.is_upstream_run:
+      return self._run_upstream(bufs, transforms, inputs, after_enqueue)
+
     # warmup passes frames already at the model input size as numpy arrays
     converted = (self.stage.process(bufs, inputs.get('reproj_gains', (1.0, 1.0)))
                  if self.stage is not None and not any(isinstance(buf, np.ndarray) for buf in bufs.values()) else None)
@@ -316,6 +468,40 @@ class ModelState(ModelStateBase):
       buf[0, -1, :] = outputs['desired_curvature'][0, :] if not self.mlsim else 0
 
     return outputs
+
+  def _run_upstream(self, bufs: dict[str, VisionBuf], transforms: dict[str, np.ndarray],
+                    inputs: dict[str, np.ndarray],
+                    after_enqueue: Callable[[], None] | None = None) -> dict[str, np.ndarray] | None:
+    for i, key in enumerate(self._vision_input_names):
+      buf = bufs[key]
+      data = buf.data if hasattr(buf, 'data') else buf
+      np.copyto(self.frames[i], np.frombuffer(data, dtype=np.uint8, count=self.frame_copy_size))
+
+    self.numpy_inputs['tfm'][0] = transforms[self._road_key].reshape(3, 3)
+    self.numpy_inputs['tfm'][1] = transforms[self._wide_key].reshape(3, 3)
+
+    desire_key = self.desire_key
+    if desire_key in inputs:
+      inputs[desire_key][0] = 0
+      self.numpy_inputs[desire_key][:] = np.where(inputs[desire_key] - self.prev_desire > .99, inputs[desire_key], 0)
+      self.prev_desire[:] = inputs[desire_key]
+
+    for key in ('traffic_convention', 'lateral_control_params', 'action_t'):
+      if key in self.numpy_inputs and key in inputs:
+        self.numpy_inputs[key][:] = inputs[key]
+
+    self.input_device.copy_from(self.input_host)
+    self.input_queues['new_img'] = self.run_warp(**self.warp_inputs)
+    self.run_model(output_buffers=self.outputs, **self.input_queues)
+
+    if after_enqueue is not None:
+      after_enqueue()
+
+    model_output = self.outputs['outputs'].numpy()[0]
+    if self.chestnut and not np.all(np.isfinite(model_output)):
+      raise RuntimeError("model output not finite")
+    sliced = {k: model_output[np.newaxis, v] for k, v in self.vision_output_slices.items()}
+    return self.parser.parse_outputs(sliced)
 
   def get_action_from_model(self, model_output: dict[str, np.ndarray], prev_action: log.ModelDataV2.Action,
                             lat_action_t: float, long_action_t: float, v_ego: float,
