@@ -107,13 +107,16 @@ def probe(path: str, attempt_load: bool = True) -> list[str]:
 
 
 def attempt_loads(path: str) -> list[str]:
-  """Open the pkl the way modeld does, then the way upstream does.
+  """Open the pkl every way the runtime might, because they do not all behave the same.
 
-  Upstream's loader wraps the unpickle in the model's device context, which modeld_v2 does not.
-  Trying both tells a container format mismatch (fails either way) apart from a device that only
-  resolves under Context(DEV=...) (fails plain, loads on AMD).
+  modeld_v2 has its own compatibility unpickler that rewrites tinygrad globals, so a file that
+  a straight unpickle reads fine can still fail the load that matters. Report both, then, if the
+  straight one failed, retry it in the model's device context the way upstream does - that
+  separates a container mismatch, which fails every way, from a device that only resolves under
+  Context(DEV=...).
   """
   ok, lines = _try_load(path)
+  lines += _try_compat_load(path)
   if ok:
     return lines
 
@@ -129,7 +132,19 @@ def attempt_loads(path: str) -> list[str]:
     return lines + [f"  - load_oob on {CHESTNUT_DEV}: {type(e).__name__}: {str(e)[:MAX_ERROR_CHARS]}"]
 
 
-def _try_load(path: str, label: str = "load_oob") -> tuple[bool, list[str]]:
+def _try_compat_load(path: str) -> list[str]:
+  try:
+    from openpilot.sunnypilot.modeld_v2.helpers import load_oob as compat_load_oob
+  except Exception as e:
+    return [f"  - compat unpickle: unavailable ({e})"]
+  try:
+    jits = compat_load_oob(open_file_chunked(path))
+  except Exception as e:
+    return [f"  - compat unpickle: {type(e).__name__}: {str(e)[:MAX_ERROR_CHARS]}"]
+  return [f"  - compat unpickle: ok, top level {', '.join(sorted(str(k) for k in jits))}"]
+
+
+def _try_load(path: str, label: str = "plain unpickle") -> tuple[bool, list[str]]:
   try:
     jits = load_oob(open_file_chunked(path))
   except Exception as e:

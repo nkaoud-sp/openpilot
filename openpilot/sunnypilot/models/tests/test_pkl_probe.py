@@ -110,8 +110,10 @@ class TestAttemptLoads(OpenpilotTestCase):
         dump_oob({'run_model': {}, 'metadata': {}}, f)
 
       lines = attempt_loads(path)
-      assert len(lines) == 1, lines
-      assert "load_oob: ok, top level metadata, run_model" in lines[0], lines
+      # the plain unpickler and modeld_v2's compatibility one are both reported
+      assert len(lines) == 2, lines
+      assert "plain unpickle: ok, top level metadata, run_model" in lines[0], lines
+      assert lines[1].startswith("  - compat unpickle:"), lines
 
   def test_failed_load_retries_in_the_chestnut_device_context(self):
     with tempfile.TemporaryDirectory() as tmp:
@@ -119,7 +121,8 @@ class TestAttemptLoads(OpenpilotTestCase):
       _write_persistent_id_pkl(path, b'\xff' * 8192)
 
       lines = attempt_loads(path)
-      # the plain attempt, then whatever the retry under Context(DEV=...) managed
-      assert len(lines) == 2, lines
-      assert lines[0].startswith("  - load_oob: UnpicklingError"), lines
-      assert CHESTNUT_DEV in lines[1], lines
+      # plain, compat, then whatever the retry under Context(DEV=...) managed
+      assert len(lines) == 3, lines
+      assert lines[0].startswith("  - plain unpickle: UnpicklingError"), lines
+      assert lines[1].startswith("  - compat unpickle:"), lines
+      assert CHESTNUT_DEV in lines[2], lines

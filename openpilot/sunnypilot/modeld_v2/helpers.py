@@ -12,6 +12,9 @@ import inspect
 import importlib
 import enum
 
+from openpilot.common.file_chunker import open_file_chunked
+from openpilot.common.swaglog import cloudlog
+
 
 def _pad_args(func, args, kwargs):
   try:
@@ -90,11 +93,35 @@ class DynamicTinygradUnpickler(pickle.Unpickler):
     return real_class
 
 
-def load_oob(f):
+def _read_oob(f, unpickler_cls):
   opcodes = f.read(struct.unpack('<q', f.read(8))[0])
   def buffers():
     while (h := f.read(8)):
       pb = pickle.PickleBuffer(bytearray(struct.unpack('<q', h)[0]))
       f.readinto(pb)
       yield pb
-  return DynamicTinygradUnpickler(io.BytesIO(opcodes), buffers=buffers()).load()
+  return unpickler_cls(io.BytesIO(opcodes), buffers=buffers()).load()
+
+
+def load_oob(f):
+  """Load from an already open stream with the compatibility unpickler."""
+  return _read_oob(f, DynamicTinygradUnpickler)
+
+
+def load_driving_pkl(path):
+  """Load a driving pkl, preferring a straight unpickle.
+
+  DynamicTinygradUnpickler wraps every tinygrad global to absorb signature drift between the
+  tinygrad a model was compiled with and the one running it. That wrapping changes what those
+  globals are - an enum comes back as a function - so a graph that holds one and reads an
+  attribute off it dies with AttributeError. It is only worth that risk once a straight
+  unpickle has already failed, which is what happens when the two tinygrads really do differ.
+  """
+  with open_file_chunked(path) as f:
+    try:
+      return _read_oob(f, pickle.Unpickler)
+    except Exception:
+      cloudlog.warning("plain unpickle failed, retrying with the compatibility unpickler", exc_info=True)
+
+  with open_file_chunked(path) as f:
+    return _read_oob(f, DynamicTinygradUnpickler)
