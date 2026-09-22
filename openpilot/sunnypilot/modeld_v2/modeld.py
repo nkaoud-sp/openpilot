@@ -104,6 +104,24 @@ def _tensor_dtype(dtype):
   return dtype
 
 
+def _warp_pkl_path(chestnut: bool, frame_w: int, frame_h: int):
+  return MODELD_MODELS_DIR / f'{"big_" if chestnut else ""}driving_warp_{frame_w}x{frame_h}_tinygrad.pkl'
+
+
+def _available_warp_sizes(chestnut: bool) -> list[tuple[int, int]]:
+  """Frame sizes there is a compiled warp for. The upstream run JIT is resolution independent,
+  so these are what decides which frame sizes the model can be fed."""
+  sizes = []
+  prefix = 'big_' if chestnut else ''
+  for path in MODELD_MODELS_DIR.glob(f'{prefix}driving_warp_*_tinygrad.pkl'):
+    try:
+      width, height = path.name.split('_warp_')[1].split('_tinygrad')[0].split('x')
+      sizes.append((int(width), int(height)))
+    except (IndexError, ValueError):
+      continue
+  return sizes
+
+
 def input_view(buffer: Buffer, shape: tuple[int, ...], dtype: DType, offset: int) -> Tensor:
   view = buffer.view(math.prod(shape), dtype, offset).ensure_allocated()
   return Tensor(UOp.from_buffer(view)).reshape(shape)
@@ -155,7 +173,7 @@ class ModelState(ModelStateBase):
     self.is_run_model = 'run_model' in jits
     self.is_upstream_run = 'run' in jits and 'input_specs' in jits and 'output_specs' in jits
     if self.is_upstream_run:
-      self._init_upstream_run(jits, cam_w, cam_h, bundle)
+      self._init_upstream_run(jits, cam_w, cam_h, bundle, both_cameras)
       return
 
     # chestnut runs comma four sized frames: on a bigger camera, convert on the device GPU before the frames cross the link
@@ -232,13 +250,10 @@ class ModelState(ModelStateBase):
       self.full_frames = {k: Tensor(np.zeros(nv12_info[3], dtype=np.uint8), device=self.WARP_DEV).contiguous().realize() for k in self._vision_input_names}
       self.warp(**{k: self.input_queues[k] for k in WARP_INPUTS}, frame=self.full_frames[self._road_key], big_frame=self.full_frames[self._wide_key])
 
-  def _init_upstream_run(self, jits, cam_w, cam_h, bundle):
+  def _init_upstream_run(self, jits, cam_w, cam_h, bundle, both_cameras=True):
     self.is_run_model = True
     self.run_policy = None
     self.warp = None
-    self.stage = None
-    self.frame_scale = np.eye(3, dtype=np.float32)
-    self.c4_intrinsics = False
     self.full_frames = {}
     self._blob_cache = {}
     self.frame_buffers = {}
@@ -265,12 +280,29 @@ class ModelState(ModelStateBase):
     self._policy_slices_list = []
     self._combined_model_type = 'supercombo'
 
-    nv12_info = get_nv12_info(cam_w, cam_h)
+    # The run JIT takes one fixed new_img, so unlike the sunnypilot schema the camera resolution
+    # is not baked into it - it lives in the warp. That leaves the downscale free to stand in front
+    # of a warp compiled for the smaller frame, which is what keeps a 3X off the 7.5 MB per frame
+    # pair that native frames cost over the link.
+    frame_w, frame_h = cam_w, cam_h
+    self.stage = None
+    if self.chestnut:
+      mode = frame_mode()
+      frame_w, frame_h = select_frame_size(_available_warp_sizes(self.chestnut), cam_w, cam_h, native=(mode == "native"))
+      if (frame_w, frame_h) != (cam_w, cam_h):
+        self.stage = make_frame_stage((cam_w, cam_h), 'QCOM' if COMMA_HARDWARE else 'CPU', mode, both_cameras)
+      note = f"{mode}: {cam_w}x{cam_h} camera -> {frame_w}x{frame_h} warp input"
+      cloudlog.warning(f"chestnut frames: {note}")
+      Params().put("ChestnutFrameMode", note)
+    self.frame_scale = self.stage.scale if self.stage is not None else np.eye(3, dtype=np.float32)
+    self.c4_intrinsics = self.stage is not None and self.stage.c4_intrinsics
+
+    nv12_info = get_nv12_info(frame_w, frame_h)
     self.frame_copy_size = nv12_copy_size(*nv12_info[:3])
     self.frame_buf_params = dict.fromkeys(self._vision_input_names, nv12_info)
     self._pack_upstream_inputs()
 
-    warp_path = MODELD_MODELS_DIR / f'{"big_" if self.chestnut else ""}driving_warp_{cam_w}x{cam_h}_tinygrad.pkl'
+    warp_path = _warp_pkl_path(self.chestnut, frame_w, frame_h)
     if not warp_path.is_file():
       raise FileNotFoundError(f"Missing tinygrad driving warp pkl for upstream run-schema model: {warp_path}")
     with open(warp_path, 'rb') as f:
@@ -457,13 +489,17 @@ class ModelState(ModelStateBase):
   def _run_upstream(self, bufs: dict[str, VisionBuf], transforms: dict[str, np.ndarray],
                     inputs: dict[str, np.ndarray],
                     after_enqueue: Callable[[], None] | None = None) -> dict[str, np.ndarray] | None:
+    # warmup passes frames already at the warp input size as numpy arrays
+    converted = (self.stage.process(bufs, inputs.get('reproj_gains', (1.0, 1.0)))
+                 if self.stage is not None and not any(isinstance(buf, np.ndarray) for buf in bufs.values()) else None)
     for i, key in enumerate(self._vision_input_names):
       buf = bufs[key]
-      data = buf.data if hasattr(buf, 'data') else buf
+      data = converted[key] if converted is not None else (buf.data if hasattr(buf, 'data') else buf)
       np.copyto(self.frames[i], np.frombuffer(data, dtype=np.uint8, count=self.frame_copy_size))
 
-    self.numpy_inputs['tfm'][0] = transforms[self._road_key].reshape(3, 3)
-    self.numpy_inputs['tfm'][1] = transforms[self._wide_key].reshape(3, 3)
+    # the transforms are built for the camera, so rescale them onto the frame the warp actually gets
+    self.numpy_inputs['tfm'][0] = self.frame_scale @ transforms[self._road_key].reshape(3, 3)
+    self.numpy_inputs['tfm'][1] = self.frame_scale @ transforms[self._wide_key].reshape(3, 3)
 
     desire_key = self.desire_key
     if desire_key in inputs:

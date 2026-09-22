@@ -122,7 +122,9 @@ if not os.getenv('SKIP_TINYGRAD_COMPILE'):
   warp_deps = [File("#openpilot/system/camerad/cameras/nv12_info.py")]
   for chestnut in [False, True] if CHESTNUT else [False]:
     file_prefix, cmd_flags = ('big_', chestnut_tg_flags) if chestnut else ('', tg_flags)
-    for cam_w, cam_h in camera_configs:
+    # chestnut needs a warp for the resampled frame too, so the downscale can stand in front of it
+    warp_configs = dict.fromkeys(camera_configs + (chestnut_camera_configs if chestnut else []))
+    for cam_w, cam_h in warp_configs:
       warp_pkl_path = File(f"models/{file_prefix}driving_warp_{cam_w}x{cam_h}_tinygrad.pkl").abspath
       stride, y_height, uv_height, _ = get_nv12_info(cam_w, cam_h)
       cmd = (f'{warp_pythonpath} {cmd_flags} {mac_brew_string} {taskset}python3 "{warp_compiler}" '
