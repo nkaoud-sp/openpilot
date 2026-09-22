@@ -235,6 +235,26 @@ def dry_run() -> list[str]:
   except Exception:
     lines.append(f"  - FAILED after {time.monotonic() - started:.1f}s")
     lines += [f"  {line}" for line in traceback.format_exc().strip().splitlines()[-14:]]
+
+  return lines + _small_model_lines(camera)
+
+
+def _small_model_lines(camera) -> list[str]:
+  """modeld builds the small model too whenever chestnut is present, as the fallback for an eGPU
+  that drops out mid-drive. It used to do that unguarded, so a small model that would not load took
+  a perfectly good big model down with it - check it here rather than from the car."""
+  from openpilot.common.params import Params
+
+  lines = ["fallback small model:"]
+  try:
+    from openpilot.sunnypilot.modeld_v2.modeld import ModelState
+    ModelState(cam_w=camera.width, cam_h=camera.height, chestnut=False)
+    lines.append("  - loads ok, the eGPU has something to fall back to")
+  except Exception as e:
+    lines.append(f"  - will not load: {type(e).__name__}: {str(e)[:MAX_ERROR_CHARS]}")
+    lines.append("  - modeld runs chestnut-only; a mid-drive eGPU failure has no fallback")
+  if error := Params().get("ModelFallbackLastError"):
+    lines += ["  - modeld last recorded:"] + [f"    {line}" for line in error.strip().splitlines()[-6:]]
   return lines
 
 

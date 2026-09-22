@@ -625,7 +625,18 @@ def main(demo=False):
     if model is not None:
       params.remove("ChestnutModelError")
 
-  small_model = ModelState(cam_w=vipc_client_main.width, cam_h=vipc_client_main.height, chestnut=False) if model is None or CHESTNUT else None
+  small_model = None
+  if model is None or CHESTNUT:
+    try:
+      small_model = ModelState(cam_w=vipc_client_main.width, cam_h=vipc_client_main.height, chestnut=False)
+      params.put("ModelFallbackLastError", "")
+    except Exception:
+      # the small model is only the fallback for a chestnut that drops out mid-drive. Losing it must
+      # not take a working big model down too, so carry on without a fallback and leave a note.
+      cloudlog.exception("small model load failed")
+      params.put("ModelFallbackLastError", "load failed:\n" + traceback.format_exc()[-900:])
+      if model is None:
+        raise
   if model is None:
     model = small_model
   params.put_bool("ChestnutLoading", False)
@@ -786,7 +797,9 @@ def main(demo=False):
       params.put("ChestnutLastError", f"failed after {run_count} runs:\n" + traceback.format_exc()[-900:])
       params.put_bool("ChestnutModelError", True)
       params.put_bool("ChestnutActive", False)
-      assert small_model is not None
+      if small_model is None:
+        # nothing to fall back to, so let it die with the real traceback rather than an assertion
+        raise
       model = small_model
       if chestnut_state is not None:
         chestnut_state.big = False
