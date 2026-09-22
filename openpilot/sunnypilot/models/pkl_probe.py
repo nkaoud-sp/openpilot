@@ -206,6 +206,7 @@ def dry_run() -> list[str]:
   eGPU, so whatever modeld would hit shows up here instead.
   """
   from openpilot.common.hardware import HARDWARE
+  from openpilot.common.params import Params
   from openpilot.common.transformations.camera import _ar_ox_fisheye, _os_fisheye
   from openpilot.selfdrive.modeld.helpers import chestnut_present
 
@@ -222,6 +223,11 @@ def dry_run() -> list[str]:
     state = ModelState(cam_w=camera.width, cam_h=camera.height, chestnut=True)
     schema = "upstream run" if getattr(state, 'is_upstream_run', False) else "sunnypilot"
     lines.append(f"  - init ok in {time.monotonic() - started:.1f}s, {schema} schema")
+
+    # the camera resolution above says nothing about whether the frame stage engaged, so report
+    # what the model was actually built around
+    lines.append(f"  - frames: {Params().get('ChestnutFrameMode') or 'unknown'}")
+    lines.append(f"  - c4 intrinsics: {getattr(state, 'c4_intrinsics', False)}")
 
     warming = time.monotonic()
     state.warmup()
@@ -260,7 +266,7 @@ def main() -> None:
 
   if args.dry_run:
     _, bundle_lines = selected_chestnut_pkl()
-    print("\n".join([f"tinygrad_repo: {tinygrad_head()}"] + bundle_lines + dry_run()))
+    print("\n".join([f"tinygrad_repo: {tinygrad_head()}"] + bundle_lines + warp_lines() + dry_run()))
     return
 
   paths = args.paths
