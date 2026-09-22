@@ -192,6 +192,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LaunchAssist", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"LaunchEagerness", {PERSISTENT | BACKUP, INT, "7"}},
     {"LanePolicyEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"LanePolicyE2EBlend", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"LanePolicyLeadFallback", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"LanePolicyOneLineFallback", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"LanePolicyVisualIndicator", {PERSISTENT | BACKUP, BOOL, "1"}},

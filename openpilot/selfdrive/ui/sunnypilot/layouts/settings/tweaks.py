@@ -60,6 +60,12 @@ class LanePolicySettingsLayout(Widget):
       param="LanePolicyOneLineFallback",
       enabled=lambda: ui_state.params.get_bool("LanePolicyEnabled"),
     )
+    self._e2e_blend = toggle_item_sp(
+      title=lambda: tr("E2E Blend Mode"),
+      description=lambda: tr("For clean two-line lane centering, blend the lane target with the model path shape instead of using only lane geometry."),
+      param="LanePolicyE2EBlend",
+      enabled=lambda: ui_state.params.get_bool("LanePolicyEnabled"),
+    )
     self._lead_fallback = toggle_item_sp(
       title=lambda: tr("Lead Fallback"),
       description=lambda: tr("When lane-line fallback is unavailable, use a detected lead vehicle as a low-authority lateral reference."),
@@ -76,6 +82,7 @@ class LanePolicySettingsLayout(Widget):
     self._scroller = Scroller([
       self._back_button,
       self._one_line_fallback,
+      self._e2e_blend,
       self._lead_fallback,
       self._visual_indicator,
     ], line_separator=True, spacing=0)

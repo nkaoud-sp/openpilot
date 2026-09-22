@@ -5,7 +5,7 @@ import numpy as np
 
 from openpilot.cereal import log
 from openpilot.selfdrive.controls.lib.ldw import CAMERA_OFFSET
-from openpilot.selfdrive.modeld.constants import ModelConstants
+from openpilot.selfdrive.modeld.constants import ModelConstants, Plan
 
 try:
   from openpilot.common.swaglog import cloudlog
@@ -26,6 +26,10 @@ LANE_LOCK_WIDTH_TIME = 9.95
 LANE_LOCK_ONE_LINE_HOLD_TIME = 1.00
 LANE_LOCK_FIT_START = 8.0
 LANE_LOCK_FIT_END = 55.0
+LANE_LOCK_E2E_BLEND_START = 10.0
+LANE_LOCK_E2E_BLEND_END = 45.0
+LANE_LOCK_E2E_FALLBACK_END = 30.0
+LANE_LOCK_PATH_WEIGHT_SPREAD = 0.25
 LANE_LOCK_MIN_LOOKAHEAD = 25.0
 LANE_LOCK_MAX_LOOKAHEAD = 45.0
 LANE_LOCK_HEADING_GAIN = 0.55
@@ -217,10 +221,60 @@ def get_lead_center_correction(model_output: dict[str, np.ndarray], v_ego: float
   return float(np.clip(correction, -LANE_LOCK_LEAD_MAX_CORRECTION, LANE_LOCK_LEAD_MAX_CORRECTION))
 
 
+def get_e2e_blend_gain(x: np.ndarray | float) -> np.ndarray | float:
+  progress = np.clip((np.asarray(x) - LANE_LOCK_E2E_BLEND_START) /
+                     (LANE_LOCK_E2E_BLEND_END - LANE_LOCK_E2E_BLEND_START), 0.0, 1.0)
+  return progress ** 3 * (10.0 + progress * (-15.0 + 6.0 * progress))
+
+
+def get_e2e_blended_center_correction(model_output: dict[str, np.ndarray], center_y: np.ndarray,
+                                      x: np.ndarray, v_ego: float) -> float:
+  position = np.asarray(model_output['plan'][0, :, Plan.POSITION], dtype=np.float64)
+  if position.ndim != 2 or position.shape[1] < 2:
+    raise ValueError("E2E position path has an invalid shape")
+
+  plan_x, plan_y = position[:, 0], position[:, 1]
+  valid_plan = np.isfinite(plan_x) & np.isfinite(plan_y)
+  plan_x, plan_y = plan_x[valid_plan], plan_y[valid_plan]
+  if plan_x.shape[0] < 4 or np.any(np.diff(plan_x) <= 0.0):
+    raise ValueError("E2E position path is not a finite increasing path")
+
+  fit = (x >= LANE_LOCK_FIT_START) & (x <= LANE_LOCK_E2E_FALLBACK_END)
+  if np.count_nonzero(fit) < 3:
+    raise ValueError("lane horizon has too few E2E blend samples")
+  if plan_x[0] > x[fit][0] or plan_x[-1] < x[fit][-1]:
+    raise ValueError("E2E position path does not cover the blend horizon")
+
+  fit = (x >= LANE_LOCK_FIT_START) & (x <= LANE_LOCK_FIT_END) & (x <= plan_x[-1])
+  fit_x = x[fit]
+  e2e_y = np.interp(fit_x, plan_x, plan_y)
+  # Convert the lane midpoint from camera coordinates to vehicle centerline
+  # coordinates. A lane centered on the car has midpoint y=-CAMERA_OFFSET.
+  center_vehicle_y = center_y[fit] + CAMERA_OFFSET
+  if not np.all(np.isfinite(center_vehicle_y - e2e_y)):
+    raise ValueError("lane/E2E blend path is not finite")
+
+  heading, offset = np.polyfit(fit_x, center_vehicle_y - e2e_y, 1)
+  aligned_e2e = e2e_y + offset + heading * fit_x
+  gain = get_e2e_blend_gain(fit_x)
+  target = aligned_e2e + gain * (center_vehicle_y - aligned_e2e)
+  lookahead = float(np.clip(2.0 * v_ego, LANE_LOCK_MIN_LOOKAHEAD, LANE_LOCK_MAX_LOOKAHEAD))
+  field = gain * (target - e2e_y - (1.0 - LANE_LOCK_HEADING_GAIN) * heading * fit_x)
+  weights = np.exp(-0.5 * ((fit_x - lookahead) / (LANE_LOCK_PATH_WEIGHT_SPREAD * lookahead)) ** 2)
+  weights *= np.gradient(fit_x) * fit_x ** 2
+  if np.dot(weights, gain) <= 0.0:
+    raise ValueError("E2E blend weights are degenerate")
+
+  error = float(get_e2e_blend_gain(lookahead) * np.dot(weights, field) / np.dot(weights, gain))
+  correction = 2.0 * error / (lookahead * lookahead)
+  return float(np.clip(correction, -LANE_LOCK_MAX_CENTER_CORRECTION, LANE_LOCK_MAX_CENTER_CORRECTION))
+
+
 def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v_ego: float,
                     blinkers_active: bool = False, lane_policy_enabled: bool = False,
                     one_line_fallback_enabled: bool = True,
                     lead_fallback_enabled: bool = False,
+                    e2e_blend_enabled: bool = False,
                     constants: type = ModelConstants) -> float:
   """Anchor the e2e curvature to a stable lane midpoint with a bounded correction.
 
@@ -342,15 +396,18 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
       # the 0.75 s confidence gate would be skipped entirely.
       _lane_lock_arm_time = 0.0
     else:
-      _, heading, offset = np.polyfit(x[fit], center_y[fit], 2)
-      offset += CAMERA_OFFSET
-      lookahead = float(np.clip(2.0 * v_ego, LANE_LOCK_MIN_LOOKAHEAD, LANE_LOCK_MAX_LOOKAHEAD))
-      heading_scale = min(1.0, LANE_LOCK_HEADING_CURVATURE_FADE / max(abs(e2e_curvature), 1e-6))
-      center_correction = (2.0 * (LANE_LOCK_HEADING_GAIN * heading_scale * heading * lookahead + offset) /
-                           (lookahead * lookahead))
-      center_correction = float(np.clip(center_correction,
-                                        -LANE_LOCK_MAX_CENTER_CORRECTION,
-                                        LANE_LOCK_MAX_CENTER_CORRECTION))
+      if e2e_blend_enabled and not _lane_lock_one_line_hold:
+        center_correction = get_e2e_blended_center_correction(model_output, center_y, x, v_ego)
+      else:
+        _, heading, offset = np.polyfit(x[fit], center_y[fit], 2)
+        offset += CAMERA_OFFSET
+        lookahead = float(np.clip(2.0 * v_ego, LANE_LOCK_MIN_LOOKAHEAD, LANE_LOCK_MAX_LOOKAHEAD))
+        heading_scale = min(1.0, LANE_LOCK_HEADING_CURVATURE_FADE / max(abs(e2e_curvature), 1e-6))
+        center_correction = (2.0 * (LANE_LOCK_HEADING_GAIN * heading_scale * heading * lookahead + offset) /
+                             (lookahead * lookahead))
+        center_correction = float(np.clip(center_correction,
+                                          -LANE_LOCK_MAX_CENTER_CORRECTION,
+                                          LANE_LOCK_MAX_CENTER_CORRECTION))
     if abs(center_correction) < LANE_LOCK_CORRECTION_DEADBAND:
       center_correction = 0.0
 

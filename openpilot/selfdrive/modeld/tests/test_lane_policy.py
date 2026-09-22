@@ -10,7 +10,8 @@ from openpilot.selfdrive.modeld.constants import ModelConstants
 def make_model_output(left_prob: float = 0.99, right_prob: float = 0.99, lane_width: float = 3.6,
                       lane_width_end: float | None = None, lane_center: float = 0.0,
                       lane_heading: float = 0.0, lead_prob: float = 0.0,
-                      lead_x: float = 35.0, lead_y: float = 0.0) -> dict[str, np.ndarray]:
+                      lead_x: float = 35.0, lead_y: float = 0.0,
+                      plan_y: np.ndarray | None = None) -> dict[str, np.ndarray]:
   x = np.asarray(ModelConstants.X_IDXS, dtype=np.float64)
   lane_lines = np.zeros((1, 4, len(x), 2), dtype=np.float64)
   target_width = lane_width if lane_width_end is None else lane_width_end
@@ -25,6 +26,8 @@ def make_model_output(left_prob: float = 0.99, right_prob: float = 0.99, lane_wi
   lane_line_probs[0, 5] = right_prob
   plan = np.zeros((1, len(x), ModelConstants.PLAN_WIDTH), dtype=np.float64)
   plan[0, :, 0] = x
+  if plan_y is not None:
+    plan[0, :, 1] = plan_y
   lead = np.zeros((1, ModelConstants.LEAD_MHP_SELECTION, ModelConstants.LEAD_TRAJ_LEN, ModelConstants.LEAD_WIDTH), dtype=np.float64)
   lead[:, :, :, 0] = lead_x
   lead[:, :, :, 1] = lead_y
@@ -87,6 +90,28 @@ class TestLanePolicy(unittest.TestCase):
     self.arm_lane_policy(output)
     curvature = modeld.apply_lane_lock(output, 0.0, 20.0, lane_policy_enabled=True)
     self.assertGreater(curvature, 0.0)
+
+  def test_e2e_blend_toggle_changes_only_two_line_correction(self):
+    x = np.asarray(ModelConstants.X_IDXS, dtype=np.float64)
+    output = make_model_output(lane_center=0.35, plan_y=np.full_like(x, 0.35 + modeld.CAMERA_OFFSET))
+    self.arm_lane_policy(output)
+    legacy = modeld.apply_lane_lock(output, 0.0, 20.0, lane_policy_enabled=True,
+                                    e2e_blend_enabled=False)
+
+    modeld.reset_lane_lock()
+    self.arm_lane_policy(output)
+    blended = modeld.apply_lane_lock(output, 0.0, 20.0, lane_policy_enabled=True,
+                                     e2e_blend_enabled=True)
+
+    self.assertNotEqual(blended, legacy)
+    self.assertEqual(modeld.get_lane_policy_status()[0], modeld.LANE_POLICY_MODE_TWO_LINE)
+
+  def test_e2e_blend_bad_plan_releases_instead_of_using_bad_anchor(self):
+    output = make_model_output(lane_center=0.35)
+    output['plan'][:] = np.nan
+    self.arm_lane_policy(make_model_output(lane_center=-modeld.CAMERA_OFFSET))
+    self.assertEqual(modeld.apply_lane_lock(output, 0.0010, 20.0, lane_policy_enabled=True,
+                                            e2e_blend_enabled=True), 0.0010)
 
   def test_below_exit_confidence_releases_to_exact_e2e(self):
     self.arm_lane_policy()
