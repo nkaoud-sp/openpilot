@@ -33,6 +33,7 @@ from openpilot.system.ui.widgets.scroller_tici import Scroller
 
 FRAME_BENCHMARK_CMD = ["python3", "-m", "openpilot.selfdrive.modeld.chestnut_frames", "--device", "QCOM"]
 MODEL_PROBE_CMD = ["python3", "-m", "openpilot.sunnypilot.models.pkl_probe"]
+MODEL_DRY_RUN_CMD = MODEL_PROBE_CMD + ["--dry-run"]
 JOB_TIMEOUT = 600
 
 
@@ -255,6 +256,16 @@ class TweaksLayout(Widget):
       enabled=lambda: ui_state.is_offroad(),
     )
 
+    self._model_dry_run = button_item_sp(
+      title=lambda: tr("Big Model Dry Run"),
+      button_text=lambda: tr("Run"),
+      description=lambda: tr("Bring the selected chestnut model up on the eGPU right here and run one frame " +
+                            "through it, the same way modeld does on a drive, and show the traceback if it " +
+                            "fails. Saves finding out from the car. Offroad only, takes a few minutes."),
+      callback=self._on_model_dry_run,
+      enabled=lambda: ui_state.is_offroad(),
+    )
+
     return [
       self._remember_experimental_mode,
       self._dynamic_follow,
@@ -273,6 +284,7 @@ class TweaksLayout(Widget):
       self._chestnut_ray_matching,
       self._frame_benchmark,
       self._model_probe,
+      self._model_dry_run,
     ]
 
   def _hazard_flashing(self) -> bool:
@@ -307,9 +319,21 @@ class TweaksLayout(Widget):
   def _on_model_probe(self):
     self._start_job(tr("Inspecting the selected chestnut model file, this takes a minute..."), self._run_model_probe, rich=True)
 
+  def _on_model_dry_run(self):
+    self._start_job(tr("Loading the big model onto chestnut and running a frame, this takes a few minutes..."),
+                    self._run_model_dry_run, rich=True)
+
   @staticmethod
   def _run_model_probe() -> str:
-    proc = subprocess.run(MODEL_PROBE_CMD, cwd=BASEDIR, capture_output=True, text=True, timeout=JOB_TIMEOUT)
+    return TweaksLayout._run_probe(MODEL_PROBE_CMD)
+
+  @staticmethod
+  def _run_model_dry_run() -> str:
+    return TweaksLayout._run_probe(MODEL_DRY_RUN_CMD)
+
+  @staticmethod
+  def _run_probe(cmd: list[str]) -> str:
+    proc = subprocess.run(cmd, cwd=BASEDIR, capture_output=True, text=True, timeout=JOB_TIMEOUT)
     output = proc.stdout.strip()
     if proc.returncode != 0 or not output:
       output = f"exit code {proc.returncode}\n{output}\n{proc.stderr.strip()[-800:]}"

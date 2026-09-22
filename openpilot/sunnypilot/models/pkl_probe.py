@@ -17,6 +17,8 @@ import glob
 import os
 import struct
 import subprocess
+import time
+import traceback
 
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.file_chunker import get_existing_chunks, open_file_chunked
@@ -196,6 +198,40 @@ def warp_lines() -> list[str]:
   return lines
 
 
+def dry_run() -> list[str]:
+  """Bring the big model up the way modeld does, but offroad and in this process.
+
+  modeld only runs onroad, so without this the only way to find out whether a model gets past
+  the load is to go and drive. This does the same init and the same warmup pass against the
+  eGPU, so whatever modeld would hit shows up here instead.
+  """
+  from openpilot.common.hardware import HARDWARE
+  from openpilot.common.transformations.camera import _ar_ox_fisheye, _os_fisheye
+  from openpilot.selfdrive.modeld.helpers import chestnut_present
+
+  if not chestnut_present():
+    return ["dry run: chestnut is not attached"]
+
+  # the same camera the build picks its warp resolution from
+  camera = _os_fisheye if HARDWARE.get_device_type() == "mici" else _ar_ox_fisheye
+  lines = [f"dry run: {camera.width}x{camera.height} camera on chestnut"]
+
+  started = time.monotonic()
+  try:
+    from openpilot.sunnypilot.modeld_v2.modeld import ModelState
+    state = ModelState(cam_w=camera.width, cam_h=camera.height, chestnut=True)
+    schema = "upstream run" if getattr(state, 'is_upstream_run', False) else "sunnypilot"
+    lines.append(f"  - init ok in {time.monotonic() - started:.1f}s, {schema} schema")
+
+    warming = time.monotonic()
+    state.warmup()
+    lines.append(f"  - warmup ok in {time.monotonic() - warming:.1f}s, the model runs")
+  except Exception:
+    lines.append(f"  - FAILED after {time.monotonic() - started:.1f}s")
+    lines += [f"  {line}" for line in traceback.format_exc().strip().splitlines()[-14:]]
+  return lines
+
+
 def report(paths: list[str] | None = None, attempt_load: bool = True) -> str:
   lines = [f"tinygrad_repo: {tinygrad_head()}"]
 
@@ -219,7 +255,13 @@ def main() -> None:
   parser.add_argument('paths', nargs='*', help='pkls to inspect; default is the selected chestnut bundle')
   parser.add_argument('--all', action='store_true', help='inspect every downloaded pkl')
   parser.add_argument('--no-load', action='store_true', help='skip the load attempt, inspect only')
+  parser.add_argument('--dry-run', action='store_true', help='bring the big model up the way modeld does')
   args = parser.parse_args()
+
+  if args.dry_run:
+    _, bundle_lines = selected_chestnut_pkl()
+    print("\n".join([f"tinygrad_repo: {tinygrad_head()}"] + bundle_lines + dry_run()))
+    return
 
   paths = args.paths
   if args.all:
