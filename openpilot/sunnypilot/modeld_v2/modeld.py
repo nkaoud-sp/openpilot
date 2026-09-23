@@ -663,6 +663,7 @@ def main(demo=False):
   # so keep the timing that decides it somewhere readable once the drive is over
   run_stats = RunStats(model.constants.MODEL_FREQ)
   RUN_STATS_INTERVAL = round(model.constants.MODEL_FREQ) * 10
+  last_run_end = time.perf_counter()
   frame_id = 0
   last_vipc_frame_id = 0
   run_count = 0
@@ -813,7 +814,9 @@ def main(demo=False):
     mt2 = time.perf_counter()
     model_execution_time = mt2 - mt1
 
-    run_stats.update(model_execution_time, vipc_dropped_frames)
+    # mt1 is where the model starts, so this is the whole frame period minus the model itself
+    run_stats.update(model_execution_time, mt1 - last_run_end, vipc_dropped_frames)
+    last_run_end = mt2
     if run_stats.runs % RUN_STATS_INTERVAL == 0:
       params.put("ModelRunStats", run_stats.summary())
 
