@@ -1,9 +1,10 @@
+import functools
 import sys
 import time
 from pathlib import Path
 
-from openpilot.common.hardware import AGNOS
-from openpilot.common.hardware.usb import CHESTNUT_USB_PRODUCT, USB_DEVICES_PATH, is_chestnut_usb_id
+from openpilot.common.hardware import AGNOS, HARDWARE
+from openpilot.common.hardware.usb import CHESTNUT_USB_PRODUCT, USB_DEVICES_PATH, cable_connected, is_chestnut_usb_id
 
 MODELS_DIR = Path(__file__).resolve().parent / 'models'
 
@@ -42,3 +43,12 @@ def chestnut_compiled() -> bool:
   path = modeld_pkl_path(chestnut=True)
   return path.is_file() and all(
     (MODELS_DIR / f'big_driving_warp_{size}_tinygrad.pkl').is_file() for size in ('1344x760', '1928x1208'))
+
+
+@functools.cache
+def reproject_expected() -> bool:
+  """reprojectd serves the 3X cameras as a comma 4's for the big model: a 3X with a chestnut and the big model and its warps in place.
+  The chestnut test is modeld's, a cable counting before the chestnut enumerates, so the two always agree on the frames. Decided
+  once per process, as modeld does: the manager starts reprojectd and reprojectcalibd on it, so a chestnut plugged in later takes
+  a reboot."""
+  return HARDWARE.get_device_type() == "tizi" and chestnut_compiled() and (chestnut_present() or cable_connected())
