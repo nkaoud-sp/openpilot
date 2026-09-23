@@ -1,7 +1,10 @@
+import time
+
 import numpy as np
 import pyray as rl
 from openpilot.cereal import log
 from openpilot.cereal.visionipc import VisionStreamType
+from openpilot.common.hardware import COMMA_HARDWARE
 from openpilot.selfdrive.ui import UI_BORDER_SIZE
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.selfdrive.ui.onroad.alert_renderer import AlertRenderer
@@ -34,6 +37,13 @@ BORDER_COLORS = {
   UIStatus.ENGAGED: rl.Color(0x16, 0x7F, 0x40, 0xFF),  # Green for engaged state
 }
 
+# The 3X's UI renders on a free 20 fps timer, so its GPU frame drifts through the camera's 50 ms period and, a few minutes in
+# every ten, lands on the reprojection stage (3-9 ms after a frame) or the driver-monitoring model (40-10 ms), stalling them
+# by up to 6 and 10 ms. The road view keeps the end of its render this far after the newest frame instead: the quiet gap.
+UI_PHASE_TARGET_NS = 22_000_000
+UI_PHASE_TOLERANCE_NS = 2_000_000
+FRAME_PERIOD_NS = 50_000_000
+UI_PHASE_STEP_FPS = range(10, 31)  # one-frame rates the phase hold may pad a frame to: 33..100 ms
 WIDE_CAM_MAX_SPEED = 10.0  # m/s (22 mph)
 ROAD_CAM_MIN_SPEED = 15.0  # m/s (34 mph)
 INF_POINT = np.array([1000.0, 0.0, 0.0])
@@ -49,6 +59,7 @@ class AugmentedRoadView(CameraView):
     self.view_from_calib = view_frame_from_device_frame.copy()
     self.view_from_wide_calib = view_frame_from_device_frame.copy()
 
+    self._phase_fps = 0
     self._matrix_cache_key = (0, 0.0, 0.0, stream_type, CAMERAD)
     self._cached_matrix: np.ndarray | None = None
     self._content_rect = rl.Rectangle()
@@ -59,7 +70,12 @@ class AugmentedRoadView(CameraView):
     self.driver_state_renderer = DriverStateRenderer()
     self._reproject_debug = ReprojectDebug()
 
+  def hide_event(self):
+    super().hide_event()
+    self._restore_fps()
+
   def _render(self, rect):
+    self._restore_fps()
     # Only render when system is started to avoid invalid data access
     if not ui_state.started:
       return
@@ -104,6 +120,25 @@ class AugmentedRoadView(CameraView):
 
     # Draw colored border based on driving state
     self._draw_border(rect)
+    self._hold_ui_phase()
+
+  def _restore_fps(self):
+    if self._phase_fps:
+      rl.set_target_fps(gui_app.target_fps)
+      self._phase_fps = 0
+
+  def _hold_ui_phase(self):
+    eof = ui_state.sm['narrowRoadCameraState'].timestampEof  # the stage runs off the narrow frame, whichever camera is shown
+    if not COMMA_HARDWARE or not eof:
+      return
+    err = (UI_PHASE_TARGET_NS - (time.clock_gettime_ns(time.CLOCK_BOOTTIME) - eof)) % FRAME_PERIOD_NS
+    if err > FRAME_PERIOD_NS // 2:
+      err -= FRAME_PERIOD_NS
+    if abs(err) > UI_PHASE_TOLERANCE_NS:
+      # raylib pads every frame to its target rate, so one frame at another rate moves its timer by the difference.
+      # sleeping here instead lands late by whatever renders after this view, and a late frame costs a full extra period
+      self._phase_fps = min(UI_PHASE_STEP_FPS, key=lambda fps: abs(1e9 / fps - FRAME_PERIOD_NS - err))
+      rl.set_target_fps(self._phase_fps)
 
   def _handle_mouse_press(self, _):
     if not self._hud_renderer.user_interacting() and self._click_callback is not None:
