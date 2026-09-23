@@ -2,7 +2,7 @@ from openpilot.common.params import Params
 from openpilot.selfdrive.ui.widgets.ssh_key import ssh_key_item
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.widgets import Widget
-from openpilot.system.ui.widgets.list_view import toggle_item
+from openpilot.system.ui.widgets.list_view import toggle_item, multiple_button_item
 from openpilot.system.ui.widgets.scroller_tici import Scroller
 from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog
 from openpilot.system.ui.lib.application import gui_app
@@ -14,6 +14,10 @@ DESCRIPTIONS = {
   'enable_adb': tr_noop(
     "ADB (Android Debug Bridge) allows connecting to your device over USB or over the network. " +
     "See https://docs.comma.ai/how-to/connect-to-comma for more info."
+  ),
+  'reprojection_debug': tr_noop(
+    "The 3X to comma 4 reprojection on the road view. Visual draws its geometry on whichever frame is shown (the narrow/wide blend, " +
+    "the model inputs, the comma 4 frames). Stats shows the timings along the bottom. All shows both."
   ),
   'ssh_key': tr_noop(
     "Warning: This grants SSH access to all public keys in your GitHub settings. Never enter a GitHub username " +
@@ -90,6 +94,15 @@ class DeveloperLayout(Widget):
     )
     self._on_enable_ui_debug(self._params.get_bool("ShowDebugInfo"))
 
+    self._reprojection_debug_toggle = multiple_button_item(
+      lambda: tr("Reprojection Debug"),
+      lambda: tr(DESCRIPTIONS["reprojection_debug"]),
+      buttons=[lambda: tr("None"), lambda: tr("Visual"), lambda: tr("Stats"), lambda: tr("All")],
+      button_width=200,
+      callback=lambda i: self._params.put("ShowReprojectionDebug", i, block=True),
+      selected_index=self._params.get("ShowReprojectionDebug", return_default=True),
+    )
+
     self._scroller = Scroller([
       self._adb_toggle,
       self._ssh_toggle,
@@ -99,6 +112,7 @@ class DeveloperLayout(Widget):
       self._lat_maneuver_toggle,
       self._alpha_long_toggle,
       self._ui_debug_toggle,
+      self._reprojection_debug_toggle,
     ], line_separator=True, spacing=0)
 
     # Toggles should be not available to change in onroad state

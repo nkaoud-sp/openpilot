@@ -78,6 +78,7 @@ class CameraView(Widget):
     # Target stream for switching
     self._target_client: VisionIpcClient | None = None
     self._target_stream_type: VisionStreamType | None = None
+    self._target_name: str = name
     self._switching: bool = False
 
     self._texture_needs_update = True
@@ -123,20 +124,26 @@ class CameraView(Widget):
     """Set a placeholder color to be drawn when no frame is available."""
     self._placeholder_color = color
 
-  def switch_stream(self, stream_type: VisionStreamType) -> None:
-    if self._stream_type == stream_type:
+  def switch_stream(self, stream_type: VisionStreamType, name: str | None = None) -> None:
+    name = name or self._name
+    if self._stream_type == stream_type and self._name == name:
+      # switching back before the pending target delivered a frame: cancel it, or its first frame would still flash through
+      if self._switching:
+        del self._target_client
+        self._target_client, self._target_stream_type, self._switching = None, None, False
       return
 
-    if self._switching and self._target_stream_type == stream_type:
+    if self._switching and self._target_stream_type == stream_type and self._target_name == name:
       return
 
-    cloudlog.debug(f'Preparing switch from {self._stream_type} to {stream_type}')
+    cloudlog.debug(f'Preparing switch from {self._name}:{self._stream_type} to {name}:{stream_type}')
 
     if self._target_client:
       del self._target_client
 
     self._target_stream_type = stream_type
-    self._target_client = VisionIpcClient(self._name, stream_type, conflate=True)
+    self._target_name = name
+    self._target_client = VisionIpcClient(name, stream_type, conflate=True)
     self._switching = True
 
   @property
@@ -327,6 +334,9 @@ class CameraView(Widget):
     assert self._target_client is not None and self._target_stream_type is not None
     self.client = self._target_client
     self._stream_type = self._target_stream_type
+    if self._target_name != self._name:
+      self._name = self._target_name
+      self.available_streams = self.client.available_streams(self._name, block=False)
     self._texture_needs_update = True
 
     # Reset state

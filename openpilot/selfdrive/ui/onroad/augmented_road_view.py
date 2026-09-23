@@ -9,8 +9,10 @@ from openpilot.selfdrive.ui.onroad.driver_state import DriverStateRenderer
 from openpilot.selfdrive.ui.onroad.hud_renderer import HudRenderer
 from openpilot.selfdrive.ui.onroad.model_renderer import ModelRenderer
 from openpilot.selfdrive.ui.onroad.cameraview import CameraView
+from openpilot.selfdrive.ui.onroad.reproject_debug import ReprojectDebug
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.common.transformations.camera import DEVICE_CAMERAS, DeviceCameraConfig, view_frame_from_device_frame
+from openpilot.common.transformations.model import medmodel_intrinsics, sbigmodel_intrinsics, MEDMODEL_INPUT_SIZE
 from openpilot.common.transformations.orientation import rot_from_euler
 
 OpState = log.SelfdriveState.OpenpilotState
@@ -18,6 +20,13 @@ CALIBRATED = log.ExtrinsicsCalibration.Status.calibrated
 NARROW_ROAD_CAM = VisionStreamType.VISION_STREAM_NARROW_ROAD
 WIDE_CAM = VisionStreamType.VISION_STREAM_WIDE_ROAD
 DEFAULT_DEVICE_CAMERA = DEVICE_CAMERAS["tici", "ar0231"]
+CAMERAD = "camerad"
+REPROJECT = "reproject"  # reprojectd's comma 4 frames
+MODEL_INPUT = "modelinput"  # those frames warped into the model's 512x256 inputs
+VIEW_SERVERS = {0: CAMERAD, 1: MODEL_INPUT, 2: REPROJECT}  # ReprojectionView
+WHOLE_FRAME = {MODEL_INPUT, REPROJECT}  # shown whole, letterboxed, never panned
+DEBUG_FRAMES = {CAMERAD: "device", MODEL_INPUT: "model", REPROJECT: "c4"}  # the debug view's frame names
+C4_CAMERA = DEVICE_CAMERAS["mici", "os04c10"]
 
 BORDER_COLORS = {
   UIStatus.DISENGAGED: rl.Color(0x12, 0x28, 0x39, 0xFF),  # Blue for disengaged state
@@ -32,14 +41,15 @@ INF_POINT = np.array([1000.0, 0.0, 0.0])
 
 class AugmentedRoadView(CameraView):
   def __init__(self, stream_type: VisionStreamType = VisionStreamType.VISION_STREAM_NARROW_ROAD):
-    super().__init__("camerad", stream_type)
+    super().__init__(CAMERAD, stream_type)
+    self._debug_frame = "device_narrow"; self._debug_transform: np.ndarray | None = None  # what is on screen, for the debug view
     self._set_placeholder_color(BORDER_COLORS[UIStatus.DISENGAGED])
 
     self.device_camera: DeviceCameraConfig | None = None
     self.view_from_calib = view_frame_from_device_frame.copy()
     self.view_from_wide_calib = view_frame_from_device_frame.copy()
 
-    self._matrix_cache_key = (0, 0.0, 0.0, stream_type)
+    self._matrix_cache_key = (0, 0.0, 0.0, stream_type, CAMERAD)
     self._cached_matrix: np.ndarray | None = None
     self._content_rect = rl.Rectangle()
 
@@ -47,6 +57,7 @@ class AugmentedRoadView(CameraView):
     self._hud_renderer = HudRenderer()
     self.alert_renderer = AlertRenderer()
     self.driver_state_renderer = DriverStateRenderer()
+    self._reproject_debug = ReprojectDebug()
 
   def _render(self, rect):
     # Only render when system is started to avoid invalid data access
@@ -81,6 +92,7 @@ class AugmentedRoadView(CameraView):
     # Draw all UI overlays
     self.model_renderer.render(self._content_rect)
     self._hud_renderer.render(self._content_rect)
+    self._reproject_debug.render(self._content_rect, self._debug_frame, self._debug_transform)
     self.alert_renderer.render(self._content_rect)
     self.driver_state_renderer.render(self._content_rect)
 
@@ -110,7 +122,14 @@ class AugmentedRoadView(CameraView):
     rl.draw_rectangle_rounded_lines_ex(border_rect, border_roundness, 10, UI_BORDER_SIZE, border_color)
 
   def _switch_stream_if_needed(self, sm):
-    if sm['selfdriveState'].experimentalMode and WIDE_CAM in self.available_streams:
+    stage = sm.seen['reprojectState']  # no eGPU, no stage: the setting is ignored rather than showing a stream that never comes
+    name = VIEW_SERVERS.get(ui_state.reproject_view, CAMERAD) if stage else CAMERAD
+    if name != self._name:  # change server on the narrow stream; the wide choice follows once its streams are known
+      self.switch_stream(NARROW_ROAD_CAM, name)
+      return
+    if ui_state.reproject_camera:
+      target = WIDE_CAM if ui_state.reproject_camera == 2 and WIDE_CAM in self.available_streams else NARROW_ROAD_CAM
+    elif sm['selfdriveState'].experimentalMode and WIDE_CAM in self.available_streams:
       v_ego = sm['carState'].vEgo
       if v_ego < WIDE_CAM_MAX_SPEED:
         target = WIDE_CAM
@@ -154,7 +173,8 @@ class AugmentedRoadView(CameraView):
       ui_state.sm.recv_frame['extrinsicsCalibration'],
       self._content_rect.width,
       self._content_rect.height,
-      self.stream_type
+      self.stream_type,
+      self._name,
     )
     if cache_key == self._matrix_cache_key and self._cached_matrix is not None:
       return self._cached_matrix
@@ -162,9 +182,18 @@ class AugmentedRoadView(CameraView):
     # Get camera configuration
     device_camera = self.device_camera or DEFAULT_DEVICE_CAMERA
     is_wide_camera = self.stream_type == WIDE_CAM
-    intrinsic = device_camera.wide_road.intrinsics if is_wide_camera else device_camera.narrow_road.intrinsics
-    calibration = self.view_from_wide_calib if is_wide_camera else self.view_from_calib
-    zoom = 2.0 if is_wide_camera else 1.1
+    if self._name == MODEL_INPUT:  # the model's frames: calibrated, so the overlays need no calibration rotation
+      intrinsic = sbigmodel_intrinsics if is_wide_camera else medmodel_intrinsics
+      calibration = view_frame_from_device_frame
+      zoom = 0.0
+    elif self._name == REPROJECT:  # the comma 4 frames are rendered about the device axes
+      intrinsic = C4_CAMERA.wide_road.intrinsics if is_wide_camera else C4_CAMERA.narrow_road.intrinsics
+      calibration = self.view_from_calib
+      zoom = 0.0
+    else:
+      intrinsic = device_camera.wide_road.intrinsics if is_wide_camera else device_camera.narrow_road.intrinsics
+      calibration = self.view_from_wide_calib if is_wide_camera else self.view_from_calib
+      zoom = 2.0 if is_wide_camera else 1.1
 
     # Calculate transforms for vanishing point
     calib_transform = intrinsic @ calibration
@@ -174,9 +203,13 @@ class AugmentedRoadView(CameraView):
     x, y = self._content_rect.x, self._content_rect.y
     w, h = self._content_rect.width, self._content_rect.height
     cx, cy = intrinsic[0, 2], intrinsic[1, 2]
+    if self._name == MODEL_INPUT:  # the model frames' principal point sits up at the horizon row, not at the frame's centre
+      cx, cy = MEDMODEL_INPUT_SIZE[0] / 2, MEDMODEL_INPUT_SIZE[1] / 2
 
     # Ensure zoom views the whole area
     zoom = max(zoom, w / (2 * cx), h / (2 * cy))
+    if self._name in WHOLE_FRAME:
+      zoom = min(w / (2 * cx), h / (2 * cy))  # the whole frame, letterboxed: a crop would misread as the model's input
 
     # Calculate max allowed offsets with margins
     margin = 5
@@ -185,7 +218,9 @@ class AugmentedRoadView(CameraView):
 
     # Calculate and clamp offsets to prevent out-of-bounds issues
     try:
-      if abs(kep[2]) > 1e-6:
+      if self._name in WHOLE_FRAME:  # no vanishing-point pan: the frame is shown whole
+        x_offset, y_offset = 0, 0
+      elif abs(kep[2]) > 1e-6:
         x_offset = np.clip((kep[0] / kep[2] - cx) * zoom, -max_x_offset, max_x_offset)
         y_offset = np.clip((kep[1] / kep[2] - cy) * zoom, -max_y_offset, max_y_offset)
       else:
@@ -207,6 +242,8 @@ class AugmentedRoadView(CameraView):
       [0.0, 0.0, 1.0]
     ])
     self.model_renderer.set_transform(video_transform @ calib_transform)
+    self._debug_frame = f"{DEBUG_FRAMES[self._name]}_{'wide' if is_wide_camera else 'narrow'}"
+    self._debug_transform = video_transform
 
     return self._cached_matrix
 
