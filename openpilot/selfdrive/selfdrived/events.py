@@ -423,6 +423,7 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
   },
 
   EventName.bigModelLoading: {
+    ET.PERMANENT: NormalPermanentAlert("Loading Driving Model", "Ready in a moment"),
     ET.NO_ENTRY: NoEntryAlert("Big Model Loading"),
   },
 
