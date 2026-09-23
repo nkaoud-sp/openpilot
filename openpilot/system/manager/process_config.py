@@ -88,6 +88,7 @@ procs = [
 
   PythonProcess("modeld", "openpilot.selfdrive.modeld.modeld", only_onroad),
   PythonProcess("reprojectd", "openpilot.selfdrive.modeld.reprojectd", reproject),
+  PythonProcess("reprojectcalibd", "openpilot.selfdrive.modeld.reprojectcalibd", reproject),
   PythonProcess("dmonitoringmodeld", "openpilot.selfdrive.modeld.dmonitoringmodeld", driverview, enabled=(WEBCAM or not PC)),
 
   PythonProcess("sensord", "openpilot.system.sensord.sensord", only_onroad, enabled=not PC),

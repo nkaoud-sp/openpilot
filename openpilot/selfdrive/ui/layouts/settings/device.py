@@ -101,6 +101,7 @@ class DeviceLayout(Widget):
         return
 
       self._params.remove("CalibrationParams")
+      self._params.remove("ReprojectRotation")  # the 3X->comma 4 reprojection's camera alignment: fitted again with the calibration
       self._params.remove("LiveTorqueParameters")
       self._params.remove("LiveParametersV2")
       self._params.remove("LiveDelay")

@@ -160,6 +160,7 @@ class DeviceLayoutMici(NavScroller):
     def reset_calibration_callback():
       params = ui_state.params
       params.remove("CalibrationParams")
+      params.remove("ReprojectRotation")  # the 3X->comma 4 reprojection's camera alignment: fitted again with the calibration
       params.remove("LiveTorqueParameters")
       params.remove("LiveParametersV2")
       params.remove("LiveDelay")

@@ -20,6 +20,7 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import config_realtime_process
 from openpilot.common.transformations.orientation import rot_from_euler, euler_from_rot
 from openpilot.common.swaglog import cloudlog
+from openpilot.selfdrive.modeld.helpers import reproject_expected
 
 MIN_SPEED_FILTER = 15 * CV.MPH_TO_MS
 MAX_VEL_ANGLE_STD = np.radians(0.25)
@@ -173,6 +174,18 @@ class Calibrator:
   def handle_v_ego(self, v_ego: float) -> None:
     self.v_ego = v_ego
 
+  def reproject_ready(self, sm: messaging.SubMaster) -> bool:
+    """False while the 3X->comma 4 reprojection stage (reprojectd) runs on a rotation reprojectcalibd has not fitted yet:
+    the model output this calibration is built on depends on it, so the calibration is held at uncalibrated until then."""
+    if not reproject_expected():
+      return True
+    ready = sm.seen['reprojectState'] and sm['reprojectState'].fitted
+    if not ready and (self.valid_blocks or self.idx or self.cal_status != log.ExtrinsicsCalibration.Status.uncalibrated):
+      # uncalibrated, not recalibrating: that status means the mount moved and raises the offroad mounting alert
+      cloudlog.warning("calibrationd: holding until the reprojection rotation is fitted")
+      self.reset(); self.cal_status = log.ExtrinsicsCalibration.Status.uncalibrated
+    return ready
+
   def get_smooth_rpy(self) -> np.ndarray:
     if self.old_rpy_weight > 0:
       return self.old_rpy_weight * self.old_rpy + (1.0 - self.old_rpy_weight) * self.rpy
@@ -263,7 +276,11 @@ def main() -> NoReturn:
   config_realtime_process([0, 1, 2, 3], 5)
 
   pm = messaging.PubMaster(['extrinsicsCalibration'])
-  sm = messaging.SubMaster(['cameraOdometry', 'carState'], poll='cameraOdometry')
+  # the reprojection messages inform the hold only: absent without an eGPU, quiet while the fitter builds tables, and
+  # neither may make the calibration read invalid
+  reproject = ['reprojectState', 'reprojectFit']
+  sm = messaging.SubMaster(['cameraOdometry', 'carState'] + reproject, poll='cameraOdometry',
+                           ignore_alive=reproject, ignore_avg_freq=reproject, ignore_valid=reproject)
 
   params_reader = Params()
   CP = messaging.log_from_bytes(params_reader.get("CarParams", block=True), car.CarParams)
@@ -275,7 +292,7 @@ def main() -> NoReturn:
     timeout = 0 if sm.frame == -1 else 100
     sm.update(timeout)
 
-    if sm.updated['cameraOdometry']:
+    if sm.updated['cameraOdometry'] and calibrator.reproject_ready(sm):
       calibrator.handle_v_ego(sm['carState'].vEgo)
       new_rpy = calibrator.handle_cam_odom(sm['cameraOdometry'].trans,
                                            sm['cameraOdometry'].rot,

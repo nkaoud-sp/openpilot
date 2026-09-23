@@ -5,7 +5,7 @@ import os
 from enum import IntEnum
 from collections.abc import Callable
 
-from openpilot.cereal import log
+from openpilot.cereal import log, custom
 from opendbc.car.structs import car
 import openpilot.cereal.messaging as messaging
 from openpilot.common.constants import CV
@@ -254,11 +254,29 @@ def below_steer_speed_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.S
     Priority.LOW, VisualAlert.none, AudibleAlert.prompt, 0.4)
 
 
+def reproject_fit_progress(sm: messaging.SubMaster, metric: bool) -> tuple[str, str] | None:
+  """While calibrationd holds for the 3X->comma 4 reprojection's camera alignment (reprojectcalibd): the bar, and what the
+  driver can do about it."""
+  if not sm.seen['reprojectState'] or sm['reprojectState'].fitted:
+    return None
+  Status = custom.ReprojectFit.Status
+  fit = sm['reprojectFit'] if sm.seen['reprojectFit'] else None
+  if fit is not None and fit.status in (Status.building, Status.fitted):  # fitted: until reprojectd has swapped it in
+    return "Aligning cameras: 100%", "Finishing up"
+  # 'model' (calibrationd not valid yet) is the loading alert's job; here it is the couple of seconds after that clears
+  speed = get_display_speed(MIN_SPEED_FILTER, metric)
+  why = str(fit.why) if fit is not None else 'none'
+  action = {'cameras': "Waiting for cameras", 'pair': "Waiting for camera frames", 'speed': f"Drive above {speed}",
+            'straight': "Drive straight", 'features': "Road visibility low"}.get(why, f"Stay above {speed}")
+  return f"Aligning cameras: {fit.pct if fit is not None else 0}%", action
+
+
 def calibration_incomplete_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
   first_word = 'Recalibrating' if sm['extrinsicsCalibration'].calStatus == log.ExtrinsicsCalibration.Status.recalibrating else 'Calibrating'
+  title, action = reproject_fit_progress(sm, metric) or (f"{first_word}: {sm['extrinsicsCalibration'].calPerc:.0f}%",
+                                                     f"Drive Above {get_display_speed(MIN_SPEED_FILTER, metric)}")
   return Alert(
-    f"{first_word}: {sm['extrinsicsCalibration'].calPerc:.0f}%",
-    f"Drive Above {get_display_speed(MIN_SPEED_FILTER, metric)}",
+    title, action,
     AlertStatus.normal, AlertSize.mid,
     Priority.LOWEST, VisualAlert.none, AudibleAlert.none, .2)
 
