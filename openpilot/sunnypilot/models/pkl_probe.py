@@ -188,6 +188,16 @@ def last_error_lines() -> list[str]:
   return ["modeld's last chestnut error:"] + [f"  {line}" for line in error.strip().splitlines()]
 
 
+def run_stats_lines() -> list[str]:
+  """How the model did on frame timing over the last drive."""
+  from openpilot.common.params import Params
+
+  stats = Params().get("ModelRunStats")
+  if not stats:
+    return ["model run stats: nothing recorded this boot"]
+  return ["model run stats:"] + [f"  {line}" for line in stats.strip().splitlines()]
+
+
 def warp_lines() -> list[str]:
   lines = ["warp pkls in selfdrive/modeld/models:"]
   warps = sorted(glob.glob(str(MODELS_DIR / '*driving_warp_*_tinygrad.pkl')))
@@ -273,7 +283,7 @@ def report(paths: list[str] | None = None, attempt_load: bool = True) -> str:
   for path in targets:
     lines += probe(path, attempt_load)
 
-  return "\n".join(lines + warp_lines() + last_error_lines())
+  return "\n".join(lines + warp_lines() + run_stats_lines() + last_error_lines())
 
 
 def main() -> None:

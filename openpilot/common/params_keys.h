@@ -230,6 +230,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
 
     // Model Manager params
     {"ModelFallbackLastError", {CLEAR_ON_MANAGER_START, STRING}},
+    {"ModelRunStats", {CLEAR_ON_MANAGER_START, STRING}},
     {"ModelManager_ActiveBundle", {PERSISTENT, JSON}},
     {"ModelManager_ActiveBundleUSBGPU", {PERSISTENT, JSON}}, //TODO-SP: kept for migration, remove on next sync?
     {"ModelManager_ActiveBundleChestnut", {PERSISTENT, JSON}},

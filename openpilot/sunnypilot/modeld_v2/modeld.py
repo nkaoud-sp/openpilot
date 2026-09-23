@@ -64,6 +64,7 @@ from openpilot.sunnypilot.modeld_v2.compile_modeld import (derive_frame_skip, ma
 from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
 from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
 from openpilot.sunnypilot.modeld_v2.helpers import load_driving_pkl
+from openpilot.sunnypilot.modeld_v2.run_stats import RunStats
 from openpilot.sunnypilot.models.helpers import get_active_bundle
 from openpilot.sunnypilot.selfdrive.controls.lib.relc import RoadEdgeLaneChangeController
 
@@ -658,6 +659,10 @@ def main(demo=False):
 
   # setup filter to track dropped frames
   frame_dropped_filter = FirstOrderFilter(0., 10., 1. / model.constants.MODEL_FREQ)
+  # a dropped camera frame invalidates cameraOdometry, which locationd reports as inputsOK False,
+  # so keep the timing that decides it somewhere readable once the drive is over
+  run_stats = RunStats(model.constants.MODEL_FREQ)
+  RUN_STATS_INTERVAL = round(model.constants.MODEL_FREQ) * 10
   frame_id = 0
   last_vipc_frame_id = 0
   run_count = 0
@@ -807,6 +812,10 @@ def main(demo=False):
       model_output = None
     mt2 = time.perf_counter()
     model_execution_time = mt2 - mt1
+
+    run_stats.update(model_execution_time, vipc_dropped_frames)
+    if run_stats.runs % RUN_STATS_INTERVAL == 0:
+      params.put("ModelRunStats", run_stats.summary())
 
     if model_output is not None:
       modelv2_send = messaging.new_message('modelV2')
