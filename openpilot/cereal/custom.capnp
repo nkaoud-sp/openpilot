@@ -10,13 +10,52 @@ $Cxx.namespace("cereal");
 # DO rename the structs
 # DON'T change the identifier (e.g. @0x81c2f05a394cf4af)
 
-struct CustomReserved0 @0x81c2f05a394cf4af {
+struct ReprojectState @0x81c2f05a394cf4af {
+  # reprojectd: the 3X cameras reprojected into the comma 4 geometry, one per reprojected frame (20 Hz)
+  frameId @0 :UInt32;        # the narrow camera frame the composite was built from
+  stageMs @1 :Float32;       # GPU stage time for this frame
+  rotation @2 :List(Float32); # applied narrow->wide rotation, rotvec in radians (x=pitch, y=yaw, z=roll)
+  fitted @3 :Bool;           # the applied rotation is reprojectcalibd's fit (calibrationd holds until then)
 }
 
-struct CustomReserved1 @0xaedffd8f31e7b55d {
+struct ReprojectFit @0xaedffd8f31e7b55d {
+  # reprojectcalibd: the narrow->wide rotation fit, 2 Hz and on every change
+  enum Status {
+    waiting @0;   # no fit accepted yet; why says what it waits for
+    fitting @1;   # at least one fit accepted, more to come
+    building @2;  # converged, the lookup tables are being built
+    fitted @3;    # done; mean is the result reprojectd swaps in
+  }
+  enum Why {
+    none @0;
+    cameras @1;
+    model @2;
+    speed @3;
+    straight @4;
+    pair @5;
+    features @6;  # the last frame had too little texture to fit
+  }
+  status @0 :Status;
+  why @1 :Why;
+  pct @2 :UInt8;             # progress of the fit, 0-100
+  mean @3 :List(Float32);    # component-wise median of the accepted fits, rotvec in radians
+  lastFrameId @4 :UInt32;    # the narrow camera frame the last fit ran on
+  lastAccepted @5 :Bool;
 }
 
-struct CustomReserved2 @0xf35cc4560bbf6ec2 {
+struct ReprojectOutlines @0xf35cc4560bbf6ec2 {
+  # reprojectd: the debug view's geometry (blend band, model inputs, comma 4 frames) as polygons in the px of each frame the
+  # road view can show, republished when the applied rotation or the calibration moves. Derived from reprojectState and
+  # extrinsicsCalibration, so not logged: a replay recomputes it.
+  struct Item {
+    frame @0 :Text;            # device_narrow | device_wide | c4_narrow | c4_wide | model_narrow | model_wide
+    name @1 :Text;             # legend entry
+    colour @2 :Text;           # amber | green | blue | purple
+    points @3 :List(Float32);  # x0, y0, x1, y1, ...: a closed polygon, or a band's outer edge
+    inner @4 :List(Float32);   # a band's inner edge, same point count; empty for a polygon
+    visible @5 :Bool;          # any of it lands inside the frame
+  }
+  items @0 :List(Item);
 }
 
 struct CustomReserved3 @0xda96579883444c35 {
