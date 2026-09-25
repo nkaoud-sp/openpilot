@@ -1,3 +1,4 @@
+from openpilot.common.hardware import HARDWARE
 from openpilot.common.params import Params
 from openpilot.selfdrive.ui.widgets.ssh_key import ssh_key_item
 from openpilot.selfdrive.ui.ui_state import ui_state
@@ -18,6 +19,10 @@ DESCRIPTIONS = {
   'reprojection_debug': tr_noop(
     "The 3X to comma 4 reprojection on the road view. Visual draws its geometry on whichever frame is shown (the narrow/wide blend, " +
     "the model inputs, the comma 4 frames). Stats shows the timings along the bottom. All shows both."
+  ),
+  'always_reproject': tr_noop(
+    "Turn the 3X cameras into comma 4 frames even when no chestnut is connected, for the stock driving model, as the big model " +
+    "gets with one. Calibration adapts over a few minutes of driving. Takes effect after a reboot."
   ),
   'ssh_key': tr_noop(
     "Warning: This grants SSH access to all public keys in your GitHub settings. Never enter a GitHub username " +
@@ -103,6 +108,14 @@ class DeveloperLayout(Widget):
       selected_index=self._params.get("ShowReprojectionDebug", return_default=True),
     )
 
+    self._always_reproject_toggle = toggle_item(
+      lambda: tr("Always Use Reprojection"),
+      description=lambda: tr(DESCRIPTIONS["always_reproject"]),
+      initial_state=self._params.get_bool("AlwaysReproject"),
+      callback=lambda state: self._params.put_bool("AlwaysReproject", state, block=True),
+      enabled=ui_state.is_offroad,
+    )
+
     self._scroller = Scroller([
       self._adb_toggle,
       self._ssh_toggle,
@@ -113,6 +126,7 @@ class DeveloperLayout(Widget):
       self._alpha_long_toggle,
       self._ui_debug_toggle,
       self._reprojection_debug_toggle,
+      self._always_reproject_toggle,
     ], line_separator=True, spacing=0)
 
     # Toggles should be not available to change in onroad state
@@ -133,6 +147,7 @@ class DeveloperLayout(Widget):
     # TODO: we can do an onroad cycle, but alpha long toggle requires a deinit function to re-enable radar and not fault
     for item in (self._joystick_toggle, self._long_maneuver_toggle, self._lat_maneuver_toggle, self._alpha_long_toggle):
       item.set_visible(not self._is_release)
+    self._always_reproject_toggle.set_visible(not self._is_release and HARDWARE.get_device_type() == "tizi")
 
     # CP gating
     if ui_state.CP is not None:
@@ -161,6 +176,7 @@ class DeveloperLayout(Widget):
       ("LateralManeuverMode", self._lat_maneuver_toggle),
       ("AlphaLongitudinalEnabled", self._alpha_long_toggle),
       ("ShowDebugInfo", self._ui_debug_toggle),
+      ("AlwaysReproject", self._always_reproject_toggle),
     ):
       item.action_item.set_state(self._params.get_bool(key))
 

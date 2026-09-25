@@ -5,6 +5,7 @@ from pathlib import Path
 
 from openpilot.common.hardware import AGNOS, HARDWARE
 from openpilot.common.hardware.usb import CHESTNUT_USB_PRODUCT, USB_DEVICES_PATH, cable_connected, is_chestnut_usb_id
+from openpilot.common.params import Params
 
 MODELS_DIR = Path(__file__).resolve().parent / 'models'
 
@@ -48,7 +49,9 @@ def chestnut_compiled() -> bool:
 @functools.cache
 def reproject_expected() -> bool:
   """reprojectd serves the 3X cameras as a comma 4's for the big model: a 3X with a chestnut and the big model and its warps in place.
-  The chestnut test is modeld's, a cable counting before the chestnut enumerates, so the two always agree on the frames. Decided
-  once per process, as modeld does: the manager starts reprojectd and reprojectcalibd on it, so a chestnut plugged in later takes
-  a reboot."""
-  return HARDWARE.get_device_type() == "tizi" and chestnut_compiled() and (chestnut_present() or cable_connected())
+  The chestnut test is modeld's, a cable counting before the chestnut enumerates, so the two always agree on the frames. The
+  AlwaysReproject developer toggle serves them without one, to the small model. Decided once per process, as modeld
+  does: the manager starts reprojectd and reprojectcalibd on it, so a chestnut plugged in later, or the toggle, takes a reboot."""
+  if HARDWARE.get_device_type() != "tizi":
+    return False
+  return Params().get_bool("AlwaysReproject") or (chestnut_compiled() and (chestnut_present() or cable_connected()))
