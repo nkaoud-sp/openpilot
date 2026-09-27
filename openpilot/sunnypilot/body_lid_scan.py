@@ -659,8 +659,8 @@ def main(argv: list[str] | None = None) -> int:
   args = parser.parse_args(argv)
 
   if args.probe_sub is not None:
-    print(f"probing sub-address 0x{args.probe_sub:02X}: {args.count} tester-presents. Ignition off.", flush=True)
-    played, echoes, replies = run_probe_sub(args.probe_sub, args.count)
+    print(f"probing sub-address 0x{args.probe_sub:02X}: {args.count} tester-presents at {args.gap_ms} ms gap. Ignition off.", flush=True)
+    played, echoes, replies = run_probe_sub(args.probe_sub, args.count, gap_ms=args.gap_ms)
     if not played:
       print(NOT_PLAYED_WARNING)
       return 1
