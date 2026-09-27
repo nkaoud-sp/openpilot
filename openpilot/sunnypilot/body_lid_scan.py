@@ -94,6 +94,7 @@ NRC_NAMES = {
   0x10: "generalReject",
   0x11: "serviceNotSupported",
   0x12: "subFunctionNotSupported",
+  0x13: "incorrectMessageLengthOrInvalidFormat",
   0x21: "busy",
   0x22: "conditionsNotCorrect",
   0x23: "routineNotComplete",
@@ -106,6 +107,10 @@ NRC_NAMES = {
 NRC_UNSUPPORTED = {0x12, 0x31}
 # The ECU does not implement service 0x30 at all (a UDS-only ECU answers every LID this way).
 NRC_SERVICE_NOT_SUPPORTED = 0x11
+
+# Sub-addresses the fork already drives, so the full scan LID-scans them even if a single
+# tester-present in discovery is dropped (the ELM327 send path loses one now and then).
+KNOWN_SUBS = {0x40, 0x90, 0x91, 0x92, 0x93, 0xA5, 0xA6}
 
 DEFAULT_REPORT_DIR = "/data"
 
@@ -361,6 +366,29 @@ class ScanRecorder:
       return f"0x{self.tx_addr:03X} direct (replies on 0x{self.rx_addr:03X})"
     return f"(0x{self.tx_addr:03X}, 0x{self.sub_addr:02X})"
 
+  @staticmethod
+  def _reply_sig(p: "ProbeResult"):
+    # A signature of what the ECU said to a probe, so identical "no such identifier" answers group.
+    if not p.replies:
+      return ("no reply",)
+    return tuple(sorted(detail for _, detail in p.replies))
+
+  def candidate_lids(self) -> list["ProbeResult"]:
+    """LIDs the ECU treats specially: positives, plus any whose reply differs from this ECU's most
+    common reply. An ECU answers absent LIDs the same way every time (its baseline); a LID that
+    answers differently exists but rejected the all-zero probe (wrong control value or length),
+    which is exactly how a real actuator LID looks when probed with no argument."""
+    from collections import Counter
+    if not self.probes:
+      return []
+    sigs = Counter(self._reply_sig(p) for p in self.probes)
+    baseline = sigs.most_common(1)[0][0]
+    out = []
+    for p in self.probes:
+      if p.verdict == "positive" or (self._reply_sig(p) != baseline and p.replies):
+        out.append(p)
+    return out
+
   def report(self, title: str) -> str:
     known_lids = KNOWN_LIDS.get(self.sub_addr, {})
     known_controls = KNOWN_CONTROLS.get(self.sub_addr, {})
@@ -391,6 +419,9 @@ class ScanRecorder:
               + label(p) for p in positives] or ["  none"]
     lines.append("LIDs answering with another negative code (exist, refused):")
     lines += [f"  LID 0x{p.lid:02X} ctrl {p.control.hex(' ')}: {', '.join(d for _, d in p.replies)}" for p in negatives] or ["  none"]
+    candidates = self.candidate_lids()
+    lines.append("candidate LIDs (exist, or rejected the all-zero probe with a non-baseline reply):")
+    lines += [f"  LID 0x{p.lid:02X}: {', '.join(d for _, d in p.replies) or p.verdict}" + label(p) for p in candidates] or ["  none"]
     lines.append("BLINKERS_STATE (0x614) changes during a probe:")
     lines += [f"  LID 0x{p.lid:02X} ctrl {p.control.hex(' ')}: {'; '.join(p.blinker_changes)}" for p in hits] or ["  none"]
     silent_lids = ", ".join(f"0x{p.lid:02X}" for p in silent[:24]) + ("..." if len(silent) > 24 else "")
@@ -483,10 +514,13 @@ def run_script_and_record(frames: Sequence[ScriptFrame], sub_addr: int | None, s
   return recorder
 
 
-def run_subaddr_discovery(subs: Iterable[int] = ALL_LIDS, gap_ms: int = PROBE_GAP_MS, settle_s: float = 2.0):
-  """Tester-present every sub-address behind 0x750; return (played, sorted list of answering subs)."""
-  subs = list(subs)
-  frames = build_subaddr_discovery_frames(subs, gap_ms)
+def run_subaddr_discovery(subs: Iterable[int] = ALL_LIDS, gap_ms: int = PROBE_GAP_MS, settle_s: float = 2.0,
+                          passes: int = 2):
+  """Tester-present every sub-address behind 0x750; return (played, sorted list of answering subs).
+
+  A single tester-present is sometimes lost on the ELM327 send path, so non-responders are re-probed
+  for `passes` rounds. Only the sub-addresses still silent after the last round count as absent.
+  """
   found: set[int] = set()
 
   def on_msgs(batch):
@@ -497,43 +531,57 @@ def run_subaddr_discovery(subs: Iterable[int] = ALL_LIDS, gap_ms: int = PROBE_GA
           if sub is not None:
             found.add(sub)
 
-  played = queue_and_capture(frames, settle_s, on_msgs)
+  remaining = list(subs)
+  played = False
+  for _ in range(max(1, passes)):
+    if not remaining:
+      break
+    ok = queue_and_capture(build_subaddr_discovery_frames(remaining, gap_ms), settle_s, on_msgs)
+    played = played or ok
+    if not ok:
+      break
+    remaining = [x for x in remaining if x not in found]
   return played, sorted(found)
 
 
 def run_full_scan(gap_ms: int = PROBE_GAP_MS, on_progress=None):
   """Discover every 0x750 sub-address, then LID-scan each one that answered.
 
-  Returns (played, subs, recorders): played is False if pandad never took the discovery script;
-  subs is the answering sub-address list; recorders maps each sub-address to its ScanRecorder.
-  on_progress(sub, i, n) is called before each per-sub LID scan so a caller can report progress.
+  Returns (played, subs, recorders, discovered): played is False if pandad never took the discovery
+  script; subs is the union of discovered and known sub-addresses that were LID-scanned; recorders
+  maps each to its ScanRecorder; discovered is the set that answered tester-present. on_progress(sub,
+  i, n) is called before each per-sub LID scan so a caller can report progress.
   """
-  played, subs = run_subaddr_discovery(gap_ms=gap_ms)
+  played, discovered = run_subaddr_discovery(gap_ms=gap_ms)
   recorders: dict[int, ScanRecorder] = {}
   if not played:
-    return False, [], recorders
+    return False, [], recorders, set()
+  # Always LID-scan the sub-addresses the fork already uses, even if discovery missed one this run.
+  subs = sorted(set(discovered) | KNOWN_SUBS)
   for i, sub in enumerate(subs):
     if on_progress is not None:
       on_progress(sub, i, len(subs))
     frames = build_lid_scan_frames(ALL_LIDS, sub, gap_ms)
     recorders[sub] = run_script_and_record(frames, sub, live=False)
-  return True, subs, recorders
+  return True, subs, recorders, set(discovered)
 
 
-def full_scan_report(subs: list[int], recorders: dict[int, "ScanRecorder"]) -> str:
-  """One combined report: a per-sub-address summary of the positive LIDs, then each full report."""
+def full_scan_report(subs: list[int], recorders: dict[int, "ScanRecorder"], discovered: set[int] | None = None) -> str:
+  """One combined report: a per-sub-address candidate summary, then each full report."""
+  rec_discovered = discovered if discovered is not None else set(subs)
   lines = [f"0x750 full scan (sub-addresses + LIDs) at {time.strftime('%Y-%m-%d %H:%M:%S')}"]
   lines.append(f"answering sub-addresses ({len(subs)}): " + (", ".join(f"0x{x:02X}" for x in subs) if subs else "none"))
   lines.append("")
-  lines.append("positive LIDs per sub-address:")
+  lines.append("candidate LIDs per sub-address (positive, or exist but rejected the all-zero probe):")
   for sub in subs:
     rec = recorders.get(sub)
     if rec is None:
       lines.append(f"  0x{sub:02X}: not scanned")
       continue
-    pos = [p for p in rec.probes if p.verdict == "positive"]
+    cands = rec.candidate_lids()
     hits = [p for p in rec.probes if p.blinker_changes]
-    line = f"  0x{sub:02X}: " + (", ".join(f"0x{p.lid:02X}" for p in pos) if pos else "none")
+    forced = " (forced, discovery missed it)" if sub in KNOWN_SUBS and sub not in rec_discovered else ""
+    line = f"  0x{sub:02X}: " + (", ".join(f"0x{p.lid:02X}" for p in cands) if cands else "none") + forced
     if hits:
       line += "  | 0x614 hits: " + "; ".join(f"0x{p.lid:02X} {p.control.hex(' ')}" for p in hits)
     lines.append(line)
@@ -584,20 +632,22 @@ def main(argv: list[str] | None = None) -> int:
     def on_progress(sub, i, n):
       print(f"[{i + 1}/{n}] LID-scanning sub-address 0x{sub:02X}...", flush=True)
 
-    played, subs, recorders = run_full_scan(on_progress=on_progress)
+    played, subs, recorders, discovered = run_full_scan(on_progress=on_progress)
     if not played:
       print(NOT_PLAYED_WARNING)
       return 1
     path = args.out or os.path.join(DEFAULT_REPORT_DIR if os.path.isdir(DEFAULT_REPORT_DIR) else os.getcwd(),
                                     FULL_SCAN_REPORT_NAME)
     with open(path, "w") as f:
-      f.write(full_scan_report(subs, recorders) + "\n")
-    print(f"answering sub-addresses ({len(subs)}): " + (", ".join(f"0x{x:02X}" for x in subs) if subs else "none"))
+      f.write(full_scan_report(subs, recorders, discovered) + "\n")
+    print(f"scanned sub-addresses ({len(subs)}), discovered {len(discovered)}: " +
+          (", ".join(f"0x{x:02X}" for x in subs) if subs else "none"))
     for sub in subs:
       rec = recorders.get(sub)
-      pos = [p for p in rec.probes if p.verdict == "positive"] if rec else []
+      cands = rec.candidate_lids() if rec else []
       hits = [p for p in rec.probes if p.blinker_changes] if rec else []
-      line = f"  0x{sub:02X}: " + (", ".join(f"0x{p.lid:02X}" for p in pos) if pos else "none")
+      forced = " (forced)" if sub in KNOWN_SUBS and sub not in discovered else ""
+      line = f"  0x{sub:02X}: " + (", ".join(f"0x{p.lid:02X}" for p in cands) if cands else "none") + forced
       if hits:
         line += "  <- 0x614 hit"
       print(line)

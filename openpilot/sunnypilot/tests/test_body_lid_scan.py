@@ -337,8 +337,32 @@ class TestFullScanReport:
         msgs.append(_can(1.01, REPLY_ADDR, bytes([sub, n]) + bytes.fromhex(body) + b"\x00" * (6 - n)))
       rec.update(msgs)
       recs[sub] = rec
-    report = full_scan_report([0x40, 0xA5], recs)
-    assert "answering sub-addresses (2): 0x40, 0xA5" in report
+    report = full_scan_report([0x40, 0xA5], recs, discovered={0x40, 0xA5})
     assert "0x40: 0x11" in report
     assert "0xA5: 0x21" in report
     assert "sub-address 0x40" in report and "sub-address 0xA5" in report
+
+
+class TestCandidateDetection:
+  def test_nonbaseline_replies_are_flagged_as_candidates(self):
+    # An ECU that answers most LIDs "NRC 0x12" (absent) but one LID "NRC 0x13" (wrong length) and
+    # one positive: the two odd ones are candidates, the baseline crowd is not.
+    frames = build_lid_scan_frames(range(0x10, 0x1A), 0x40)
+    rec = ScanRecorder(frames, 0x40)
+    msgs = []
+    for f in frames:
+      msgs.append(_can(1.0, DIAG_ADDR, f.data, src=128))
+      lid = f.data[3]
+      if lid == 0x11:
+        body, n = "70", 2                      # positive
+      elif lid == 0x14:
+        body, n = "7f 30 13", 3                # exists, wrong length
+      else:
+        body, n = "7f 30 12", 3                # absent (baseline)
+      msgs.append(_can(1.01, REPLY_ADDR, bytes([0x40, n]) + bytes.fromhex(body) + b"\x00" * (6 - n)))
+    rec.update(msgs)
+    cand_lids = sorted(p.lid for p in rec.candidate_lids())
+    assert cand_lids == [0x11, 0x14]
+    report = rec.report("t")
+    assert "incorrectMessageLengthOrInvalidFormat" in report
+    assert "candidate LIDs" in report
