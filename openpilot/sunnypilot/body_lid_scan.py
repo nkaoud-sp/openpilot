@@ -552,13 +552,14 @@ def run_probe_sub(sub_addr: int, count: int = 10, gap_ms: int = PROBE_GAP_MS, se
   """Diagnostic: send `count` tester-presents to one sub-address and capture the raw bus around it.
 
   Returns (played, echoes, replies): echoes is how many of our probes the panda echoed (src>=128);
-  replies is a list of (t, hex, recognized_sub) for every frame seen on 0x758, so we can tell an ECU
-  that never answers from one that answers in a shape the discovery recognizer misses.
+  replies is a list of (t, src, hex, recognized_sub) for every frame seen on 0x758, so we can tell an
+  ECU that never answers from one that answers in a shape the recognizer misses, and spot the same
+  reply arriving on more than one bus (which doubles the count).
   """
   frames = [ScriptFrame(0 if i == 0 else gap_ms, build_tester_present(sub_addr), addr=DIAG_ADDR, bus=CMD_BUS)
             for i in range(max(1, count))]
   echoes = [0]
-  replies: list[tuple[float, str, int | None]] = []
+  replies: list[tuple[float, int, str, int | None]] = []
 
   def on_msgs(batch):
     for nanos, msgs in batch:
@@ -568,7 +569,7 @@ def run_probe_sub(sub_addr: int, count: int = 10, gap_ms: int = PROBE_GAP_MS, se
         if addr == DIAG_ADDR and src >= 128 and len(d) >= 3 and d[0] == sub_addr and d[2] == SERVICE_TESTER_PRESENT:
           echoes[0] += 1
         elif addr == REPLY_ADDR and src < 128:
-          replies.append((t, d.hex(" "), tester_present_sub(d)))
+          replies.append((t, src, d.hex(" "), tester_present_sub(d)))
 
   played = queue_and_capture(frames, settle_s, on_msgs)
   return played, echoes[0], replies
@@ -666,15 +667,18 @@ def main(argv: list[str] | None = None) -> int:
       return 1
     print(f"probes echoed by the panda: {echoes}/{args.count}")
     print(f"frames seen on 0x{REPLY_ADDR:03X}: {len(replies)}")
-    matched = [r for r in replies if r[2] == args.probe_sub]
-    other = [r for r in replies if r[2] != args.probe_sub]
-    print(f"recognized tester-present replies from 0x{args.probe_sub:02X}: {len(matched)}")
-    for t, h, _ in matched[:5]:
-      print(f"  {t:8.2f}  {h}")
+    matched = [r for r in replies if r[3] == args.probe_sub]
+    other = [r for r in replies if r[3] != args.probe_sub]
+    buses = sorted({r[1] for r in matched})
+    print(f"recognized tester-present replies from 0x{args.probe_sub:02X}: {len(matched)} on buses {buses}")
+    for t, src, h, _ in matched[:6]:
+      print(f"  {t:8.2f}  bus{src}  {h}")
     print(f"other 0x{REPLY_ADDR:03X} frames: {len(other)}")
-    for t, h, sub in other[:20]:
+    for t, src, h, sub in other[:20]:
       tag = f" (tester-present from 0x{sub:02X})" if sub is not None else ""
-      print(f"  {t:8.2f}  {h}{tag}")
+      print(f"  {t:8.2f}  bus{src}  {h}{tag}")
+    if len(buses) > 1:
+      print(f"=> replies arrive on {len(buses)} buses, so each answer is counted {len(buses)}x; the ECU is fine.")
     if echoes and not matched:
       print("=> probes went out but this sub never answered a recognizable tester-present.")
     elif not echoes:
