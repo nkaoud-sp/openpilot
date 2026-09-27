@@ -320,6 +320,12 @@ class TestSubAddressDiscovery:
     assert all(f.data[2] == 0x3E for f in frames)
     assert all(f.addr == DIAG_ADDR for f in frames)
 
+  def test_discovery_repeats_probe_each_subaddress(self):
+    # intermittent responders (0x40 answered 6/10) need several probes each
+    frames = build_subaddr_discovery_frames(range(0x10, 0x13), repeats=3)
+    assert len(frames) == 9
+    assert [f.data[0] for f in frames] == [0x10, 0x10, 0x10, 0x11, 0x11, 0x11, 0x12, 0x12, 0x12]
+
 
 class TestFullScanReport:
   def test_combined_report_lists_positives_per_subaddress(self):

@@ -112,6 +112,11 @@ NRC_SERVICE_NOT_SUPPORTED = 0x11
 # tester-present in discovery is dropped (the ELM327 send path loses one now and then).
 KNOWN_SUBS = {0x40, 0x90, 0x91, 0x92, 0x93, 0xA5, 0xA6}
 
+# Some ECUs answer a tester-present only ~60% of the time (0x40 measured 6/10), so a single
+# probe per sub-address misses them. Probing each a few times makes a miss unlikely: at 60%
+# per probe, three probes drop the miss rate to about 6 percent.
+DISCOVERY_PROBES_PER_SUB = 3
+
 DEFAULT_REPORT_DIR = "/data"
 
 # pandad only plays OffroadCanScript offroad (ignition off) and clears it when the car goes onroad.
@@ -182,11 +187,18 @@ def tester_present_sub(data: bytes) -> int | None:
   return None
 
 
-def build_subaddr_discovery_frames(subs: Iterable[int] = ALL_LIDS, gap_ms: int = PROBE_GAP_MS) -> list[ScriptFrame]:
-  """One tester-present per sub-address, to find which ECUs answer behind 0x750."""
+def build_subaddr_discovery_frames(subs: Iterable[int] = ALL_LIDS, gap_ms: int = PROBE_GAP_MS,
+                                   repeats: int = 1) -> list[ScriptFrame]:
+  """`repeats` tester-presents per sub-address, to find which ECUs answer behind 0x750.
+
+  Repeats matter because some ECUs answer a bare tester-present only intermittently.
+  """
   frames = []
-  for i, sub in enumerate(subs):
-    frames.append(ScriptFrame(0 if i == 0 else gap_ms, build_tester_present(sub), addr=DIAG_ADDR, bus=CMD_BUS))
+  first = True
+  for sub in subs:
+    for _ in range(max(1, repeats)):
+      frames.append(ScriptFrame(0 if first else gap_ms, build_tester_present(sub), addr=DIAG_ADDR, bus=CMD_BUS))
+      first = False
   return frames
 
 
@@ -515,11 +527,11 @@ def run_script_and_record(frames: Sequence[ScriptFrame], sub_addr: int | None, s
 
 
 def run_subaddr_discovery(subs: Iterable[int] = ALL_LIDS, gap_ms: int = PROBE_GAP_MS, settle_s: float = 2.0,
-                          passes: int = 2):
+                          probes_per_sub: int = DISCOVERY_PROBES_PER_SUB):
   """Tester-present every sub-address behind 0x750; return (played, sorted list of answering subs).
 
-  A single tester-present is sometimes lost on the ELM327 send path, so non-responders are re-probed
-  for `passes` rounds. Only the sub-addresses still silent after the last round count as absent.
+  Each sub-address is probed `probes_per_sub` times, because some ECUs (e.g. 0x40) answer a bare
+  tester-present only intermittently and a single probe misses them.
   """
   found: set[int] = set()
 
@@ -531,16 +543,8 @@ def run_subaddr_discovery(subs: Iterable[int] = ALL_LIDS, gap_ms: int = PROBE_GA
           if sub is not None:
             found.add(sub)
 
-  remaining = list(subs)
-  played = False
-  for _ in range(max(1, passes)):
-    if not remaining:
-      break
-    ok = queue_and_capture(build_subaddr_discovery_frames(remaining, gap_ms), settle_s, on_msgs)
-    played = played or ok
-    if not ok:
-      break
-    remaining = [x for x in remaining if x not in found]
+  frames = build_subaddr_discovery_frames(subs, gap_ms, repeats=probes_per_sub)
+  played = queue_and_capture(frames, settle_s, on_msgs)
   return played, sorted(found)
 
 
@@ -678,8 +682,9 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
   if args.full_scan:
-    disc_s = script_duration_s(build_subaddr_discovery_frames())
-    print(f"full scan: {disc_s:.0f} s to discover sub-addresses, then about {disc_s:.0f} s per answering one. Ignition off, parked, watch the car.", flush=True)
+    disc_s = script_duration_s(build_subaddr_discovery_frames(repeats=DISCOVERY_PROBES_PER_SUB))
+    lid_s = script_duration_s(build_lid_scan_frames())
+    print(f"full scan: about {disc_s:.0f} s discovery, then about {lid_s:.0f} s per answering ECU. Ignition off, watch the car.", flush=True)
 
     def on_progress(sub, i, n):
       print(f"[{i + 1}/{n}] LID-scanning sub-address 0x{sub:02X}...", flush=True)
@@ -707,8 +712,8 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
   if args.discover_subs:
-    disc_s = script_duration_s(build_subaddr_discovery_frames())
-    print(f"sub-address discovery on 0x{DIAG_ADDR:03X}: 256 tester-present probes, about {disc_s:.0f} s.", flush=True)
+    disc_s = script_duration_s(build_subaddr_discovery_frames(repeats=DISCOVERY_PROBES_PER_SUB))
+    print(f"sub-address discovery on 0x{DIAG_ADDR:03X}: 256 sub-addresses x{DISCOVERY_PROBES_PER_SUB} probes, about {disc_s:.0f} s.", flush=True)
     played, subs = run_subaddr_discovery()
     if not played:
       print(NOT_PLAYED_WARNING)
