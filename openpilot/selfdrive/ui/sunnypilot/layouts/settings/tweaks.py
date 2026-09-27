@@ -48,9 +48,16 @@ class PanelType(IntEnum):
 
 class _BenchmarkDialog(ConfirmDialog):
   # a modal hides the layout below it, so the dialog polls for the benchmark result itself
-  def __init__(self, text: str, take_result: Callable[[], str | None]):
+  def __init__(self, text: str, take_result: Callable[[], str | None], is_done: Callable[[], bool] | None = None):
     super().__init__(text, tr("OK"), cancel_text="")
     self._take_result = take_result
+    # When given, OK does nothing until is_done() is true, so a long run is not dismissed by mistake.
+    self._is_done = is_done
+
+  def _confirm_button_callback(self):
+    if self._is_done is not None and not self._is_done():
+      return
+    super()._confirm_button_callback()
 
   def _render(self, rect):
     if (result := self._take_result()) is not None:
@@ -358,8 +365,9 @@ class TweaksLayout(Widget):
     # A scan and the hazard test share pandad's script slot; whichever is queued last plays.
     self._hazard_flash_until = 0.0
     self._full_scan_result = None
-    self._full_scan_progress = tr("Discovering sub-addresses...")
-    gui_app.push_widget(_BenchmarkDialog(tr("Full scan of the 0x750 gateway. Watch the car..."), self._poll_full_scan))
+    self._full_scan_progress = tr("Discovering sub-addresses... (leave this open until it finishes)")
+    gui_app.push_widget(_BenchmarkDialog(tr("Full scan of the 0x750 gateway. Watch the car..."),
+                                         self._poll_full_scan, is_done=lambda: self._full_scan_result is not None))
     self._full_scan_thread = threading.Thread(target=self._run_full_scan, daemon=True)
     self._full_scan_thread.start()
 
