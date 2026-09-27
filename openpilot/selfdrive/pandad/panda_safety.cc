@@ -161,15 +161,21 @@ static constexpr size_t SCRIPT_RECORD_LEN = 14;
 // The param only changes when someone presses a button, so don't hit the filesystem every frame.
 static constexpr uint64_t SCRIPT_POLL_NS = 100000000ULL;  // 100 ms
 
-// How long to stay in ELM327 after a frame before dropping back to NO_OUTPUT. Changing the safety
-// model re-inits the panda's CAN cores, so reverting in the same breath as the send can flush the
-// frame back out of the TX FIFO before it reaches the wire.
-static constexpr uint64_t ELM327_LINGER_NS = 20000000ULL;  // 20 ms
+// After the last script frame, hold ELM327 this long before dropping back to NO_OUTPUT. Changing
+// the safety model re-inits the panda's CAN cores, which flushes both the TX FIFO (a frame sent in
+// the same breath never reaches the wire) and the RX buffer (a reply arriving after the change is
+// lost). Holding past the slowest ECU reply latency lets the final frame's answer be received first.
+static constexpr uint64_t ELM327_LINGER_NS = 300000000ULL;  // 300 ms
 
 void PandaSafety::sendFrameViaElm327(uint16_t addr, uint8_t bus, const uint8_t *data, uint8_t dlc) {
   // ELM327 (no OBD multiplexing) is the least-privilege mode that can transmit a diagnostic
-  // address: it allows 8-byte frames on 0x600-0x7FF and nothing else.
-  panda_->set_safety_model(cereal::CarParams::SafetyModel::ELM327, 1U);
+  // address: it allows 8-byte frames on 0x600-0x7FF and nothing else. Assert it once and hold it
+  // for the whole script; re-initing the CAN cores on every frame would flush replies to the
+  // previous frame out of the RX buffer before pandad reads them.
+  if (!elm327_asserted_) {
+    panda_->set_safety_model(cereal::CarParams::SafetyModel::ELM327, 1U);
+    elm327_asserted_ = true;
+  }
 
   MessageBuilder msg;
   auto evt = msg.initEvent();
@@ -216,12 +222,11 @@ void PandaSafety::maybeSendOffroadCanScript(bool is_onroad) {
   const std::string &rec = script_records_.front();
   uint64_t delay_ns = (((uint8_t)rec[0] << 8) | (uint8_t)rec[1]) * 1000000ULL;
   if (now - last_script_send_ns_ < delay_ns) {
-    // Waiting out this frame's delay: nothing to send, so give the panda back in the meantime.
-    dropElm327(now);
+    // Waiting out this frame's delay. Stay in ELM327: a safety-model change here would flush the
+    // reply to the frame just sent out of the RX buffer. The panda is released when the script ends.
     return;
   }
   last_script_send_ns_ = now;
-  elm327_asserted_ = true;
 
   uint16_t addr = ((uint8_t)rec[2] << 8) | (uint8_t)rec[3];
   uint8_t bus = (uint8_t)rec[4];
@@ -235,9 +240,9 @@ void PandaSafety::maybeSendOffroadCanScript(bool is_onroad) {
 }
 
 void PandaSafety::dropElm327(uint64_t now) {
-  // Don't leave the panda in an output-capable mode: back to NO_OUTPUT between frames too, not
-  // just at the end of a script. The gaps in a script are longer than the linger, so this runs
-  // after every frame. (The offroad health loop would get there within 100 ms regardless.)
+  // Release the panda to NO_OUTPUT once the script is done and the last frame's reply has had time
+  // to arrive. Runs only when no frames remain, so ELM327 is held continuously during a script and
+  // replies are not flushed between frames.
   if (elm327_asserted_ && (now - last_script_send_ns_ >= ELM327_LINGER_NS)) {
     panda_->set_safety_model(cereal::CarParams::SafetyModel::NO_OUTPUT);
     elm327_asserted_ = false;
