@@ -372,3 +372,17 @@ class TestCandidateDetection:
     report = rec.report("t")
     assert "incorrectMessageLengthOrInvalidFormat" in report
     assert "candidate LIDs" in report
+
+
+class TestBusDeduplication:
+  def test_mirror_on_second_bus_is_ignored(self):
+    # The panda mirrors 0x758 onto bus 2; only the bus-0 reply should count, not both.
+    frames = build_lid_scan_frames(range(0x10, 0x11), 0x40)
+    rec = ScanRecorder(frames, 0x40)
+    rec.update([
+      _can(1.0, DIAG_ADDR, build_probe(0x10), src=128),
+      _can(1.01, REPLY_ADDR, bytes.fromhex("40 03 70 10 00 00 00 00"), src=0),
+      _can(1.01, REPLY_ADDR, bytes.fromhex("40 03 70 10 00 00 00 00"), src=2),  # mirror, ignore
+    ])
+    assert len(rec.probes[0].replies) == 1
+    assert rec.probes[0].verdict == "positive"

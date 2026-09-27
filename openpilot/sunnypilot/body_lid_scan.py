@@ -335,7 +335,9 @@ class ScanRecorder:
               self.on_sent(self.probes[self._next_echo])
             self._next_echo += 1
             self.echoes += 1
-        elif addr == self.rx_addr and src < 128 and probe_body(data, self.sub_addr) is not None:
+        elif addr == self.rx_addr and src == CMD_BUS and probe_body(data, self.sub_addr) is not None:
+          # Count the reply on the bus we sent on only. The panda mirrors the same frame onto the
+          # camera-forward bus (seen as src 2), which would otherwise double every reply.
           if self.first_reply_at is None:
             self.first_reply_at = t
           probe = self._current_probe(t)
@@ -343,7 +345,7 @@ class ScanRecorder:
             self.unmatched_replies.append((t, data.hex(" ")))
           else:
             probe.replies.append(classify_reply(data, self.sub_addr))
-        elif addr == BLINKERS_STATE_ADDR and src < 128:
+        elif addr == BLINKERS_STATE_ADDR and src == CMD_BUS:
           self.blinkers_frames += 1
           if self._last_blinkers is not None and self._last_blinkers != data:
             what = describe_blinkers_state(self._last_blinkers, data)
