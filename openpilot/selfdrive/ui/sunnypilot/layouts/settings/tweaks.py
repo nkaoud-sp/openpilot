@@ -33,6 +33,7 @@ from openpilot.system.ui.widgets.scroller_tici import Scroller
 
 FRAME_BENCHMARK_CMD = ["python3", "-m", "openpilot.selfdrive.modeld.frame_downscale", "--device", "QCOM"]
 LID_SCAN_CMD = ["python3", "-m", "openpilot.sunnypilot.body_lid_scan"]
+SUB_DISCOVERY_CMD = ["python3", "-m", "openpilot.sunnypilot.body_lid_scan", "--discover-subs"]
 
 
 class PanelType(IntEnum):
@@ -66,6 +67,8 @@ class TweaksLayout(Widget):
     self._benchmark_result: str | None = None
     self._lid_scan_thread: threading.Thread | None = None
     self._lid_scan_result: str | None = None
+    self._sub_discovery_thread: threading.Thread | None = None
+    self._sub_discovery_result: str | None = None
     self._dynamic_follow_layout = DynamicFollowSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._launch_layout = LaunchAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._park_layout = ParkAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
@@ -160,6 +163,17 @@ class TweaksLayout(Widget):
       enabled=lambda: ui_state.is_offroad(),
     )
 
+    self._sub_discovery = button_item_sp(
+      title=lambda: tr("Body ECU Sub-Address Scan"),
+      button_text=lambda: tr("Scan"),
+      description=lambda: tr("Send a tester-present to every sub-address behind the 0x750 gateway and list which ECUs " +
+                            "answer, to find sub-addresses beyond the known body, mirror and door modules. Tester-present " +
+                            "carries no control record, so it actuates nothing and is safe to sweep. Offroad only, about a " +
+                            "minute; the full list is written to /data/body_lid_scan.txt. Toyota/Lexus."),
+      callback=self._on_sub_discovery,
+      enabled=lambda: ui_state.is_offroad(),
+    )
+
     self._auto_lock_button = simple_button_item_sp(
       button_text=lambda: tr("Auto Door Lock"),
       button_width=800,
@@ -196,6 +210,7 @@ class TweaksLayout(Widget):
       self._auto_lock_button,
       self._hazard_test,
       self._lid_scan,
+      self._sub_discovery,
       self._chestnut_native_frames,
       self._frame_benchmark,
     ]
@@ -271,6 +286,27 @@ class TweaksLayout(Widget):
   def _run_lid_scan(self):
     # 256 probes at 200 ms plus the settle time; the timeout only guards a hung recorder.
     self._lid_scan_result = self._run_tool(LID_SCAN_CMD, timeout=180)
+
+  def _on_sub_discovery(self):
+    # Same offroad-only gate as the LID scan: pandad plays the script only with the car off.
+    if not ui_state.is_offroad():
+      return
+    if self._sub_discovery_thread is not None and self._sub_discovery_thread.is_alive():
+      return
+    # A scan and the hazard test share pandad's script slot; whichever is queued last plays.
+    self._hazard_flash_until = 0.0
+    self._sub_discovery_result = None
+    gui_app.push_widget(_BenchmarkDialog(tr("Probing 0x750 sub-addresses, this takes about a minute..."), self._take_sub_discovery_result))
+    self._sub_discovery_thread = threading.Thread(target=self._run_sub_discovery, daemon=True)
+    self._sub_discovery_thread.start()
+
+  def _take_sub_discovery_result(self) -> str | None:
+    result, self._sub_discovery_result = self._sub_discovery_result, None
+    return result
+
+  def _run_sub_discovery(self):
+    # 256 tester-present probes at 200 ms plus settle; the timeout only guards a hung recorder.
+    self._sub_discovery_result = self._run_tool(SUB_DISCOVERY_CMD, timeout=180)
 
   def _on_hazard_test(self):
     # pandad plays the script offroad only, so don't leave one queued for the next time the car
