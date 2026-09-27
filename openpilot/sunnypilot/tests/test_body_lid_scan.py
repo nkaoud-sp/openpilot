@@ -375,14 +375,19 @@ class TestCandidateDetection:
 
 
 class TestBusDeduplication:
-  def test_mirror_on_second_bus_is_ignored(self):
-    # The panda mirrors 0x758 onto bus 2; only the bus-0 reply should count, not both.
-    frames = build_lid_scan_frames(range(0x10, 0x11), 0x40)
+  def test_mirror_on_second_bus_does_not_create_a_false_candidate(self):
+    # The panda mirrors 0x758 onto a second bus, so a reply can arrive twice. Both are accepted
+    # (filtering to one bus can drop the only surviving copy), but the doubling must not make a
+    # baseline "absent" LID look different from its neighbours and thus a false candidate.
+    frames = build_lid_scan_frames(range(0x10, 0x13), 0x40)
     rec = ScanRecorder(frames, 0x40)
-    rec.update([
-      _can(1.0, DIAG_ADDR, build_probe(0x10), src=128),
-      _can(1.01, REPLY_ADDR, bytes.fromhex("40 03 70 10 00 00 00 00"), src=0),
-      _can(1.01, REPLY_ADDR, bytes.fromhex("40 03 70 10 00 00 00 00"), src=2),  # mirror, ignore
-    ])
-    assert len(rec.probes[0].replies) == 1
-    assert rec.probes[0].verdict == "positive"
+    msgs = []
+    for f in frames:
+      msgs.append(_can(1.0, DIAG_ADDR, f.data, src=128))
+      # LID 0x10 gets its absent reply on one bus, 0x11 and 0x12 on two (mirror). All are "absent".
+      msgs.append(_can(1.01, REPLY_ADDR, bytes.fromhex("40 03 7f 30 12 00 00 00"), src=0))
+      if f.data[3] != 0x10:
+        msgs.append(_can(1.01, REPLY_ADDR, bytes.fromhex("40 03 7f 30 12 00 00 00"), src=2))
+    rec.update(msgs)
+    # every LID is the same "absent" answer, so none should be flagged a candidate despite doubling
+    assert rec.candidate_lids() == []

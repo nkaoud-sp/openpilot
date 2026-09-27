@@ -335,9 +335,10 @@ class ScanRecorder:
               self.on_sent(self.probes[self._next_echo])
             self._next_echo += 1
             self.echoes += 1
-        elif addr == self.rx_addr and src == CMD_BUS and probe_body(data, self.sub_addr) is not None:
-          # Count the reply on the bus we sent on only. The panda mirrors the same frame onto the
-          # camera-forward bus (seen as src 2), which would otherwise double every reply.
+        elif addr == self.rx_addr and src < 128 and probe_body(data, self.sub_addr) is not None:
+          # Accept the reply on whichever bus it arrives. The panda mirrors 0x758 onto more than one
+          # bus and, depending on timing, the surviving copy may be the mirror, so filtering to one
+          # bus can drop every reply. Duplicates across buses are made harmless in candidate_lids.
           if self.first_reply_at is None:
             self.first_reply_at = t
           probe = self._current_probe(t)
@@ -345,7 +346,7 @@ class ScanRecorder:
             self.unmatched_replies.append((t, data.hex(" ")))
           else:
             probe.replies.append(classify_reply(data, self.sub_addr))
-        elif addr == BLINKERS_STATE_ADDR and src == CMD_BUS:
+        elif addr == BLINKERS_STATE_ADDR and src < 128:
           self.blinkers_frames += 1
           if self._last_blinkers is not None and self._last_blinkers != data:
             what = describe_blinkers_state(self._last_blinkers, data)
@@ -385,7 +386,8 @@ class ScanRecorder:
     # A signature of what the ECU said to a probe, so identical "no such identifier" answers group.
     if not p.replies:
       return ("no reply",)
-    return tuple(sorted(detail for _, detail in p.replies))
+    # De-duplicate: the same reply mirrored on two buses must not read as a different signature.
+    return tuple(sorted({detail for _, detail in p.replies}))
 
   def candidate_lids(self) -> list["ProbeResult"]:
     """LIDs the ECU treats specially: positives, plus any whose reply differs from this ECU's most
