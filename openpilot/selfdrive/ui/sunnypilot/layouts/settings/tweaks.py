@@ -72,6 +72,7 @@ class TweaksLayout(Widget):
     self._sub_discovery_result: str | None = None
     self._full_scan_thread: threading.Thread | None = None
     self._full_scan_result: str | None = None
+    self._full_scan_progress: str = ""
     self._dynamic_follow_layout = DynamicFollowSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._launch_layout = LaunchAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._park_layout = ParkAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
@@ -272,6 +273,30 @@ class TweaksLayout(Widget):
       output = f"failed to run: {e}"
     return output
 
+  @staticmethod
+  def _stream_tool(cmd: list[str], timeout: float, on_line: Callable[[str], None]) -> str:
+    """Run a tool, calling on_line for each stdout line as it arrives, and return the tail."""
+    lines: list[str] = []
+    try:
+      proc = subprocess.Popen(cmd, cwd=BASEDIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+      start = time.monotonic()
+      assert proc.stdout is not None
+      for line in proc.stdout:
+        line = line.rstrip()
+        if line:
+          lines.append(line)
+          on_line(line)
+        if time.monotonic() - start > timeout:
+          proc.kill()
+          lines.append("timed out")
+          break
+      proc.wait(timeout=5)
+      if proc.returncode not in (0, None) and lines and lines[-1] != "timed out":
+        lines.append(f"exit code {proc.returncode}")
+    except Exception as e:
+      lines.append(f"failed to run: {e}")
+    return "\n".join(lines)[-800:]
+
   def _run_frame_benchmark(self):
     mode = ui_state.params.get("ChestnutFrameMode") or "not run yet"
     mode += "\n" + self._chestnut_bundle_status()
@@ -333,17 +358,23 @@ class TweaksLayout(Widget):
     # A scan and the hazard test share pandad's script slot; whichever is queued last plays.
     self._hazard_flash_until = 0.0
     self._full_scan_result = None
-    gui_app.push_widget(_BenchmarkDialog(tr("Full scan of the 0x750 gateway. This can take several minutes. Watch the car..."), self._take_full_scan_result))
+    self._full_scan_progress = tr("Discovering sub-addresses...")
+    gui_app.push_widget(_BenchmarkDialog(tr("Full scan of the 0x750 gateway. Watch the car..."), self._poll_full_scan))
     self._full_scan_thread = threading.Thread(target=self._run_full_scan, daemon=True)
     self._full_scan_thread.start()
 
-  def _take_full_scan_result(self) -> str | None:
-    result, self._full_scan_result = self._full_scan_result, None
-    return result
+  def _poll_full_scan(self) -> str | None:
+    # While running, show the latest progress line; once the report is ready, keep showing it so it
+    # is not overwritten by a stale progress line on the next frame.
+    return self._full_scan_result or self._full_scan_progress or None
 
   def _run_full_scan(self):
     # Discovery plus a 51 s LID scan per answering sub-address; allow a long ceiling for many ECUs.
-    self._full_scan_result = self._run_tool(FULL_SCAN_CMD, timeout=3600)
+    def on_line(line: str):
+      # The tool prints a "[i/n] LID-scanning sub-address 0x.." line per ECU; surface those.
+      if line.startswith("[") or "sub-address" in line or "discover" in line.lower():
+        self._full_scan_progress = line
+    self._full_scan_result = self._stream_tool(FULL_SCAN_CMD, timeout=3600, on_line=on_line)
 
   def _on_hazard_test(self):
     # pandad plays the script offroad only, so don't leave one queued for the next time the car
