@@ -116,6 +116,7 @@ NOT_PLAYED_WARNING = (
   "at the next ignition off."
 )
 REPORT_NAME = "body_lid_scan.txt"
+FULL_SCAN_REPORT_NAME = "body_sub-add_lid_scan.txt"
 
 
 def build_probe(lid: int, control: bytes = DEFAULT_CONTROL, sub_addr: int | None = SUB_ADDR_BODY) -> bytes:
@@ -500,6 +501,52 @@ def run_subaddr_discovery(subs: Iterable[int] = ALL_LIDS, gap_ms: int = PROBE_GA
   return played, sorted(found)
 
 
+def run_full_scan(gap_ms: int = PROBE_GAP_MS, on_progress=None):
+  """Discover every 0x750 sub-address, then LID-scan each one that answered.
+
+  Returns (played, subs, recorders): played is False if pandad never took the discovery script;
+  subs is the answering sub-address list; recorders maps each sub-address to its ScanRecorder.
+  on_progress(sub, i, n) is called before each per-sub LID scan so a caller can report progress.
+  """
+  played, subs = run_subaddr_discovery(gap_ms=gap_ms)
+  recorders: dict[int, ScanRecorder] = {}
+  if not played:
+    return False, [], recorders
+  for i, sub in enumerate(subs):
+    if on_progress is not None:
+      on_progress(sub, i, len(subs))
+    frames = build_lid_scan_frames(ALL_LIDS, sub, gap_ms)
+    recorders[sub] = run_script_and_record(frames, sub, live=False)
+  return True, subs, recorders
+
+
+def full_scan_report(subs: list[int], recorders: dict[int, "ScanRecorder"]) -> str:
+  """One combined report: a per-sub-address summary of the positive LIDs, then each full report."""
+  lines = [f"0x750 full scan (sub-addresses + LIDs) at {time.strftime('%Y-%m-%d %H:%M:%S')}"]
+  lines.append(f"answering sub-addresses ({len(subs)}): " + (", ".join(f"0x{x:02X}" for x in subs) if subs else "none"))
+  lines.append("")
+  lines.append("positive LIDs per sub-address:")
+  for sub in subs:
+    rec = recorders.get(sub)
+    if rec is None:
+      lines.append(f"  0x{sub:02X}: not scanned")
+      continue
+    pos = [p for p in rec.probes if p.verdict == "positive"]
+    hits = [p for p in rec.probes if p.blinker_changes]
+    line = f"  0x{sub:02X}: " + (", ".join(f"0x{p.lid:02X}" for p in pos) if pos else "none")
+    if hits:
+      line += "  | 0x614 hits: " + "; ".join(f"0x{p.lid:02X} {p.control.hex(' ')}" for p in hits)
+    lines.append(line)
+  lines.append("")
+  lines.append("=" * 72)
+  for sub in subs:
+    rec = recorders.get(sub)
+    if rec is not None:
+      lines.append("")
+      lines.append(rec.report(f"sub-address 0x{sub:02X}"))
+  return "\n".join(lines)
+
+
 def report_path(out: str | None) -> str:
   if out:
     return out
@@ -525,8 +572,37 @@ def main(argv: list[str] | None = None) -> int:
   parser.add_argument("--off-ms", type=int, default=SWEEP_OFF_MS, help="ms between a release and the next sweep control")
   parser.add_argument("--discover-subs", action="store_true",
                       help="tester-present every 0x750 sub-address and list which ECUs answer (no actuation)")
+  parser.add_argument("--full-scan", action="store_true",
+                      help="discover 0x750 sub-addresses then LID-scan each; writes /data/" + FULL_SCAN_REPORT_NAME)
   parser.add_argument("--out", default=None, help=f"report file (default {DEFAULT_REPORT_DIR}/{REPORT_NAME})")
   args = parser.parse_args(argv)
+
+  if args.full_scan:
+    disc_s = script_duration_s(build_subaddr_discovery_frames())
+    print(f"full scan: {disc_s:.0f} s to discover sub-addresses, then about {disc_s:.0f} s per answering one. Ignition off, parked, watch the car.", flush=True)
+
+    def on_progress(sub, i, n):
+      print(f"[{i + 1}/{n}] LID-scanning sub-address 0x{sub:02X}...", flush=True)
+
+    played, subs, recorders = run_full_scan(on_progress=on_progress)
+    if not played:
+      print(NOT_PLAYED_WARNING)
+      return 1
+    path = args.out or os.path.join(DEFAULT_REPORT_DIR if os.path.isdir(DEFAULT_REPORT_DIR) else os.getcwd(),
+                                    FULL_SCAN_REPORT_NAME)
+    with open(path, "w") as f:
+      f.write(full_scan_report(subs, recorders) + "\n")
+    print(f"answering sub-addresses ({len(subs)}): " + (", ".join(f"0x{x:02X}" for x in subs) if subs else "none"))
+    for sub in subs:
+      rec = recorders.get(sub)
+      pos = [p for p in rec.probes if p.verdict == "positive"] if rec else []
+      hits = [p for p in rec.probes if p.blinker_changes] if rec else []
+      line = f"  0x{sub:02X}: " + (", ".join(f"0x{p.lid:02X}" for p in pos) if pos else "none")
+      if hits:
+        line += "  <- 0x614 hit"
+      print(line)
+    print(f"report: {path}")
+    return 0
 
   if args.discover_subs:
     disc_s = script_duration_s(build_subaddr_discovery_frames())

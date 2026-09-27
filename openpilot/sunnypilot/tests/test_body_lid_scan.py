@@ -21,6 +21,7 @@ from openpilot.sunnypilot.body_lid_scan import (
   build_probe,
   build_subaddr_discovery_frames,
   build_tester_present,
+  full_scan_report,
   tester_present_sub as tp_sub,
   classify_reply,
   combo_controls,
@@ -318,3 +319,26 @@ class TestSubAddressDiscovery:
     assert [f.data[0] for f in frames] == list(range(256))
     assert all(f.data[2] == 0x3E for f in frames)
     assert all(f.addr == DIAG_ADDR for f in frames)
+
+
+class TestFullScanReport:
+  def test_combined_report_lists_positives_per_subaddress(self):
+    # build two recorders as if two sub-addresses were LID-scanned
+    recs = {}
+    for sub, pos_lid in ((0x40, 0x11), (0xA5, 0x21)):
+      frames = build_lid_scan_frames(range(0x10, 0x22), sub)
+      rec = ScanRecorder(frames, sub)
+      msgs = []
+      for f in frames:
+        msgs.append(_can(1.0, DIAG_ADDR, f.data, src=128))
+        lid = f.data[3]
+        body = "70" if lid == pos_lid else "7f 30 12"
+        n = 2 if lid == pos_lid else 3
+        msgs.append(_can(1.01, REPLY_ADDR, bytes([sub, n]) + bytes.fromhex(body) + b"\x00" * (6 - n)))
+      rec.update(msgs)
+      recs[sub] = rec
+    report = full_scan_report([0x40, 0xA5], recs)
+    assert "answering sub-addresses (2): 0x40, 0xA5" in report
+    assert "0x40: 0x11" in report
+    assert "0xA5: 0x21" in report
+    assert "sub-address 0x40" in report and "sub-address 0xA5" in report
