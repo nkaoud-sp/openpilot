@@ -544,6 +544,32 @@ def run_subaddr_discovery(subs: Iterable[int] = ALL_LIDS, gap_ms: int = PROBE_GA
   return played, sorted(found)
 
 
+def run_probe_sub(sub_addr: int, count: int = 10, gap_ms: int = PROBE_GAP_MS, settle_s: float = 2.0):
+  """Diagnostic: send `count` tester-presents to one sub-address and capture the raw bus around it.
+
+  Returns (played, echoes, replies): echoes is how many of our probes the panda echoed (src>=128);
+  replies is a list of (t, hex, recognized_sub) for every frame seen on 0x758, so we can tell an ECU
+  that never answers from one that answers in a shape the discovery recognizer misses.
+  """
+  frames = [ScriptFrame(0 if i == 0 else gap_ms, build_tester_present(sub_addr), addr=DIAG_ADDR, bus=CMD_BUS)
+            for i in range(max(1, count))]
+  echoes = [0]
+  replies: list[tuple[float, str, int | None]] = []
+
+  def on_msgs(batch):
+    for nanos, msgs in batch:
+      t = nanos / 1e9
+      for addr, data, src in msgs:
+        d = bytes(data)
+        if addr == DIAG_ADDR and src >= 128 and len(d) >= 3 and d[0] == sub_addr and d[2] == SERVICE_TESTER_PRESENT:
+          echoes[0] += 1
+        elif addr == REPLY_ADDR and src < 128:
+          replies.append((t, d.hex(" "), tester_present_sub(d)))
+
+  played = queue_and_capture(frames, settle_s, on_msgs)
+  return played, echoes[0], replies
+
+
 def run_full_scan(gap_ms: int = PROBE_GAP_MS, on_progress=None):
   """Discover every 0x750 sub-address, then LID-scan each one that answered.
 
@@ -622,8 +648,34 @@ def main(argv: list[str] | None = None) -> int:
                       help="tester-present every 0x750 sub-address and list which ECUs answer (no actuation)")
   parser.add_argument("--full-scan", action="store_true",
                       help="discover 0x750 sub-addresses then LID-scan each; writes /data/" + FULL_SCAN_REPORT_NAME)
+  parser.add_argument("--probe-sub", type=lambda s: int(s, 0), default=None,
+                      help="diagnostic: send tester-presents to one sub-address and dump every raw 0x758 reply")
+  parser.add_argument("--count", type=int, default=10, help="with --probe-sub: how many tester-presents to send")
   parser.add_argument("--out", default=None, help=f"report file (default {DEFAULT_REPORT_DIR}/{REPORT_NAME})")
   args = parser.parse_args(argv)
+
+  if args.probe_sub is not None:
+    print(f"probing sub-address 0x{args.probe_sub:02X}: {args.count} tester-presents. Ignition off.", flush=True)
+    played, echoes, replies = run_probe_sub(args.probe_sub, args.count)
+    if not played:
+      print(NOT_PLAYED_WARNING)
+      return 1
+    print(f"probes echoed by the panda: {echoes}/{args.count}")
+    print(f"frames seen on 0x{REPLY_ADDR:03X}: {len(replies)}")
+    matched = [r for r in replies if r[2] == args.probe_sub]
+    other = [r for r in replies if r[2] != args.probe_sub]
+    print(f"recognized tester-present replies from 0x{args.probe_sub:02X}: {len(matched)}")
+    for t, h, _ in matched[:5]:
+      print(f"  {t:8.2f}  {h}")
+    print(f"other 0x{REPLY_ADDR:03X} frames: {len(other)}")
+    for t, h, sub in other[:20]:
+      tag = f" (tester-present from 0x{sub:02X})" if sub is not None else ""
+      print(f"  {t:8.2f}  {h}{tag}")
+    if echoes and not matched:
+      print("=> probes went out but this sub never answered a recognizable tester-present.")
+    elif not echoes:
+      print("=> the panda did not echo our probes; the send path, not the ECU, is the problem.")
+    return 0
 
   if args.full_scan:
     disc_s = script_duration_s(build_subaddr_discovery_frames())
