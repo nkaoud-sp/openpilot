@@ -55,6 +55,8 @@ SUB_ADDR_BODY = 0x40
 SERVICE_IO_CONTROL = 0x30
 POSITIVE_IO_CONTROL = 0x70
 NEGATIVE_RESPONSE = 0x7F
+SERVICE_TESTER_PRESENT = 0x3E
+POSITIVE_TESTER_PRESENT = 0x7E
 
 # The body ECU drops back-to-back diagnostic frames (see autolock_commands), and a reply plus any
 # lamp reaction has to land before the next probe so it can be attributed to the right LID.
@@ -157,6 +159,28 @@ def build_lid_scan_frames(lids: Iterable[int] = ALL_LIDS, sub_addr: int | None =
   frames = []
   for i, lid in enumerate(lids):
     frames.append(ScriptFrame(0 if i == 0 else gap_ms, build_probe(lid, sub_addr=sub_addr), addr=addr, bus=CMD_BUS))
+  return frames
+
+
+def build_tester_present(sub_addr: int) -> bytes:
+  """Tester-present to one 0x750 sub-address: [sub, 0x01, 0x3E], padded. Actuates nothing."""
+  if not 0 <= sub_addr <= 0xFF:
+    raise ValueError(f"sub-address out of range: {sub_addr}")
+  return bytes([sub_addr, 0x01, SERVICE_TESTER_PRESENT]).ljust(8, b"\x00")
+
+
+def tester_present_sub(data: bytes) -> int | None:
+  """The sub-address of a positive tester-present reply on 0x758 ([sub, 0x01, 0x7E]), else None."""
+  if len(data) >= 3 and data[1] == 0x01 and data[2] == POSITIVE_TESTER_PRESENT:
+    return data[0]
+  return None
+
+
+def build_subaddr_discovery_frames(subs: Iterable[int] = ALL_LIDS, gap_ms: int = PROBE_GAP_MS) -> list[ScriptFrame]:
+  """One tester-present per sub-address, to find which ECUs answer behind 0x750."""
+  frames = []
+  for i, sub in enumerate(subs):
+    frames.append(ScriptFrame(0 if i == 0 else gap_ms, build_tester_present(sub), addr=DIAG_ADDR, bus=CMD_BUS))
   return frames
 
 
@@ -407,25 +431,24 @@ def announce(probe: ProbeResult) -> None:
     print(f"LID 0x{probe.lid:02X} ctrl {probe.control.hex(' ')}  <- live now  (probe #{probe.index})", flush=True)
 
 
-def run_script_and_record(frames: Sequence[ScriptFrame], sub_addr: int | None, settle_s: float = 3.0,
-                          live: bool = False, tx_addr: int = DIAG_ADDR, rx_addr: int = REPLY_ADDR) -> ScanRecorder:
-  """Queue the script for pandad and record the bus until it has had time to finish."""
+def queue_and_capture(frames: Sequence[ScriptFrame], settle_s: float, on_msgs=None) -> bool:
+  """Queue a script for pandad and stream the `can` bus to on_msgs until it finishes.
+
+  Returns True if pandad played the script, False if the car was onroad or the script was never
+  taken (in which case the queued param is cleared). on_msgs is called with each drained batch as
+  (nanos, [(addr, data, src), ...]) tuples, the shape ScanRecorder.update expects.
+  """
   import openpilot.cereal.messaging as messaging
   from openpilot.common.params import Params
   from openpilot.selfdrive.pandad import can_capnp_to_list
 
-  recorder = ScanRecorder(frames, sub_addr, tx_addr, rx_addr)
-  if live:
-    recorder.on_sent = announce
   params = Params()
   # pandad decides offroad from deviceState.started, so ask the same source. If it does not answer
   # in time, go ahead: a script pandad never takes is caught after the run below.
   sm = messaging.SubMaster(["deviceState"])
   sm.update(1000)
   if sm.updated["deviceState"] and sm["deviceState"].started:
-    # pandad would drop the script on the spot; say so instead of recording a minute of nothing.
-    recorder.script_played = False
-    return recorder
+    return False
 
   can_sock = messaging.sub_sock("can", conflate=False, timeout=0)
   # Drain what is already queued so the first probe is not matched against stale frames.
@@ -436,17 +459,45 @@ def run_script_and_record(frames: Sequence[ScriptFrame], sub_addr: int | None, s
   deadline = time.monotonic() + 0.5 + script_duration_s(frames) + settle_s
   while time.monotonic() < deadline:
     raw = messaging.drain_sock_raw(can_sock)
-    if raw:
-      recorder.update(can_capnp_to_list(raw))
-    else:
+    if raw and on_msgs is not None:
+      on_msgs(can_capnp_to_list(raw))
+    elif not raw:
       time.sleep(0.01)
   if params.get("OffroadCanScript"):
     # Still queued after the whole run: pandad never took it (went onroad, or is not running).
     params.remove("OffroadCanScript")
-    recorder.script_played = False
-    return recorder
-  recorder.place_by_schedule()
+    return False
+  return True
+
+
+def run_script_and_record(frames: Sequence[ScriptFrame], sub_addr: int | None, settle_s: float = 3.0,
+                          live: bool = False, tx_addr: int = DIAG_ADDR, rx_addr: int = REPLY_ADDR) -> ScanRecorder:
+  """Queue the script for pandad and record the bus until it has had time to finish."""
+  recorder = ScanRecorder(frames, sub_addr, tx_addr, rx_addr)
+  if live:
+    recorder.on_sent = announce
+  recorder.script_played = queue_and_capture(frames, settle_s, recorder.update)
+  if recorder.script_played:
+    recorder.place_by_schedule()
   return recorder
+
+
+def run_subaddr_discovery(subs: Iterable[int] = ALL_LIDS, gap_ms: int = PROBE_GAP_MS, settle_s: float = 2.0):
+  """Tester-present every sub-address behind 0x750; return (played, sorted list of answering subs)."""
+  subs = list(subs)
+  frames = build_subaddr_discovery_frames(subs, gap_ms)
+  found: set[int] = set()
+
+  def on_msgs(batch):
+    for _nanos, msgs in batch:
+      for addr, data, src in msgs:
+        if addr == REPLY_ADDR and src < 128:
+          sub = tester_present_sub(bytes(data))
+          if sub is not None:
+            found.add(sub)
+
+  played = queue_and_capture(frames, settle_s, on_msgs)
+  return played, sorted(found)
 
 
 def report_path(out: str | None) -> str:
@@ -472,8 +523,29 @@ def main(argv: list[str] | None = None) -> int:
   parser.add_argument("--repeat", type=int, default=1, help="with --control: how many times to set and release it")
   parser.add_argument("--on-ms", type=int, default=SWEEP_ON_MS, help="ms a sweep control is held before it is released")
   parser.add_argument("--off-ms", type=int, default=SWEEP_OFF_MS, help="ms between a release and the next sweep control")
+  parser.add_argument("--discover-subs", action="store_true",
+                      help="tester-present every 0x750 sub-address and list which ECUs answer (no actuation)")
   parser.add_argument("--out", default=None, help=f"report file (default {DEFAULT_REPORT_DIR}/{REPORT_NAME})")
   args = parser.parse_args(argv)
+
+  if args.discover_subs:
+    disc_s = script_duration_s(build_subaddr_discovery_frames())
+    print(f"sub-address discovery on 0x{DIAG_ADDR:03X}: 256 tester-present probes, about {disc_s:.0f} s.", flush=True)
+    played, subs = run_subaddr_discovery()
+    if not played:
+      print(NOT_PLAYED_WARNING)
+      return 1
+    known = KNOWN_LIDS.keys()
+    print(f"answering sub-addresses ({len(subs)}): " + (", ".join(f"0x{x:02X}" for x in subs) if subs else "none"))
+    print("already scanned: " + ", ".join(f"0x{x:02X}" for x in sorted(known)))
+    path = report_path(args.out)
+    with open(path, "w") as f:
+      f.write(f"0x750 sub-address discovery at {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+      f.write(f"answering sub-addresses ({len(subs)}):\n")
+      for x in subs:
+        f.write(f"  0x{x:02X}\n")
+    print(f"report: {path}")
+    return 0
 
   if args.direct is not None:
     sub_addr, tx_addr, rx_addr = None, args.direct, args.direct + 8

@@ -19,6 +19,9 @@ from openpilot.sunnypilot.body_lid_scan import (
   build_bit_sweep_frames,
   build_lid_scan_frames,
   build_probe,
+  build_subaddr_discovery_frames,
+  build_tester_present,
+  tester_present_sub as tp_sub,
   classify_reply,
   combo_controls,
   describe_blinkers_state,
@@ -293,3 +296,25 @@ class TestDirectAddressing:
     assert "0x7C0 direct" in rec.summary()
     assert "service 0x30 not supported: 1 probes" in rec.summary()
     assert "does not implement service 0x30" in rec.report("t")
+
+
+class TestSubAddressDiscovery:
+  def test_tester_present_frame_shape_actuates_nothing(self):
+    # [sub, len=1, service 0x3E], padded to 8. No control record, so nothing can be driven.
+    assert build_tester_present(0x40) == bytes([0x40, 0x01, 0x3E, 0, 0, 0, 0, 0])
+    assert build_tester_present(0xA5) == bytes([0xA5, 0x01, 0x3E, 0, 0, 0, 0, 0])
+
+  def test_tester_present_reply_recognised_by_subaddress(self):
+    assert tp_sub(bytes.fromhex("40 01 7e 00 00 00 00 00")) == 0x40
+    assert tp_sub(bytes.fromhex("a5 01 7e 00 00 00 00 00")) == 0xA5
+    # a 0x30 positive is not a tester-present reply
+    assert tp_sub(bytes.fromhex("40 02 70 12 00 00 00 00")) is None
+    # a negative response is not a presence confirmation
+    assert tp_sub(bytes.fromhex("40 03 7f 3e 11 00 00 00")) is None
+
+  def test_discovery_covers_every_subaddress(self):
+    frames = build_subaddr_discovery_frames()
+    assert len(frames) == 256
+    assert [f.data[0] for f in frames] == list(range(256))
+    assert all(f.data[2] == 0x3E for f in frames)
+    assert all(f.addr == DIAG_ADDR for f in frames)
