@@ -165,6 +165,48 @@ class TestLanePolicy(unittest.TestCase):
                                             one_line_fallback_enabled=True), -0.0012)
     self.assertFalse(modeld._lane_lock_one_line_hold)
 
+  def settle_intensity(self, lane_center: float, intensity: int, seconds: float = 1.0) -> float:
+    self.arm_lane_policy()
+    output = make_model_output(lane_center=lane_center)
+    curvature = 0.0
+    for _ in range(int(np.ceil(seconds / modeld.DT_MDL))):
+      curvature = modeld.apply_lane_lock(output, 0.0, 20.0, lane_policy_enabled=True, intensity=intensity)
+    return curvature
+
+  def test_intensity_scales_settled_correction(self):
+    # A moderate offset that stays below the ceiling at every preset, so the
+    # settled correction reflects the intensity scale rather than saturation.
+    relaxed = self.settle_intensity(0.1, 0)
+    modeld.reset_lane_lock()
+    normal = self.settle_intensity(0.1, 1)
+    modeld.reset_lane_lock()
+    aggressive = self.settle_intensity(0.1, 2)
+    self.assertLess(relaxed, normal)
+    self.assertLess(normal, aggressive)
+    self.assertLessEqual(aggressive, modeld.LANE_LOCK_MAX_CENTER_CORRECTION)
+
+  def test_intensity_never_exceeds_hard_cap(self):
+    # A large offset saturates every preset; the hard safety ceiling holds even
+    # on aggressive.
+    aggressive = self.settle_intensity(0.9, 2)
+    self.assertAlmostEqual(aggressive, modeld.LANE_LOCK_MAX_CENTER_CORRECTION)
+
+  def test_intensity_out_of_range_falls_back_to_normal(self):
+    self.assertEqual(modeld.get_intensity_scale(99),
+                     modeld.LANE_POLICY_INTENSITY_SCALE[modeld.LANE_POLICY_INTENSITY_NORMAL])
+    self.assertEqual(modeld.get_intensity_scale(-1),
+                     modeld.LANE_POLICY_INTENSITY_SCALE[modeld.LANE_POLICY_INTENSITY_NORMAL])
+
+  def test_default_intensity_matches_normal_preset(self):
+    default = self.settle_intensity(0.1, modeld.LANE_POLICY_INTENSITY_NORMAL)
+    modeld.reset_lane_lock()
+    output = make_model_output(lane_center=0.1)
+    self.arm_lane_policy()
+    explicit = 0.0
+    for _ in range(int(np.ceil(1.0 / modeld.DT_MDL))):
+      explicit = modeld.apply_lane_lock(output, 0.0, 20.0, lane_policy_enabled=True)
+    self.assertEqual(default, explicit)
+
   def test_lead_fallback_after_unclear_lanes(self):
     bad_lanes = make_model_output(left_prob=0.10, right_prob=0.10, lead_prob=0.90, lead_y=0.6)
     curvature = modeld.apply_lane_lock(bad_lanes, 0.0010, 20.0, lane_policy_enabled=True,

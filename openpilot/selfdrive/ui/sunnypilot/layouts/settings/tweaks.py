@@ -26,7 +26,12 @@ from openpilot.sunnypilot.hazard_flash import (
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog
-from openpilot.system.ui.sunnypilot.widgets.list_view import button_item_sp, simple_button_item_sp, toggle_item_sp
+from openpilot.system.ui.sunnypilot.widgets.list_view import (
+  button_item_sp,
+  multiple_button_item_sp,
+  simple_button_item_sp,
+  toggle_item_sp,
+)
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.scroller_tici import Scroller
 
@@ -62,6 +67,17 @@ class LanePolicySettingsLayout(Widget):
       param="LanePolicyTwoLine",
       enabled=lambda: ui_state.params.get_bool("LanePolicyEnabled"),
     )
+    self._intensity = multiple_button_item_sp(
+      title=lambda: tr("Intensity"),
+      description=lambda: tr("How hard the correction pulls toward center and how quickly it settles. Aggressive "
+                            "reacts sooner and holds a firmer line; Relaxed is gentler. The hard safety limit on "
+                            "the correction is the same at every setting."),
+      buttons=[lambda: tr("Relaxed"), lambda: tr("Normal"), lambda: tr("Aggressive")],
+      param="LanePolicyIntensity",
+      button_width=280,
+      inline=False,
+    )
+    self._intensity.action_item.set_enabled(lambda: ui_state.params.get_bool("LanePolicyEnabled"))
     self._one_line_fallback = toggle_item_sp(
       title=lambda: tr("One-Line Fallback"),
       description=lambda: tr("If one lane line briefly disappears, hold lane centering using the remaining line and the learned lane width."),
@@ -90,6 +106,7 @@ class LanePolicySettingsLayout(Widget):
     self._scroller = Scroller([
       self._back_button,
       self._two_line,
+      self._intensity,
       self._one_line_fallback,
       self._e2e_blend,
       self._lead_fallback,

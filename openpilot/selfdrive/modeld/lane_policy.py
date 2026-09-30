@@ -54,6 +54,13 @@ LANE_LOCK_LEAD_MAX_LATERAL = 2.0
 # far end, where 0.08 * lead_x would be far too generous.
 LANE_LOCK_LEAD_MAX_LATERAL_RATIO = 0.08
 LANE_LOCK_LEAD_MAX_CORRECTION = 0.00020
+# Intensity presets index into this tuple: 0 relaxed, 1 normal, 2 aggressive.
+# The scale multiplies the computed correction and how fast it engages, then the
+# result is re-clipped to the branch's own tuned ceiling, so aggressive pulls
+# harder and settles sooner for a given offset without raising the hard safety
+# bound, and relaxed is gentler and slower.
+LANE_POLICY_INTENSITY_SCALE = (0.6, 1.0, 1.4)
+LANE_POLICY_INTENSITY_NORMAL = 1
 # These are the names of custom.capnp's ModelDataV2SP.LanePolicyMode enumerants.
 # Keeping them as the capnp names means the publishers can assign the status
 # straight onto the message and the UI can switch on it, with no int mapping in
@@ -84,6 +91,13 @@ _lane_lock_last_logged_mode = None
 _lane_lock_last_log_time = 0.0
 _lane_policy_mode = LANE_POLICY_MODE_INACTIVE
 _lane_policy_correction = 0.0
+
+
+def get_intensity_scale(intensity: int) -> float:
+  """Correction scale for an intensity preset index, defaulting to normal."""
+  if 0 <= intensity < len(LANE_POLICY_INTENSITY_SCALE):
+    return LANE_POLICY_INTENSITY_SCALE[intensity]
+  return LANE_POLICY_INTENSITY_SCALE[LANE_POLICY_INTENSITY_NORMAL]
 
 
 def get_lane_policy_status() -> tuple[str, float]:
@@ -276,6 +290,7 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
                     lead_fallback_enabled: bool = False,
                     e2e_blend_enabled: bool = False,
                     two_line_enabled: bool = True,
+                    intensity: int = LANE_POLICY_INTENSITY_NORMAL,
                     constants: type = ModelConstants) -> float:
   """Anchor the e2e curvature to a stable lane midpoint with a bounded correction.
 
@@ -385,8 +400,10 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
       _lane_lock_weight = 1.0
       _lane_lock_line_loss_time = 0.0
 
+    correction_limit = LANE_LOCK_MAX_CENTER_CORRECTION
     if lead_center_correction is not None:
       center_correction = lead_center_correction
+      correction_limit = LANE_LOCK_LEAD_MAX_CORRECTION
       _lane_lock_one_line_hold = False
       _lane_lock_ready = False
       _lane_lock_full_active = False
@@ -409,6 +426,12 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
         center_correction = float(np.clip(center_correction,
                                           -LANE_LOCK_MAX_CENTER_CORRECTION,
                                           LANE_LOCK_MAX_CENTER_CORRECTION))
+
+    # Aggressiveness: scale the target correction, then re-clip to the branch's
+    # own ceiling so the hard safety bound is preserved at every setting.
+    intensity_scale = get_intensity_scale(intensity)
+    center_correction = float(np.clip(center_correction * intensity_scale,
+                                      -correction_limit, correction_limit))
     if abs(center_correction) < LANE_LOCK_CORRECTION_DEADBAND:
       center_correction = 0.0
 
@@ -443,7 +466,7 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
     correction_step = (LANE_LOCK_CORRECTION_RELEASE_STEP
                        if (abs(center_correction) < abs(_lane_lock_center_correction) or
                            center_correction * _lane_lock_center_correction < 0.0)
-                       else LANE_LOCK_CORRECTION_ENGAGE_STEP)
+                       else LANE_LOCK_CORRECTION_ENGAGE_STEP * intensity_scale)
     delta = float(np.clip(center_correction - _lane_lock_center_correction,
                           -correction_step, correction_step))
     _lane_lock_center_correction += delta
