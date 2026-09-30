@@ -61,7 +61,8 @@ def get_action_from_model(model_output: dict[str, np.ndarray], prev_action: log.
                           blinkers_active: bool = False, lane_policy_enabled: bool = False,
                           one_line_fallback_enabled: bool = True,
                           lead_fallback_enabled: bool = False,
-                          e2e_blend_enabled: bool = False) -> log.ModelDataV2.Action:
+                          e2e_blend_enabled: bool = False,
+                          two_line_enabled: bool = True) -> log.ModelDataV2.Action:
   if 'action' not in model_output:
     plan = model_output['plan'][0]
     desired_accel = get_accel_from_plan(plan[:,Plan.VELOCITY][:,0],
@@ -78,7 +79,7 @@ def get_action_from_model(model_output: dict[str, np.ndarray], prev_action: log.
     desired_curvature = model_output['action'][0,0] / (max(1.0, v_ego))**2
   desired_curvature = lane_policy.apply_lane_lock(model_output, desired_curvature, v_ego, blinkers_active,
                                                   lane_policy_enabled, one_line_fallback_enabled,
-                                                  lead_fallback_enabled, e2e_blend_enabled)
+                                                  lead_fallback_enabled, e2e_blend_enabled, two_line_enabled)
   stop = should_stop(v_ego, desired_accel)
   desired_accel = smooth_value(desired_accel, prev_action.desiredAcceleration, LONG_SMOOTH_SECONDS)
   if v_ego > MIN_LAT_CONTROL_SPEED:
@@ -367,6 +368,7 @@ def main(demo=False):
   one_line_fallback_enabled = params.get_bool("LanePolicyOneLineFallback")
   lead_fallback_enabled = params.get_bool("LanePolicyLeadFallback")
   e2e_blend_enabled = params.get_bool("LanePolicyE2EBlend")
+  two_line_enabled = params.get_bool("LanePolicyTwoLine")
 
   # setup filter to track dropped frames
   frame_dropped_filter = FirstOrderFilter(0., 10., 1. / ModelConstants.MODEL_RUN_FREQ)
@@ -519,9 +521,10 @@ def main(demo=False):
         one_line_fallback_enabled = params.get_bool("LanePolicyOneLineFallback")
         lead_fallback_enabled = params.get_bool("LanePolicyLeadFallback")
         e2e_blend_enabled = params.get_bool("LanePolicyE2EBlend")
+        two_line_enabled = params.get_bool("LanePolicyTwoLine")
       action = get_action_from_model(model_output, prev_action, lat_action_t, long_action_t, v_ego,
                                      blinkers_active, lane_policy_enabled, one_line_fallback_enabled,
-                                     lead_fallback_enabled, e2e_blend_enabled)
+                                     lead_fallback_enabled, e2e_blend_enabled, two_line_enabled)
       prev_action = action
       fill_model_msg(modelv2_send, model_output, action,
                      publish_state, meta_main.frame_id, meta_extra.frame_id, frame_id,

@@ -275,6 +275,7 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
                     one_line_fallback_enabled: bool = True,
                     lead_fallback_enabled: bool = False,
                     e2e_blend_enabled: bool = False,
+                    two_line_enabled: bool = True,
                     constants: type = ModelConstants) -> float:
   """Anchor the e2e curvature to a stable lane midpoint with a bounded correction.
 
@@ -330,7 +331,7 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
     two_line_confidence = min(left_prob, right_prob)
     center_y: np.ndarray | None = None
 
-    if valid_left and valid_right:
+    if two_line_enabled and valid_left and valid_right:
       measured_width, two_line_geometry = get_lane_width_measurement(left_y, right_y, fit)
       if two_line_geometry:
         center_y = 0.5 * (left_y + right_y)

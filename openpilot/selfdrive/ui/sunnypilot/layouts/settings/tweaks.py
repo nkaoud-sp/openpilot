@@ -54,6 +54,14 @@ class LanePolicySettingsLayout(Widget):
       button_width=800,
       callback=self._back_callback,
     )
+    self._two_line = toggle_item_sp(
+      title=lambda: tr("Two-Line Centering"),
+      description=lambda: tr("The core correction: when both lane lines are clean, steer toward the lane midpoint. "
+                            "Turn off to test the fallbacks on their own; one-line hold also needs this since it "
+                            "builds on a two-line lock, but lead fallback works independently."),
+      param="LanePolicyTwoLine",
+      enabled=lambda: ui_state.params.get_bool("LanePolicyEnabled"),
+    )
     self._one_line_fallback = toggle_item_sp(
       title=lambda: tr("One-Line Fallback"),
       description=lambda: tr("If one lane line briefly disappears, hold lane centering using the remaining line and the learned lane width."),
@@ -81,6 +89,7 @@ class LanePolicySettingsLayout(Widget):
 
     self._scroller = Scroller([
       self._back_button,
+      self._two_line,
       self._one_line_fallback,
       self._e2e_blend,
       self._lead_fallback,

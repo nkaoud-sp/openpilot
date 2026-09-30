@@ -134,6 +134,37 @@ class TestLanePolicy(unittest.TestCase):
                                             one_line_fallback_enabled=False), -0.0012)
     self.assertFalse(modeld._lane_lock_full_active)
 
+  def test_two_line_toggle_off_returns_e2e(self):
+    output = make_model_output(lane_center=0.45)
+    self.apply_for(output, modeld.LANE_LOCK_ARM_TIME + modeld.DT_MDL)
+    self.assertFalse(modeld._lane_lock_full_active)
+    self.assertEqual(modeld.apply_lane_lock(output, 0.0010, 20.0, lane_policy_enabled=True,
+                                            two_line_enabled=False), 0.0010)
+
+  def test_two_line_toggle_off_still_allows_lead_fallback(self):
+    # With the core two-line correction disabled, a valid lead is still steered
+    # toward: lead fallback does not depend on a prior two-line lock.
+    output = make_model_output(lead_prob=0.90, lead_y=0.6)
+    curvature = modeld.apply_lane_lock(output, 0.0010, 20.0, lane_policy_enabled=True,
+                                       two_line_enabled=False, lead_fallback_enabled=True)
+    self.assertGreater(curvature, 0.0010)
+    self.assertEqual(modeld.get_lane_policy_status()[0], modeld.LANE_POLICY_MODE_LEAD)
+
+  def test_two_line_toggle_off_disables_one_line_hold(self):
+    # One-line hold builds on a two-line lock, so with the core two-line
+    # correction off it never arms: clean lanes cannot establish the lock, and a
+    # later dropped line has nothing to hold onto.
+    clean = make_model_output(lane_center=0.35)
+    for _ in range(int(np.ceil((modeld.LANE_LOCK_ARM_TIME + modeld.DT_MDL) / modeld.DT_MDL))):
+      modeld.apply_lane_lock(clean, 0.0, 20.0, lane_policy_enabled=True, two_line_enabled=False)
+    self.assertFalse(modeld._lane_lock_full_active)
+
+    one_line = make_model_output(left_prob=0.99, right_prob=0.10, lane_center=0.35)
+    self.assertEqual(modeld.apply_lane_lock(one_line, -0.0012, 20.0, lane_policy_enabled=True,
+                                            two_line_enabled=False,
+                                            one_line_fallback_enabled=True), -0.0012)
+    self.assertFalse(modeld._lane_lock_one_line_hold)
+
   def test_lead_fallback_after_unclear_lanes(self):
     bad_lanes = make_model_output(left_prob=0.10, right_prob=0.10, lead_prob=0.90, lead_y=0.6)
     curvature = modeld.apply_lane_lock(bad_lanes, 0.0010, 20.0, lane_policy_enabled=True,
