@@ -45,6 +45,10 @@ LANE_LOCK_MAX_LANE_CHANGE_PROB = 0.10
 LANE_LOCK_LOG_INTERVAL = 1.0
 LANE_LOCK_LEAD_MIN_PROB = 0.60
 LANE_LOCK_LEAD_MIN_DISTANCE = 8.0
+# With the close-range option on, a lead nearer than the normal minimum (e.g.
+# stop-and-go traffic under 5 m) is still allowed to drive lead centering, down
+# to this hard floor that rejects own-bumper and noise returns.
+LANE_LOCK_LEAD_CLOSE_MIN_DISTANCE = 2.0
 LANE_LOCK_LEAD_MAX_DISTANCE = 60.0
 LANE_LOCK_LEAD_MAX_LATERAL = 2.0
 # The absolute gate alone accepts a lead 2 m off the nose at the 8 m minimum
@@ -205,7 +209,8 @@ def get_lane_width_measurement(left_y: np.ndarray, right_y: np.ndarray,
   return float(width_median), bool(valid)
 
 
-def get_lead_center_correction(model_output: dict[str, np.ndarray], v_ego: float) -> float | None:
+def get_lead_center_correction(model_output: dict[str, np.ndarray], v_ego: float,
+                               close_lead_enabled: bool = False) -> float | None:
   lead_prob = np.asarray(model_output['lead_prob'])
   leads = np.asarray(model_output['lead'])
   if (lead_prob.ndim != 2 or leads.ndim != 4 or leads.shape[-1] < 2 or
@@ -222,9 +227,10 @@ def get_lead_center_correction(model_output: dict[str, np.ndarray], v_ego: float
   lead_prob_now = float(lead_prob[0, 0])
   lead_x = float(leads[0, 0, 0, 0])
   lead_y = float(leads[0, 0, 0, 1])
+  min_distance = LANE_LOCK_LEAD_CLOSE_MIN_DISTANCE if close_lead_enabled else LANE_LOCK_LEAD_MIN_DISTANCE
   if (not np.isfinite(lead_prob_now) or not np.isfinite(lead_x) or not np.isfinite(lead_y) or
       lead_prob_now < LANE_LOCK_LEAD_MIN_PROB or
-      lead_x < LANE_LOCK_LEAD_MIN_DISTANCE or lead_x > LANE_LOCK_LEAD_MAX_DISTANCE or
+      lead_x < min_distance or lead_x > LANE_LOCK_LEAD_MAX_DISTANCE or
       abs(lead_y) > min(LANE_LOCK_LEAD_MAX_LATERAL, LANE_LOCK_LEAD_MAX_LATERAL_RATIO * lead_x)):
     return None
 
@@ -288,6 +294,7 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
                     blinkers_active: bool = False, lane_policy_enabled: bool = False,
                     one_line_fallback_enabled: bool = True,
                     lead_fallback_enabled: bool = False,
+                    close_lead_enabled: bool = False,
                     e2e_blend_enabled: bool = False,
                     two_line_enabled: bool = True,
                     intensity: int = LANE_POLICY_INTENSITY_NORMAL,
@@ -374,7 +381,7 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
     lead_center_correction = None
     if center_y is None:
       if lead_fallback_enabled:
-        lead_center_correction = get_lead_center_correction(model_output, v_ego)
+        lead_center_correction = get_lead_center_correction(model_output, v_ego, close_lead_enabled)
       if lead_center_correction is None:
         return release_lane_lock(e2e_curvature, "stock-e2e fallback: lane geometry or confidence")
 

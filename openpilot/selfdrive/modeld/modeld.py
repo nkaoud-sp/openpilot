@@ -61,6 +61,7 @@ def get_action_from_model(model_output: dict[str, np.ndarray], prev_action: log.
                           blinkers_active: bool = False, lane_policy_enabled: bool = False,
                           one_line_fallback_enabled: bool = True,
                           lead_fallback_enabled: bool = False,
+                          close_lead_enabled: bool = False,
                           e2e_blend_enabled: bool = False,
                           two_line_enabled: bool = True,
                           intensity: int = lane_policy.LANE_POLICY_INTENSITY_NORMAL) -> log.ModelDataV2.Action:
@@ -80,8 +81,8 @@ def get_action_from_model(model_output: dict[str, np.ndarray], prev_action: log.
     desired_curvature = model_output['action'][0,0] / (max(1.0, v_ego))**2
   desired_curvature = lane_policy.apply_lane_lock(model_output, desired_curvature, v_ego, blinkers_active,
                                                   lane_policy_enabled, one_line_fallback_enabled,
-                                                  lead_fallback_enabled, e2e_blend_enabled, two_line_enabled,
-                                                  intensity)
+                                                  lead_fallback_enabled, close_lead_enabled, e2e_blend_enabled,
+                                                  two_line_enabled, intensity)
   stop = should_stop(v_ego, desired_accel)
   desired_accel = smooth_value(desired_accel, prev_action.desiredAcceleration, LONG_SMOOTH_SECONDS)
   if v_ego > MIN_LAT_CONTROL_SPEED:
@@ -369,6 +370,7 @@ def main(demo=False):
   lane_policy_enabled = params.get_bool(lane_policy.LANE_POLICY_ENABLED_PARAM)
   one_line_fallback_enabled = params.get_bool("LanePolicyOneLineFallback")
   lead_fallback_enabled = params.get_bool("LanePolicyLeadFallback")
+  close_lead_enabled = params.get_bool("LanePolicyLeadCloseRange")
   e2e_blend_enabled = params.get_bool("LanePolicyE2EBlend")
   two_line_enabled = params.get_bool("LanePolicyTwoLine")
   lane_policy_intensity = int(params.get("LanePolicyIntensity", return_default=True))
@@ -523,13 +525,14 @@ def main(demo=False):
         lane_policy_enabled = params.get_bool(lane_policy.LANE_POLICY_ENABLED_PARAM)
         one_line_fallback_enabled = params.get_bool("LanePolicyOneLineFallback")
         lead_fallback_enabled = params.get_bool("LanePolicyLeadFallback")
+        close_lead_enabled = params.get_bool("LanePolicyLeadCloseRange")
         e2e_blend_enabled = params.get_bool("LanePolicyE2EBlend")
         two_line_enabled = params.get_bool("LanePolicyTwoLine")
         lane_policy_intensity = int(params.get("LanePolicyIntensity", return_default=True))
       action = get_action_from_model(model_output, prev_action, lat_action_t, long_action_t, v_ego,
                                      blinkers_active, lane_policy_enabled, one_line_fallback_enabled,
-                                     lead_fallback_enabled, e2e_blend_enabled, two_line_enabled,
-                                     lane_policy_intensity)
+                                     lead_fallback_enabled, close_lead_enabled, e2e_blend_enabled,
+                                     two_line_enabled, lane_policy_intensity)
       prev_action = action
       fill_model_msg(modelv2_send, model_output, action,
                      publish_state, meta_main.frame_id, meta_extra.frame_id, frame_id,

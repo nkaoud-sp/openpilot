@@ -221,6 +221,33 @@ class TestLanePolicy(unittest.TestCase):
                                             one_line_fallback_enabled=False,
                                             lead_fallback_enabled=False), 0.0010)
 
+  def test_close_lead_rejected_without_close_range_option(self):
+    # A lead inside the normal 8 m minimum is ignored unless the close-range
+    # option is on.
+    close = make_model_output(left_prob=0.10, right_prob=0.10, lead_prob=0.90, lead_x=4.0, lead_y=0.2)
+    self.assertEqual(modeld.apply_lane_lock(close, 0.0010, 20.0, lane_policy_enabled=True,
+                                            one_line_fallback_enabled=False,
+                                            lead_fallback_enabled=True,
+                                            close_lead_enabled=False), 0.0010)
+
+  def test_close_lead_used_when_close_range_option_on(self):
+    close = make_model_output(left_prob=0.10, right_prob=0.10, lead_prob=0.90, lead_x=4.0, lead_y=0.2)
+    curvature = modeld.apply_lane_lock(close, 0.0010, 20.0, lane_policy_enabled=True,
+                                       one_line_fallback_enabled=False,
+                                       lead_fallback_enabled=True,
+                                       close_lead_enabled=True)
+    self.assertGreater(curvature, 0.0010)
+    self.assertEqual(modeld.get_lane_policy_status()[0], modeld.LANE_POLICY_MODE_LEAD)
+
+  def test_close_lead_still_rejects_below_hard_floor(self):
+    # Below the absolute floor the return is noise / own bumper, so it is
+    # rejected even with the close-range option on.
+    too_close = make_model_output(left_prob=0.10, right_prob=0.10, lead_prob=0.90, lead_x=1.5, lead_y=0.05)
+    self.assertEqual(modeld.apply_lane_lock(too_close, 0.0010, 20.0, lane_policy_enabled=True,
+                                            one_line_fallback_enabled=False,
+                                            lead_fallback_enabled=True,
+                                            close_lead_enabled=True), 0.0010)
+
   def test_one_line_fallback_takes_priority_over_lead(self):
     self.arm_lane_policy()
     one_line_with_lead = make_model_output(left_prob=0.99, right_prob=0.10, lane_center=0.35,

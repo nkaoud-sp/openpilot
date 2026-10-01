@@ -96,6 +96,14 @@ class LanePolicySettingsLayout(Widget):
       param="LanePolicyLeadFallback",
       enabled=lambda: ui_state.params.get_bool("LanePolicyEnabled"),
     )
+    self._lead_close_range = toggle_item_sp(
+      title=lambda: tr("Close Lead Centering"),
+      description=lambda: tr("Allow a lead nearer than the usual minimum (including under 5 m, e.g. stop-and-go "
+                            "traffic) to drive lead centering. Requires Lead Fallback, and stays grayed out until "
+                            "it is enabled."),
+      param="LanePolicyLeadCloseRange",
+      enabled=lambda: ui_state.params.get_bool("LanePolicyEnabled") and ui_state.params.get_bool("LanePolicyLeadFallback"),
+    )
     self._visual_indicator = toggle_item_sp(
       title=lambda: tr("Colored Lane-Line Indicator"),
       description=lambda: tr("Highlight the lane line the correction steers toward: green two-line, yellow one-line, purple lead fallback."),
@@ -110,6 +118,7 @@ class LanePolicySettingsLayout(Widget):
       self._one_line_fallback,
       self._e2e_blend,
       self._lead_fallback,
+      self._lead_close_range,
       self._visual_indicator,
     ], line_separator=True, spacing=0)
 
