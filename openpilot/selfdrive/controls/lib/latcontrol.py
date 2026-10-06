@@ -21,6 +21,11 @@ class LatControl(ABC):
   def reset(self):
     self.sat_time = 0.
 
+  def set_max_curvature(self, max_curvature: float) -> None:
+    # Only meaningful for curvature-command control, which clamps its PID output to the
+    # curvature ceiling. Other controllers get the ceiling via clip_curvature upstream.
+    pass
+
   def _check_saturation(self, saturated, CS, steer_limited_by_safety, curvature_limited):
     # Saturated only if control output is not being limited by car torque/angle rate limits
     if (saturated or curvature_limited) and CS.vEgo > self.sat_check_min_speed and not steer_limited_by_safety and not CS.steeringPressed:

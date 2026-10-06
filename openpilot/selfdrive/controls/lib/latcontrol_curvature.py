@@ -26,6 +26,12 @@ class LatControlCurvature(LatControl):
     if self.pid is not None:
       self.pid.reset()
 
+  def set_max_curvature(self, max_curvature: float) -> None:
+    # Keep the PID output ceiling in sync with the active curvature limit so a raised
+    # ceiling (Tweaks > Sharper Turn Curvature) is not re-clipped here.
+    if self.pid is not None:
+      self.pid.set_limits(max_curvature, -max_curvature)
+
   def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, calibrated_pose, curvature_limited, lat_delay):
     curvature_log = log.ControlsState.LateralCurvatureState.new_message()
     actual_curvature = -VM.calc_curvature(math.radians(CS.steeringAngleDeg - params.angleOffsetDeg), CS.vEgo, params.roll)

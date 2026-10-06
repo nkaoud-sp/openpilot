@@ -13,6 +13,7 @@ from opendbc.car import structs
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
+from openpilot.selfdrive.controls.lib.drive_helpers import MAX_CURVATURE, MAX_CURVATURE_HIGH
 from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
 from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
 from openpilot.sunnypilot.selfdrive.controls.lib.blinker_pause_lateral import BlinkerPauseLateral
@@ -25,6 +26,7 @@ class ControlsExt(ModelStateBase):
     self.CP = CP
     self.params = params
     self._param_update_time: float = 0.0
+    self.max_curvature: float = MAX_CURVATURE
     self.blinker_pause_lateral = BlinkerPauseLateral()
 
     cloudlog.info("controlsd_ext is waiting for CarParamsSP")
@@ -50,6 +52,8 @@ class ControlsExt(ModelStateBase):
   def get_params_sp(self, sm: messaging.SubMaster) -> None:
     if time.monotonic() - self._param_update_time > PARAMS_UPDATE_PERIOD:
       self.blinker_pause_lateral.get_params()
+
+      self.max_curvature = MAX_CURVATURE_HIGH if self.params.get_bool("MaxCurvatureEnabled") else MAX_CURVATURE
 
       if self.CP.lateralTuning.which() == 'torque':
         self.lat_delay = get_lat_delay(self.params, sm["lateralDelay"].lateralDelay)

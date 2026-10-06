@@ -204,6 +204,17 @@ class TweaksLayout(Widget):
       callback=lambda: self._set_current_panel(PanelType.LANE_POLICY),
     )
 
+    self._max_curvature = toggle_item_sp(
+      title=lambda: tr("Sharper Turn Curvature"),
+      description=lambda: tr("Raise the maximum commanded path curvature so openpilot can follow the model's " +
+                            "planned line through tight, low-speed turns (e.g. unprotected left turns) instead " +
+                            "of hitting the limit and asking you to steer. Only changes behavior at low speed; " +
+                            "the ISO lateral acceleration and jerk limits still apply, so highway behavior is " +
+                            "unchanged. More aggressive and reduces steering margin, so keep your hands on the " +
+                            "wheel. Applies on the next drive."),
+      param="MaxCurvatureEnabled",
+    )
+
     self._park_assist = toggle_item_sp(
       title=lambda: tr("Lead Halt Assist"),
       description=lambda: tr("When stopped behind a stopped lead, settle at a closer gap than the default. The " +
@@ -284,6 +295,7 @@ class TweaksLayout(Widget):
       self._launch_assist_button,
       self._lane_policy,
       self._lane_policy_button,
+      self._max_curvature,
       self._park_assist,
       self._park_assist_button,
       self._speed_assist_button,
