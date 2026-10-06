@@ -215,6 +215,16 @@ class TweaksLayout(Widget):
       param="MaxCurvatureEnabled",
     )
 
+    self._max_lateral_accel = toggle_item_sp(
+      title=lambda: tr("Stronger Cornering"),
+      description=lambda: tr("Raise the lateral acceleration limit above the ISO comfort value so openpilot holds " +
+                            "a tighter line through mid-speed turns instead of easing out of the corner. This is " +
+                            "the limit that binds at normal turn speeds, where Sharper Turn Curvature does not. " +
+                            "Noticeably more aggressive cornering, so keep your hands on the wheel. Applies on " +
+                            "the next drive."),
+      param="MaxLateralAccelEnabled",
+    )
+
     self._park_assist = toggle_item_sp(
       title=lambda: tr("Lead Halt Assist"),
       description=lambda: tr("When stopped behind a stopped lead, settle at a closer gap than the default. The " +
@@ -296,6 +306,7 @@ class TweaksLayout(Widget):
       self._lane_policy,
       self._lane_policy_button,
       self._max_curvature,
+      self._max_lateral_accel,
       self._park_assist,
       self._park_assist_button,
       self._speed_assist_button,
