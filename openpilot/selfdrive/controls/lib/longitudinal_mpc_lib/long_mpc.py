@@ -6,6 +6,7 @@ from openpilot.cereal import log
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from openpilot.common.realtime import DT_MDL
 from openpilot.common.swaglog import cloudlog
+from openpilot.common.constants import CV
 # WARNING: imports outside of constants will not trigger a rebuild
 from openpilot.selfdrive.modeld.constants import index_function
 from openpilot.selfdrive.controls.radard import _LEAD_ACCEL_TAU
@@ -57,6 +58,14 @@ COMFORT_BRAKE = 2.5
 STOP_DISTANCE = 6.0
 MIN_X_LEAD_FACTOR = 0.5
 
+# Dynamic Follow (Tweaks): scale the follow time with speed instead of using a
+# fixed personality value. The follow time ramps from t_follow_min at a standstill
+# to t_follow_max at 130 km/h, bent by a curve exponent (1.0 == straight line).
+DYNAMIC_T_FOLLOW_SPEED_BP = [0.0, 130.0 * CV.KPH_TO_MS]
+DYNAMIC_T_FOLLOW_MIN = 0.5
+DYNAMIC_T_FOLLOW_MAX = 1.1
+DYNAMIC_T_FOLLOW_CURVE = 1.0
+
 def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
   if personality==log.LongitudinalPersonality.relaxed:
     return 1.0
@@ -77,6 +86,11 @@ def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard):
     return 1.25
   else:
     raise NotImplementedError("Longitudinal personality not supported")
+
+def get_dynamic_T_FOLLOW(v_ego, t_follow_min=DYNAMIC_T_FOLLOW_MIN, t_follow_max=DYNAMIC_T_FOLLOW_MAX,
+                         curve=DYNAMIC_T_FOLLOW_CURVE):
+  v_norm = np.clip(v_ego / DYNAMIC_T_FOLLOW_SPEED_BP[1], 0.0, 1.0)
+  return float(t_follow_min + (t_follow_max - t_follow_min) * (v_norm ** curve))
 
 def get_stopped_equivalence_factor(v_lead):
   return (v_lead**2) / (2 * COMFORT_BRAKE)
@@ -307,8 +321,11 @@ class LongitudinalMpc:
     lead_xv = self.extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau)
     return lead_xv
 
-  def update(self, radarstate, personality=log.LongitudinalPersonality.standard):
-    t_follow = get_T_FOLLOW(personality)
+  def update(self, radarstate, personality=log.LongitudinalPersonality.standard,
+             dynamic_follow=False, t_follow_min=DYNAMIC_T_FOLLOW_MIN, t_follow_max=DYNAMIC_T_FOLLOW_MAX,
+             t_follow_curve=DYNAMIC_T_FOLLOW_CURVE):
+    v_ego = self.x0[1]
+    t_follow = get_dynamic_T_FOLLOW(v_ego, t_follow_min, t_follow_max, t_follow_curve) if dynamic_follow else get_T_FOLLOW(personality)
 
     lead_xv_0 = self.process_lead(radarstate.leadOne)
     lead_xv_1 = self.process_lead(radarstate.leadTwo)

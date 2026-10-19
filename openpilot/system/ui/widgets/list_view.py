@@ -273,6 +273,84 @@ class MultipleButtonAction(ItemAction):
           self.callback(i)
 
 
+STEPPER_BUTTON_SIZE = 130
+STEPPER_VALUE_WIDTH = 240
+
+
+class StepperAction(ItemAction):
+  """An inline numeric control rendered as [ - ] value [ + ]."""
+  def __init__(self, initial_value: int, min_value: int, max_value: int, step: int = 1,
+               label_callback: Callable[[int], str] | None = None, callback: Callable[[int], None] | None = None,
+               enabled: bool | Callable[[], bool] = True):
+    super().__init__(width=2 * STEPPER_BUTTON_SIZE + STEPPER_VALUE_WIDTH + 2 * RIGHT_ITEM_PADDING, enabled=enabled)
+    self._value = initial_value
+    self._min_value = min_value
+    self._max_value = max_value
+    self._step = step
+    self._label_callback = label_callback
+    self._callback = callback
+    self._font = gui_app.font(FontWeight.MEDIUM)
+
+  def get_value(self) -> int:
+    return self._value
+
+  def set_value(self, value: int):
+    self._value = int(min(max(value, self._min_value), self._max_value))
+
+  def _label(self) -> str:
+    return self._label_callback(self._value) if self._label_callback else str(self._value)
+
+  def _button_rects(self, rect: rl.Rectangle):
+    button_y = rect.y + (rect.height - BUTTON_HEIGHT) / 2
+    minus_rect = rl.Rectangle(rect.x, button_y, STEPPER_BUTTON_SIZE, BUTTON_HEIGHT)
+    plus_rect = rl.Rectangle(rect.x + rect.width - STEPPER_BUTTON_SIZE, button_y, STEPPER_BUTTON_SIZE, BUTTON_HEIGHT)
+    return minus_rect, plus_rect
+
+  def _draw_button(self, button_rect: rl.Rectangle, text: str):
+    mouse_pos = rl.get_mouse_position()
+    is_pressed = rl.check_collision_point_rec(mouse_pos, button_rect) and self.enabled and self.is_pressed
+    if is_pressed:
+      bg_color = BUTTON_PRESSED_BACKGROUND_COLORS[ButtonStyle.PILL]
+    else:
+      bg_color = BUTTON_BACKGROUND_COLORS[ButtonStyle.PILL]
+    if not self.enabled:
+      bg_color = rl.Color(bg_color.r, bg_color.g, bg_color.b, BUTTON_DISABLED_BACKGROUND_COLORS[ButtonStyle.PILL].a)
+
+    rl.draw_rectangle_rounded(button_rect, 1.0, 20, bg_color)
+    text_size = measure_text_cached(self._font, text, 45)
+    text_x = button_rect.x + (button_rect.width - text_size.x) / 2
+    text_y = button_rect.y + (button_rect.height - text_size.y) / 2
+    text_color = BUTTON_TEXT_COLOR[ButtonStyle.PILL] if self.enabled else BUTTON_DISABLED_TEXT_COLORS[ButtonStyle.PILL]
+    rl.draw_text_ex(self._font, text, rl.Vector2(text_x, text_y), 45, 0, text_color)
+
+  def _render(self, rect: rl.Rectangle):
+    minus_rect, plus_rect = self._button_rects(rect)
+    self._draw_button(minus_rect, "-")
+    self._draw_button(plus_rect, "+")
+
+    # value label, centered between the two buttons
+    value_rect = rl.Rectangle(minus_rect.x + STEPPER_BUTTON_SIZE, rect.y,
+                              rect.width - 2 * STEPPER_BUTTON_SIZE, rect.height)
+    gui_label(value_rect, self._label(), font_size=ITEM_TEXT_FONT_SIZE, color=ITEM_TEXT_VALUE_COLOR,
+              font_weight=FontWeight.NORMAL, alignment=TextAlignment.CENTER,
+              alignment_vertical=TextAlignmentVertical.MIDDLE)
+
+  def _handle_mouse_release(self, mouse_pos: MousePos):
+    if not self.enabled:
+      return
+    minus_rect, plus_rect = self._button_rects(self._rect)
+    new_value = self._value
+    if rl.check_collision_point_rec(mouse_pos, minus_rect):
+      new_value = self._value - self._step
+    elif rl.check_collision_point_rec(mouse_pos, plus_rect):
+      new_value = self._value + self._step
+    new_value = int(min(max(new_value, self._min_value), self._max_value))
+    if new_value != self._value:
+      self._value = new_value
+      if self._callback:
+        self._callback(self._value)
+
+
 class ListItem(Widget):
   def __init__(self, title: str | Callable[[], str] = "", icon: str | None = None, description: str | Callable[[], str] | None = None,
                description_visible: bool = False, callback: Callable | None = None,
@@ -469,4 +547,12 @@ def dual_button_item(left_text: str | Callable[[], str], right_text: str | Calla
 def multiple_button_item(title: str | Callable[[], str], description: str | Callable[[], str], buttons: list[str | Callable[[], str]], selected_index: int,
                          button_width: int = BUTTON_WIDTH, callback: Callable | None = None, icon: str = ""):
   action = MultipleButtonAction(buttons, button_width, selected_index, callback=callback)
+  return ListItem(title=title, description=description, icon=icon, action_item=action)
+
+
+def stepper_item(title: str | Callable[[], str], initial_value: int, min_value: int, max_value: int, step: int = 1,
+                 label_callback: Callable[[int], str] | None = None, callback: Callable[[int], None] | None = None,
+                 description: str | Callable[[], str] | None = None, icon: str = "",
+                 enabled: bool | Callable[[], bool] = True) -> ListItem:
+  action = StepperAction(initial_value, min_value, max_value, step, label_callback, callback, enabled)
   return ListItem(title=title, description=description, icon=icon, action_item=action)
