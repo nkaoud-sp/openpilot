@@ -4,6 +4,7 @@ from openpilot.common.params import Params
 from openpilot.selfdrive.ui.layouts.settings.tweaks_sub_layouts.dynamic_follow_settings import DynamicFollowSettingsLayout
 from openpilot.selfdrive.ui.layouts.settings.tweaks_sub_layouts.launch_assist_settings import LaunchAssistSettingsLayout
 from openpilot.selfdrive.ui.layouts.settings.tweaks_sub_layouts.park_assist_settings import ParkAssistSettingsLayout
+from openpilot.selfdrive.ui.layouts.settings.tweaks_sub_layouts.speed_assist_settings import SpeedAssistSettingsLayout
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.list_view import toggle_item, button_item
 from openpilot.system.ui.widgets.scroller_tici import Scroller
@@ -17,6 +18,7 @@ class PanelType(IntEnum):
   DYNAMIC_FOLLOW = 1
   LAUNCH = 2
   PARK = 3
+  SPEED_ASSIST = 4
 
 
 class TweaksLayout(Widget):
@@ -28,6 +30,7 @@ class TweaksLayout(Widget):
     self._dynamic_follow_layout = DynamicFollowSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._launch_layout = LaunchAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._park_layout = ParkAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
+    self._speed_assist_layout = SpeedAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
 
     self._dynamic_follow = toggle_item(
       lambda: tr("Dynamic Follow"),
@@ -66,6 +69,8 @@ class TweaksLayout(Widget):
       self._park_assist,
       button_item("", lambda: tr("Manage Halt Assist Settings"), button_width=MANAGE_BUTTON_WIDTH,
                   callback=lambda: self._set_current_panel(PanelType.PARK)),
+      button_item("", lambda: tr("Experimental Speed Assist"), button_width=MANAGE_BUTTON_WIDTH,
+                  callback=lambda: self._set_current_panel(PanelType.SPEED_ASSIST)),
     ]
     self._scroller = Scroller(items, line_separator=True, spacing=0)
 
@@ -76,6 +81,8 @@ class TweaksLayout(Widget):
       self._launch_layout.render(rect)
     elif self._current_panel == PanelType.PARK:
       self._park_layout.render(rect)
+    elif self._current_panel == PanelType.SPEED_ASSIST:
+      self._speed_assist_layout.render(rect)
     else:
       self._scroller.render(rect)
 
@@ -91,6 +98,8 @@ class TweaksLayout(Widget):
       self._launch_layout.show_event()
     elif panel == PanelType.PARK:
       self._park_layout.show_event()
+    elif panel == PanelType.SPEED_ASSIST:
+      self._speed_assist_layout.show_event()
     else:
       # refresh the menu toggles from params to mirror any external changes
       self._dynamic_follow.action_item.set_state(self._params.get_bool("DynamicFollow"))
