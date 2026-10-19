@@ -108,9 +108,9 @@ class ButtonAction(ItemAction):
       text_width = measure_text_cached(self._font, value_text, ITEM_TEXT_FONT_SIZE).x
       # round up so the width survives float32 storage in rl.Rectangle, otherwise the
       # value label can come out a fraction of a pixel too narrow and get elided
-      return math.ceil(text_width) + BUTTON_WIDTH + TEXT_PADDING
+      return math.ceil(text_width) + self._rect.width + TEXT_PADDING
     else:
-      return BUTTON_WIDTH
+      return self._rect.width
 
   def set_touch_valid_callback(self, touch_callback: Callable[[], bool]) -> None:
     super().set_touch_valid_callback(touch_callback)
@@ -133,12 +133,13 @@ class ButtonAction(ItemAction):
   def _render(self, rect: rl.Rectangle) -> bool:
     self._button.set_text(self.text)
     self._button.set_enabled(_resolve_value(self.enabled))
-    button_rect = rl.Rectangle(rect.x + rect.width - BUTTON_WIDTH, rect.y + (rect.height - BUTTON_HEIGHT) / 2, BUTTON_WIDTH, BUTTON_HEIGHT)
+    button_width = self._rect.width
+    button_rect = rl.Rectangle(rect.x + rect.width - button_width, rect.y + (rect.height - BUTTON_HEIGHT) / 2, button_width, BUTTON_HEIGHT)
     self._button.render(button_rect)
 
     value_text = self.value
     if value_text:
-      value_rect = rl.Rectangle(rect.x, rect.y, rect.width - BUTTON_WIDTH - TEXT_PADDING, rect.height)
+      value_rect = rl.Rectangle(rect.x, rect.y, rect.width - button_width - TEXT_PADDING, rect.height)
       gui_label(value_rect, value_text, font_size=ITEM_TEXT_FONT_SIZE, color=ITEM_TEXT_VALUE_COLOR,
                 font_weight=FontWeight.NORMAL, alignment=TextAlignment.LEFT,
                 alignment_vertical=TextAlignmentVertical.MIDDLE)
@@ -526,8 +527,8 @@ def toggle_item(title: str | Callable[[], str], description: str | Callable[[], 
 
 
 def button_item(title: str | Callable[[], str], button_text: str | Callable[[], str], description: str | Callable[[], str] | None = None,
-                callback: Callable | None = None, enabled: bool | Callable[[], bool] = True) -> ListItem:
-  action = ButtonAction(text=button_text, enabled=enabled)
+                callback: Callable | None = None, enabled: bool | Callable[[], bool] = True, button_width: int = BUTTON_WIDTH) -> ListItem:
+  action = ButtonAction(text=button_text, width=button_width, enabled=enabled)
   return ListItem(title=title, description=description, action_item=action, callback=callback)
 
 
