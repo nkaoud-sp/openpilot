@@ -35,6 +35,8 @@ class VCruiseHelper:
     self.v_cruise_kph_last = 0
     self.button_timers = {ButtonType.decelCruise: 0, ButtonType.accelCruise: 0}
     self.button_change_states = {btn: {"standstill": False, "enabled": False} for btn in self.button_timers}
+    # Reverse Cruise Increase (Tweaks): updated live from card's params thread.
+    self.reverse_cruise = False
 
   @property
   def v_cruise_initialized(self):
@@ -98,8 +100,14 @@ class VCruiseHelper:
     if not self.button_change_states[button_type]["enabled"]:
       return
 
-    v_cruise_delta = v_cruise_delta * (5 if long_press else 1)
-    if long_press and self.v_cruise_kph % v_cruise_delta != 0:  # partial interval
+    # Reverse Cruise Increase (Toyota/Lexus): swap the default short=1 / long=5
+    # behavior so a short press steps by 5 and a long press by 1. "coarse" is the
+    # 5-kph step; the partial-interval snap always ties to it, whichever press
+    # triggers it.
+    reverse = self.reverse_cruise and self.CP.brand == "toyota"
+    coarse = (not long_press) if reverse else long_press
+    v_cruise_delta = v_cruise_delta * (5 if coarse else 1)
+    if coarse and self.v_cruise_kph % v_cruise_delta != 0:  # partial interval
       self.v_cruise_kph = CRUISE_NEAREST_FUNC[button_type](self.v_cruise_kph / v_cruise_delta) * v_cruise_delta
     else:
       self.v_cruise_kph += v_cruise_delta * CRUISE_INTERVAL_SIGN[button_type]

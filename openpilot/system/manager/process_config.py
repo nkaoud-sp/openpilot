@@ -64,6 +64,9 @@ def only_offroad(started: bool, params: Params, CP: car.CarParams) -> bool:
 def livestream(started: bool, params: Params, CP: car.CarParams) -> bool:
   return params.get_bool("IsLiveStreaming")
 
+def auto_door_lock(started: bool, params: Params, CP: car.CarParams) -> bool:
+  return (not started) and params.get_bool("AutoDoorLock")
+
 def or_(*fns):
   return lambda *args: operator.or_(*(fn(*args) for fn in fns))
 
@@ -118,6 +121,9 @@ procs = [
   PythonProcess("tombstoned", "openpilot.system.tombstoned", always_run, enabled=not PC),
   PythonProcess("updated", "openpilot.system.updated.updated", only_offroad, enabled=not PC),
   PythonProcess("uploader", "openpilot.system.loggerd.uploader", always_run),
+
+  # auto door lock (offroad, Toyota/Lexus)
+  PythonProcess("autolockd", "openpilot.selfdrive.autolock.autolockd", auto_door_lock),
 
   # debug procs
   NativeProcess("bridge", "openpilot/cereal/messaging", ["./bridge"], notcar),

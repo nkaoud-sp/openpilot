@@ -256,6 +256,7 @@ class Car:
     while not evt.is_set():
       self.is_metric = self.params.get_bool("IsMetric")
       self.initial_cruise_speed = self.params.get("InitialCruiseSpeedKph", return_default=True)
+      self.v_cruise_helper.reverse_cruise = self.params.get_bool("ToyotaReverseCruise")
       time.sleep(0.1)
 
   def card_thread(self):

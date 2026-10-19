@@ -392,6 +392,7 @@ void pandad_run(Panda *panda) {
       }
       process_panda_state(panda, &pm, engaged, is_onroad, spoofing_started);
       panda_safety.configureSafetyMode(is_onroad);
+      panda_safety.maybeSendOffroadCan(is_onroad);
     }
 
     // Send out peripheralState at 2Hz
