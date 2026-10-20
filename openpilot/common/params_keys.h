@@ -150,6 +150,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
 
     // --- sunnypilot params --- //
     {"ApiCache_DriveStats", {PERSISTENT, JSON}},
+    {"AutoDoorLock", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"AutoDoorLockCloseWindows", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"AutoDoorLockFoldMirrors", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"AutoLaneChangeBsmDelay", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"AutoLaneChangeTimer", {PERSISTENT | BACKUP, INT, "0"}},
     {"BlinkerLateralReengageDelay", {PERSISTENT | BACKUP, INT, "0"}},  // seconds
@@ -195,6 +198,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"OnroadScreenOffTimer", {PERSISTENT | BACKUP, INT, "15"}},
     {"OnroadScreenOffTimerMigrated", {PERSISTENT | BACKUP, STRING, "0.0"}},
     {"OnroadUploads", {PERSISTENT | BACKUP, BOOL, "1"}},
+    {"OffroadCanQueue", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BYTES}},
     {"ParkAssist", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"ParkDistance", {PERSISTENT | BACKUP, INT, "280"}},
     {"QuickBootToggle", {PERSISTENT | BACKUP, BOOL, "0"}},
@@ -253,6 +257,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"TeslaCoopSteering", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"TeslaMadsScreenButton", {PERSISTENT | BACKUP, INT, "0"}},
     {"ToyotaEnforceStockLongitudinal", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"ToyotaReverseCruise", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"ToyotaStopAndGoHack", {PERSISTENT | BACKUP, BOOL, "0"}},
 
     {"BlindSpot", {PERSISTENT | BACKUP, BOOL, "0"}},
