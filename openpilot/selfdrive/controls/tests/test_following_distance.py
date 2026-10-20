@@ -4,7 +4,9 @@ from openpilot.common.parameterized import parameterized_class
 
 from openpilot.cereal import log
 
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_safe_obstacle_distance, get_stopped_equivalence_factor, get_T_FOLLOW
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
+  get_dynamic_T_FOLLOW, get_safe_obstacle_distance, get_stopped_equivalence_factor, get_T_FOLLOW,
+)
 from openpilot.selfdrive.test.longitudinal_maneuvers.maneuver import Maneuver
 
 
@@ -27,6 +29,21 @@ def run_following_distance_simulation(v_lead, t_end=100.0, personality=0):
   valid, output = man.evaluate()
   assert valid
   return output[-1,2] - output[-1,1]
+
+
+class TestDynamicFollow(OpenpilotTestCase):
+  def test_endpoints(self):
+    self.assertAlmostEqual(get_dynamic_T_FOLLOW(0.0), 0.5)
+    self.assertAlmostEqual(get_dynamic_T_FOLLOW(130.0 / 3.6), 1.1)
+
+  def test_speed_clamping(self):
+    self.assertAlmostEqual(get_dynamic_T_FOLLOW(-1.0), 0.5)
+    self.assertAlmostEqual(get_dynamic_T_FOLLOW(200.0 / 3.6), 1.1)
+
+  def test_curve_shape(self):
+    speed = 65.0 / 3.6
+    self.assertGreater(get_dynamic_T_FOLLOW(speed, curve=0.5), get_dynamic_T_FOLLOW(speed, curve=1.0))
+    self.assertLess(get_dynamic_T_FOLLOW(speed, curve=2.0), get_dynamic_T_FOLLOW(speed, curve=1.0))
 
 
 @parameterized_class(("personality", "speed"), itertools.product(
