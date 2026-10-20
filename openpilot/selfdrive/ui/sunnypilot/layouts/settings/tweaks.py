@@ -101,9 +101,10 @@ class TweaksLayout(Widget):
     )
     self._modem_recovery_test = toggle_item_sp(
       title=lambda: tr("Modem Recovery Test"),
-      description=lambda: tr("Diagnostic test for a modem that remains disconnected after boot. If PPP runs " +
-                            "without receiving an IP address for 45 seconds, restart the modem connection without " +
-                            "changing the saved APN. Disable after testing."),
+      description=lambda: tr("Diagnostic test for a modem that remains disconnected after boot. Wait for stable " +
+                            "cellular registration before dialing, space out failed PPP retries, and restart a PPP " +
+                            "session that remains alive without an IP address. The saved APN is not changed. Disable " +
+                            "after testing."),
       param="ModemRecoveryTest",
       enabled=lambda: not ui_state.engaged,
     )
@@ -177,6 +178,17 @@ class TweaksLayout(Widget):
     attempts = int(state.get("recovery_attempts", 0))
     if state.get("connected", False):
       return tr("Connected") + (f" ({attempts})" if attempts else "")
+
+    phase = state.get("recovery_test_phase", "")
+    wait = int(state.get("recovery_test_wait", 0))
+    exit_code = state.get("last_ppp_exit_code")
+    if phase == "settling":
+      return f"{tr('Network settling')} ({wait}s)"
+    if phase == "searching":
+      return tr("Searching for network")
+    if phase == "retry_delay":
+      detail = f"; {tr('exit')} {exit_code}" if exit_code is not None else ""
+      return f"{tr('PPP retry')} ({wait}s{detail})"
 
     seconds = int(state.get("seconds_without_ip", 0))
     if seconds:

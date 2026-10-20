@@ -47,6 +47,8 @@ NETWORK_TYPE = {0: "gsm", 1: "gsm", 3: "gsm", 8: "gsm",
 
 DIAL_CID = 1
 RECOVERY_TEST_TIMEOUT = 45.0
+RECOVERY_TEST_REGISTRATION_SETTLE = 30.0
+RECOVERY_TEST_RETRY_DELAY = 15.0
 
 PPPD_CMD = [
   "sudo", "pppd", PPP_PORT, "460800", "noauth", "nodetach", "noipdefault", "usepeerdns",
@@ -107,6 +109,7 @@ class State(Enum):
   SEARCHING = "SEARCHING"
   CONNECTING = "CONNECTING"
   CONNECTED = "CONNECTED"
+  BACKING_OFF = "BACKING_OFF"
   DISCONNECTING = "DISCONNECTING"
 
 
@@ -225,6 +228,9 @@ class Modem:
     self._last_recovery_reason = ""
     self._no_ip_since: float | None = None
     self._last_ppp_exit_code: int | None = None
+    self._registration_since: float | None = None
+    self._retry_at: float | None = None
+    self._test_phase = "initializing"
     self.running = True
     self.S = INITIAL_STATE.copy()
 
@@ -260,6 +266,8 @@ class Modem:
     self.S["last_recovery_reason"] = self._last_recovery_reason
     self.S["last_ppp_exit_code"] = self._last_ppp_exit_code
     self.S["seconds_without_ip"] = round(time.monotonic() - self._no_ip_since, 1) if self._no_ip_since is not None else 0
+    self.S["recovery_test_phase"] = self._test_phase
+    self.S["recovery_test_wait"] = round(max(0.0, self._retry_at - time.monotonic()), 1) if self._retry_at is not None else 0
     with tempfile.NamedTemporaryFile(mode="w", dir="/dev/shm", delete=False) as f:
       json.dump(self.S, f, indent=2)
     os.chmod(f.name, 0o644)
@@ -339,6 +347,9 @@ class Modem:
     self._ppp.kill()
     self._ppp.cleanup_routes()
     self._no_ip_since = None
+    self._registration_since = None
+    self._retry_at = None
+    self._test_phase = "initializing"
 
     if not self._init_at_channel():
       logging.warning("AT echo still on, retrying")
@@ -403,8 +414,22 @@ class Modem:
 
     if reg in ("home", "roaming") and greg in ("home", "roaming"):
       self._publish_state(registration=reg)
+      if self._recovery_test:
+        if self._registration_since is None:
+          self._registration_since = time.monotonic()
+        elapsed = time.monotonic() - self._registration_since
+        if elapsed < RECOVERY_TEST_REGISTRATION_SETTLE:
+          self._test_phase = "settling"
+          self._retry_at = self._registration_since + RECOVERY_TEST_REGISTRATION_SETTLE
+          self._publish_state()
+          return State.SEARCHING
+      self._retry_at = None
       return State.CONNECTING
 
+    self._registration_since = None
+    self._retry_at = None
+    if self._recovery_test:
+      self._test_phase = "searching"
     if reg != self.S.get("registration"):
       self._publish_state(registration=reg)
     return self._searching_idle()
@@ -421,6 +446,7 @@ class Modem:
     self._sim_change = False
     self._ppp.start()
     self._no_ip_since = time.monotonic()
+    self._test_phase = "waiting_for_ip"
     return State.CONNECTED
 
   def _handle_pppd_exit(self):
@@ -429,6 +455,16 @@ class Modem:
     if self._sim_change or not os.path.exists(AT_PORT):
       return State.DISCONNECTING
     give_up = self._ppp.record_fail()
+    if self._recovery_test:
+      self._recovery_attempts += 1
+      self._last_recovery_reason = f"pppd exited with code {self._last_ppp_exit_code}"
+    if self._recovery_test and not give_up:
+      self._no_ip_since = None
+      self._retry_at = time.monotonic() + RECOVERY_TEST_RETRY_DELAY
+      self._test_phase = "retry_delay"
+      self._publish_state()
+      logging.warning(f"modem recovery test {self._recovery_attempts}: retrying PPP in {int(RECOVERY_TEST_RETRY_DELAY)} seconds")
+      return State.BACKING_OFF
     if give_up:
       logging.warning(f"PPP fail {self._ppp.fails}/{self._ppp.MAX_FAILS}, reconnecting")
       return State.DISCONNECTING
@@ -437,6 +473,23 @@ class Modem:
     if not os.path.exists(AT_PORT):
       return State.DISCONNECTING
     self._ppp.start()
+    return State.CONNECTED
+
+  def _do_backing_off(self):
+    if self._sim_change or not os.path.exists(AT_PORT) or self._params_changed():
+      return State.DISCONNECTING
+
+    if self._retry_at is not None and time.monotonic() < self._retry_at:
+      self._publish_state()
+      return State.BACKING_OFF
+
+    self._ppp.reset_data_port()
+    if not os.path.exists(AT_PORT):
+      return State.DISCONNECTING
+    self._ppp.start()
+    self._no_ip_since = time.monotonic()
+    self._retry_at = None
+    self._test_phase = "waiting_for_ip"
     return State.CONNECTED
 
   def _params_changed(self) -> bool:
@@ -468,6 +521,7 @@ class Modem:
     self._poll()
     if self.S["connected"]:
       self._no_ip_since = None
+      self._test_phase = "connected"
     elif self._no_ip_since is None:
       self._no_ip_since = time.monotonic()
     elif self._recovery_test and time.monotonic() - self._no_ip_since >= RECOVERY_TEST_TIMEOUT:
@@ -619,6 +673,7 @@ class Modem:
       State.SEARCHING: self._do_searching,
       State.CONNECTING: self._do_connecting,
       State.CONNECTED: self._do_connected,
+      State.BACKING_OFF: self._do_backing_off,
       State.DISCONNECTING: self._do_disconnecting,
     }
 
