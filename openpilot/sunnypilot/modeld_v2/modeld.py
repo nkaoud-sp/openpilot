@@ -35,6 +35,7 @@ from openpilot.common.transformations.camera import DEVICE_CAMERAS
 from openpilot.common.transformations.model import get_warp_matrix
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
 from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, smooth_value
+from openpilot.selfdrive.modeld import lane_policy
 from openpilot.selfdrive.modeld.modeld import ChestnutGpuState
 
 from openpilot.sunnypilot.modeld_v2.fill_model_msg import fill_model_msg, fill_pose_msg, PublishState, get_curvature_from_output
@@ -52,6 +53,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.relc import RoadEdgeLaneChangeC
 
 PROCESS_NAME = "openpilot.selfdrive.modeld.modeld_tinygrad"
 BIG_MODEL_TIMEOUT = 60
+LANE_POLICY_PARAM_INTERVAL = ModelConstants.MODEL_RUN_FREQ
 
 
 def _pkl_exists(path):
@@ -228,7 +230,14 @@ class ModelState(ModelStateBase):
     return outputs
 
   def get_action_from_model(self, model_output: dict[str, np.ndarray], prev_action: log.ModelDataV2.Action,
-                            lat_action_t: float, long_action_t: float, v_ego: float) -> log.ModelDataV2.Action:
+                            lat_action_t: float, long_action_t: float, v_ego: float,
+                            blinkers_active: bool = False, lane_policy_enabled: bool = False,
+                            one_line_fallback_enabled: bool = True,
+                            lead_fallback_enabled: bool = False,
+                            close_lead_enabled: bool = False,
+                            e2e_blend_enabled: bool = False,
+                            two_line_enabled: bool = True,
+                            intensity: int = lane_policy.LANE_POLICY_INTENSITY_NORMAL) -> log.ModelDataV2.Action:
     if 'action' not in model_output:
       plan = model_output['plan'][0]
       desired_accel = get_accel_from_plan(plan[:, Plan.VELOCITY][:, 0], plan[:, Plan.ACCELERATION][:, 0], self.constants.T_IDXS,
@@ -240,6 +249,11 @@ class ModelState(ModelStateBase):
     else:
       desired_accel = model_output['action'][0, 1]
       desired_curvature = model_output['action'][0, 0] / (max(1.0, v_ego))**2
+
+    desired_curvature = lane_policy.apply_lane_lock(model_output, desired_curvature, v_ego, blinkers_active,
+                                                    lane_policy_enabled, one_line_fallback_enabled,
+                                                    lead_fallback_enabled, close_lead_enabled, e2e_blend_enabled,
+                                                    two_line_enabled, intensity, type(self.constants))
 
     stop = v_ego < 0.3 and desired_accel < 0.1
     desired_accel = smooth_value(desired_accel, prev_action.desiredAcceleration, self.LONG_SMOOTH_SECONDS)
@@ -337,6 +351,13 @@ def main(demo=False):
 
   publish_state = PublishState()
   chestnut_state = ChestnutGpuState(pm, model.chestnut) if CHESTNUT else None
+  lane_policy_enabled = params.get_bool(lane_policy.LANE_POLICY_ENABLED_PARAM)
+  one_line_fallback_enabled = params.get_bool("LanePolicyOneLineFallback")
+  lead_fallback_enabled = params.get_bool("LanePolicyLeadFallback")
+  close_lead_enabled = params.get_bool("LanePolicyLeadCloseRange")
+  e2e_blend_enabled = params.get_bool("LanePolicyE2EBlend")
+  two_line_enabled = params.get_bool("LanePolicyTwoLine")
+  lane_policy_intensity = int(params.get("LanePolicyIntensity", return_default=True))
 
   # setup filter to track dropped frames
   frame_dropped_filter = FirstOrderFilter(0., 10., 1. / model.constants.MODEL_FREQ)
@@ -482,7 +503,19 @@ def main(demo=False):
 
       if not sm['carControl'].latActive:
         prev_action.desiredCurvature = sm['controlsState'].curvature
-      action = model.get_action_from_model(model_output, prev_action, lat_action_t, long_action_t, v_ego)
+      blinkers_active = sm["carState"].leftBlinker or sm["carState"].rightBlinker
+      if sm.frame % LANE_POLICY_PARAM_INTERVAL == 0:
+        lane_policy_enabled = params.get_bool(lane_policy.LANE_POLICY_ENABLED_PARAM)
+        one_line_fallback_enabled = params.get_bool("LanePolicyOneLineFallback")
+        lead_fallback_enabled = params.get_bool("LanePolicyLeadFallback")
+        close_lead_enabled = params.get_bool("LanePolicyLeadCloseRange")
+        e2e_blend_enabled = params.get_bool("LanePolicyE2EBlend")
+        two_line_enabled = params.get_bool("LanePolicyTwoLine")
+        lane_policy_intensity = int(params.get("LanePolicyIntensity", return_default=True))
+      action = model.get_action_from_model(model_output, prev_action, lat_action_t, long_action_t, v_ego,
+                                           blinkers_active, lane_policy_enabled, one_line_fallback_enabled,
+                                           lead_fallback_enabled, close_lead_enabled, e2e_blend_enabled,
+                                           two_line_enabled, lane_policy_intensity)
       prev_action = action
       fill_model_msg(drivingdata_send, modelv2_send, model_output, action,
                      publish_state, meta_main.frame_id, meta_extra.frame_id, frame_id,
@@ -499,6 +532,9 @@ def main(demo=False):
       modelv2_send.modelV2.meta.laneChangeDirection = DH.lane_change_direction
       mdv2sp_send.valid = modelv2_send.valid
       mdv2sp_send.modelDataV2SP.laneTurnDirection = DH.lane_turn_direction
+      lane_policy_mode, lane_policy_correction = lane_policy.get_lane_policy_status()
+      mdv2sp_send.modelDataV2SP.lanePolicyMode = lane_policy_mode
+      mdv2sp_send.modelDataV2SP.lanePolicyCorrection = lane_policy_correction
       drivingdata_send.drivingModelData.meta.laneChangeState = DH.lane_change_state
       drivingdata_send.drivingModelData.meta.laneChangeDirection = DH.lane_change_direction
 

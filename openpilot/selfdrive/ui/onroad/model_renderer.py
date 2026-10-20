@@ -6,6 +6,7 @@ from opendbc.car.structs import car
 from dataclasses import dataclass, field
 from openpilot.common.params import Params
 from openpilot.selfdrive.locationd.calibrationd import HEIGHT_INIT
+from openpilot.selfdrive.modeld import lane_policy
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.shader_polygon import draw_polygon, Gradient
 from openpilot.system.ui.widgets import Widget
@@ -15,6 +16,12 @@ from openpilot.selfdrive.ui.sunnypilot.onroad.model_renderer import ChevronMetri
 CLIP_MARGIN = 500
 MIN_DRAW_DISTANCE = 10.0
 MAX_DRAW_DISTANCE = 100.0
+
+LANE_POLICY_COLORS = {
+  lane_policy.LANE_POLICY_MODE_TWO_LINE: rl.Color(0, 255, 90, 230),
+  lane_policy.LANE_POLICY_MODE_ONE_LINE: rl.Color(255, 210, 0, 230),
+  lane_policy.LANE_POLICY_MODE_LEAD: rl.Color(170, 80, 255, 230),
+}
 
 STOCK_PATH_GRADIENT = Gradient(
   start=(0.0, 1.0),
@@ -49,6 +56,9 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
     self._path_offset_z = HEIGHT_INIT[0]
     self._counter = -1
     self._camera_offset = ui_state.params.get("CameraOffset", return_default=True) if ui_state.active_bundle else 0.0
+    self._lane_policy_visual_enabled = ui_state.params.get_bool("LanePolicyVisualIndicator")
+    self._lane_policy_mode = lane_policy.LANE_POLICY_MODE_INACTIVE
+    self._lane_policy_correction = 0.0
     # Initialize ModelPoints objects
     self._path = ModelPoints()
     self._lane_lines = [ModelPoints() for _ in range(4)]
@@ -95,10 +105,19 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
 
     if self._counter % 60 == 0:
       self._camera_offset = ui_state.params.get("CameraOffset", return_default=True) if ui_state.active_bundle else 0.0
+      self._lane_policy_visual_enabled = ui_state.params.get_bool("LanePolicyVisualIndicator")
     self._counter += 1
 
     if sm.updated['carParams']:
       self._longitudinal_control = sm['carParams'].openpilotLongitudinalControl
+
+    if sm.updated['modelDataV2SP']:
+      model_data_sp = sm['modelDataV2SP']
+      self._lane_policy_mode = str(model_data_sp.lanePolicyMode)
+      self._lane_policy_correction = model_data_sp.lanePolicyCorrection
+    elif not sm.valid['modelDataV2SP']:
+      self._lane_policy_mode = lane_policy.LANE_POLICY_MODE_INACTIVE
+      self._lane_policy_correction = 0.0
 
     model = sm['modelV2']
     radar_state = sm['radarState'] if sm.valid['radarState'] else None
@@ -263,6 +282,8 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
       color = rl.Color(255, 255, 255, int(alpha * 255))
       draw_polygon(self._rect, lane_line.projected_points, color)
 
+    self._draw_lane_policy_indicator()
+
     for i, road_edge in enumerate(self._road_edges):
       if road_edge.projected_points.size == 0:
         continue
@@ -270,6 +291,29 @@ class ModelRenderer(Widget, ChevronMetrics, ModelRendererSP):
       alpha = np.clip(1.0 - self._road_edge_stds[i], 0.0, 1.0)
       color = rl.Color(255, 0, 0, int(alpha * 255))
       draw_polygon(self._rect, road_edge.projected_points, color)
+
+  def _draw_lane_policy_indicator(self):
+    mode = self._lane_policy_mode
+    correction = self._lane_policy_correction
+    if (not self._lane_policy_visual_enabled or mode not in LANE_POLICY_COLORS or
+        abs(correction) < lane_policy.LANE_LOCK_CORRECTION_DEADBAND):
+      return
+
+    lane_line = self._lane_lines[2 if correction > 0.0 else 1]
+    if lane_line.raw_points.shape[0] == 0 or self._path.raw_points.shape[0] == 0:
+      return
+
+    strength = float(np.clip(abs(correction) / lane_policy.LANE_LOCK_MAX_CENTER_CORRECTION, 0.0, 1.0))
+    max_distance = np.clip(self._path.raw_points[-1, 0], MIN_DRAW_DISTANCE, MAX_DRAW_DISTANCE)
+    max_idx = self._get_path_length_idx(lane_line.raw_points[:, 0], max_distance)
+    width = np.interp(strength, [0.0, 1.0], [0.035, 0.085])
+    points = self._map_line_to_polygon(lane_line.raw_points, width, 0.0, max_idx, max_distance)
+    if points.size == 0:
+      return
+
+    base = LANE_POLICY_COLORS[mode]
+    alpha = int(np.interp(strength, [0.0, 1.0], [140, base.a]))
+    draw_polygon(self._rect, points, rl.Color(base.r, base.g, base.b, alpha))
 
   def _draw_path(self):
     if not self._path.projected_points.size:

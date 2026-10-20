@@ -9,6 +9,7 @@ from enum import IntEnum
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.auto_lock_settings import AutoLockSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.dynamic_follow_settings import DynamicFollowSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.launch_assist_settings import LaunchAssistSettingsLayout
+from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.lane_policy_settings import LanePolicySettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.park_assist_settings import ParkAssistSettingsLayout
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.multilang import tr
@@ -23,6 +24,7 @@ class PanelType(IntEnum):
   LAUNCH = 2
   PARK = 3
   AUTO_LOCK = 4
+  LANE_POLICY = 5
 
 
 class TweaksLayout(Widget):
@@ -34,6 +36,7 @@ class TweaksLayout(Widget):
     self._launch_layout = LaunchAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._park_layout = ParkAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._auto_lock_layout = AutoLockSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
+    self._lane_policy_layout = LanePolicySettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
 
     self._dynamic_follow = toggle_item_sp(
       title=lambda: tr("Dynamic Follow Distance"),
@@ -58,6 +61,17 @@ class TweaksLayout(Widget):
       button_text=lambda: tr("Manage Launch Assist Settings"),
       button_width=800,
       callback=lambda: self._set_current_panel(PanelType.LAUNCH),
+    )
+    self._lane_policy = toggle_item_sp(
+      title=lambda: tr("Lane Centering Assist"),
+      description=lambda: tr("When lane geometry is reliable, add a bounded centering correction to the model's " +
+                            "curvature. Automatically releases for blinkers and lane-change intent."),
+      param="LanePolicyEnabled",
+    )
+    self._lane_policy_button = simple_button_item_sp(
+      button_text=lambda: tr("Manage Lane Centering Settings"),
+      button_width=800,
+      callback=lambda: self._set_current_panel(PanelType.LANE_POLICY),
     )
     self._park_assist = toggle_item_sp(
       title=lambda: tr("Lead Halt Assist"),
@@ -90,6 +104,8 @@ class TweaksLayout(Widget):
       self._dynamic_follow_button,
       self._launch_assist,
       self._launch_assist_button,
+      self._lane_policy,
+      self._lane_policy_button,
       self._park_assist,
       self._park_assist_button,
       self._reverse_cruise,
@@ -105,6 +121,8 @@ class TweaksLayout(Widget):
       self._park_layout.render(rect)
     elif self._current_panel == PanelType.AUTO_LOCK:
       self._auto_lock_layout.render(rect)
+    elif self._current_panel == PanelType.LANE_POLICY:
+      self._lane_policy_layout.render(rect)
     else:
       self._scroller.render(rect)
 
@@ -122,6 +140,8 @@ class TweaksLayout(Widget):
       self._park_layout.show_event()
     elif panel == PanelType.AUTO_LOCK:
       self._auto_lock_layout.show_event()
+    elif panel == PanelType.LANE_POLICY:
+      self._lane_policy_layout.show_event()
 
   @staticmethod
   def _on_reverse_cruise(state: bool):
@@ -134,4 +154,5 @@ class TweaksLayout(Widget):
     super()._update_state()
     self._dynamic_follow_button.action_item.set_enabled(self._dynamic_follow.action_item.get_state())
     self._launch_assist_button.action_item.set_enabled(self._launch_assist.action_item.get_state())
+    self._lane_policy_button.action_item.set_enabled(self._lane_policy.action_item.get_state())
     self._park_assist_button.action_item.set_enabled(self._park_assist.action_item.get_state())
