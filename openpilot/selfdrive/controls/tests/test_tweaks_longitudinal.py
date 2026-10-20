@@ -3,8 +3,9 @@ from types import SimpleNamespace
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_park_assist_offset
 from openpilot.selfdrive.controls.lib.longitudinal_planner import (
-  LAUNCH_DONE, LAUNCH_LAUNCHING, LAUNCH_READY, LongitudinalPlanner,
+  LAUNCH_DONE, LAUNCH_LAUNCHING, LAUNCH_READY, SPEED_ASSIST_OFF, SPEED_ASSIST_ON, SPEED_ASSIST_READOUT, LongitudinalPlanner,
 )
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalPlanSource
 
 
 def build_sm(v_ego=0.0, lead_v=0.0, d_rel=5.0, lead_present=True, brake=False, gas=False):
@@ -61,3 +62,70 @@ class TestHaltAssist(OpenpilotTestCase):
   def test_invalid_or_default_gap_has_no_offset(self):
     self.assertAlmostEqual(get_park_assist_offset(0.0, 6.0), 0.0)
     self.assertAlmostEqual(get_park_assist_offset(0.0, 7.0), 0.0)
+
+
+def build_speed_assist_planner(mode=SPEED_ASSIST_ON, lead_mode=0):
+  planner = LongitudinalPlanner.__new__(LongitudinalPlanner)
+  planner.speed_assist_mode = mode
+  planner.speed_assist_strength = 1
+  planner.speed_assist_min_kph = 50
+  planner.speed_assist_max_kph = 130
+  planner.speed_assist_start_gap_kph = 8
+  planner.speed_assist_lead_mode = lead_mode
+  planner.speed_assist_enabled = False
+  planner.speed_assist_readout_only = False
+  planner.speed_assist_eligible = False
+  planner.speed_assist_active = False
+  planner.speed_assist_a_target_original = 0.0
+  planner.speed_assist_speed_gap_kph = 0.0
+  planner.speed_assist_reason = "off"
+  planner.output_should_stop = False
+  planner.mpc = SimpleNamespace(source=LongitudinalPlanSource.e2e)
+  return planner
+
+
+def build_speed_assist_sm(*, experimental=True, enabled=True, lead=False, brake=False, gas=False):
+  disengage_predictions = SimpleNamespace(brakePressProbs=[0.0], brakeDisengageProbs=[0.0])
+  model = SimpleNamespace(
+    action=SimpleNamespace(shouldStop=False),
+    leadsV3=[],
+    meta=SimpleNamespace(disengagePredictions=disengage_predictions),
+  )
+  return {
+    'carState': SimpleNamespace(vEgo=20.0, vCruise=100.0, brakePressed=brake, gasPressed=gas),
+    'carControl': SimpleNamespace(enabled=enabled),
+    'selfdriveState': SimpleNamespace(experimentalMode=experimental),
+    'radarState': SimpleNamespace(leadOne=SimpleNamespace(present=lead)),
+    'modelV2': model,
+  }
+
+
+class TestSpeedAssist(OpenpilotTestCase):
+  def test_off_mode_has_no_boost(self):
+    planner = build_speed_assist_planner(mode=SPEED_ASSIST_OFF)
+    self.assertEqual(planner._speed_assist_desired_boost(build_speed_assist_sm(), 0.0, 0.0), 0.0)
+    self.assertEqual(planner.speed_assist_reason, "off")
+
+  def test_readout_reports_eligibility_without_selecting_on_mode(self):
+    planner = build_speed_assist_planner(mode=SPEED_ASSIST_READOUT)
+    boost = planner._speed_assist_desired_boost(build_speed_assist_sm(), 0.0, 0.0)
+    self.assertGreater(boost, 0.0)
+    self.assertTrue(planner.speed_assist_eligible)
+    self.assertTrue(planner.speed_assist_readout_only)
+    self.assertEqual(planner.speed_assist_reason, "readout")
+
+  def test_lead_and_driver_input_block_boost(self):
+    planner = build_speed_assist_planner()
+    self.assertEqual(planner._speed_assist_desired_boost(build_speed_assist_sm(lead=True), 0.0, 0.0), 0.0)
+    self.assertEqual(planner.speed_assist_reason, "lead")
+
+    self.assertEqual(planner._speed_assist_desired_boost(build_speed_assist_sm(brake=True), 0.0, 0.0), 0.0)
+    self.assertEqual(planner.speed_assist_reason, "driver")
+
+  def test_requires_experimental_e2e_agreement(self):
+    planner = build_speed_assist_planner()
+    self.assertEqual(planner._speed_assist_desired_boost(build_speed_assist_sm(experimental=False), 0.0, 0.0), 0.0)
+    self.assertEqual(planner.speed_assist_reason, "not experimental")
+
+    self.assertEqual(planner._speed_assist_desired_boost(build_speed_assist_sm(), 0.0, 0.2), 0.0)
+    self.assertEqual(planner.speed_assist_reason, "mpc low")

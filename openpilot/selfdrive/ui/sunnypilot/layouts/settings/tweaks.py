@@ -11,6 +11,7 @@ from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.dynam
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.launch_assist_settings import LaunchAssistSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.lane_policy_settings import LanePolicySettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.park_assist_settings import ParkAssistSettingsLayout
+from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.speed_assist_settings import SpeedAssistSettingsLayout
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.sunnypilot.widgets.list_view import simple_button_item_sp, toggle_item_sp
@@ -25,6 +26,7 @@ class PanelType(IntEnum):
   PARK = 3
   AUTO_LOCK = 4
   LANE_POLICY = 5
+  SPEED_ASSIST = 6
 
 
 class TweaksLayout(Widget):
@@ -37,6 +39,7 @@ class TweaksLayout(Widget):
     self._park_layout = ParkAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._auto_lock_layout = AutoLockSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
     self._lane_policy_layout = LanePolicySettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
+    self._speed_assist_layout = SpeedAssistSettingsLayout(lambda: self._set_current_panel(PanelType.TWEAKS))
 
     self._dynamic_follow = toggle_item_sp(
       title=lambda: tr("Dynamic Follow Distance"),
@@ -85,6 +88,11 @@ class TweaksLayout(Widget):
       button_width=800,
       callback=lambda: self._set_current_panel(PanelType.PARK),
     )
+    self._speed_assist_button = simple_button_item_sp(
+      button_text=lambda: tr("Experimental Speed Assist"),
+      button_width=800,
+      callback=lambda: self._set_current_panel(PanelType.SPEED_ASSIST),
+    )
     self._reverse_cruise = toggle_item_sp(
       title=lambda: tr("Reverse Cruise Increase"),
       description=lambda: tr("Make a short cruise-control button press increase the set speed by 5 instead of 1. " +
@@ -108,6 +116,7 @@ class TweaksLayout(Widget):
       self._lane_policy_button,
       self._park_assist,
       self._park_assist_button,
+      self._speed_assist_button,
       self._reverse_cruise,
       self._auto_lock_button,
     ], line_separator=True, spacing=0)
@@ -123,6 +132,8 @@ class TweaksLayout(Widget):
       self._auto_lock_layout.render(rect)
     elif self._current_panel == PanelType.LANE_POLICY:
       self._lane_policy_layout.render(rect)
+    elif self._current_panel == PanelType.SPEED_ASSIST:
+      self._speed_assist_layout.render(rect)
     else:
       self._scroller.render(rect)
 
@@ -142,6 +153,8 @@ class TweaksLayout(Widget):
       self._auto_lock_layout.show_event()
     elif panel == PanelType.LANE_POLICY:
       self._lane_policy_layout.show_event()
+    elif panel == PanelType.SPEED_ASSIST:
+      self._speed_assist_layout.show_event()
 
   @staticmethod
   def _on_reverse_cruise(state: bool):
