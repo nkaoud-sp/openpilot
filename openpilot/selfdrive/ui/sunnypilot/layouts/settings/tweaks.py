@@ -6,6 +6,7 @@ See the LICENSE.md file in the root directory for more details.
 """
 from enum import IntEnum
 
+from openpilot.common.hardware import HARDWARE
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.auto_lock_settings import AutoLockSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.dynamic_follow_settings import DynamicFollowSettingsLayout
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.tweaks_sub_layouts.launch_assist_settings import LaunchAssistSettingsLayout
@@ -98,6 +99,15 @@ class TweaksLayout(Widget):
       button_width=800,
       callback=lambda: self._set_current_panel(PanelType.AUTO_LOCK),
     )
+    self._modem_recovery_test = toggle_item_sp(
+      title=lambda: tr("Modem Recovery Test"),
+      description=lambda: tr("Diagnostic test for a modem that remains disconnected after boot. If PPP runs " +
+                            "without receiving an IP address for 45 seconds, restart the modem connection without " +
+                            "changing the saved APN. Disable after testing."),
+      param="ModemRecoveryTest",
+      enabled=lambda: not ui_state.engaged,
+    )
+    self._modem_recovery_test.set_right_value(self._modem_recovery_status)
 
     self._scroller = Scroller([
       self._dynamic_follow,
@@ -110,6 +120,7 @@ class TweaksLayout(Widget):
       self._park_assist_button,
       self._reverse_cruise,
       self._auto_lock_button,
+      self._modem_recovery_test,
     ], line_separator=True, spacing=0)
 
   def _render(self, rect):
@@ -156,3 +167,18 @@ class TweaksLayout(Widget):
     self._launch_assist_button.action_item.set_enabled(self._launch_assist.action_item.get_state())
     self._lane_policy_button.action_item.set_enabled(self._lane_policy.action_item.get_state())
     self._park_assist_button.action_item.set_enabled(self._park_assist.action_item.get_state())
+
+  @staticmethod
+  def _modem_recovery_status() -> str:
+    state = HARDWARE.get_modem_state()
+    if not state.get("recovery_test_enabled", False):
+      return tr("Disabled")
+
+    attempts = int(state.get("recovery_attempts", 0))
+    if state.get("connected", False):
+      return tr("Connected") + (f" ({attempts})" if attempts else "")
+
+    seconds = int(state.get("seconds_without_ip", 0))
+    if seconds:
+      return f"{tr('Waiting for IP')} ({seconds}s)"
+    return tr("Initializing")

@@ -46,6 +46,7 @@ NETWORK_TYPE = {0: "gsm", 1: "gsm", 3: "gsm", 8: "gsm",
                 11: "nr", 12: "nr", 13: "nr"}
 
 DIAL_CID = 1
+RECOVERY_TEST_TIMEOUT = 45.0
 
 PPPD_CMD = [
   "sudo", "pppd", PPP_PORT, "460800", "noauth", "nodetach", "noipdefault", "usepeerdns",
@@ -157,6 +158,10 @@ class PPPSession:
   def fails(self) -> int:
     return self._fails
 
+  @property
+  def returncode(self) -> int | None:
+    return self._proc.poll() if self._proc is not None else None
+
   def maybe_install_routes(self, ip: str, peer: str) -> bool:
     """Install routes if peer changed; kill the session on failure so the state machine reconnects."""
     if not peer or peer == self._peer:
@@ -215,6 +220,11 @@ class Modem:
     self._sim_change = False
     self._apn = ""  # blank = network-provided via PCO
     self._roaming_allowed = True
+    self._recovery_test = False
+    self._recovery_attempts = 0
+    self._last_recovery_reason = ""
+    self._no_ip_since: float | None = None
+    self._last_ppp_exit_code: int | None = None
     self.running = True
     self.S = INITIAL_STATE.copy()
 
@@ -245,6 +255,11 @@ class Modem:
   def _publish_state(self, **kwargs):
     self.S.update(kwargs)
     self.S["seconds_since_boot"] = time.monotonic()
+    self.S["recovery_test_enabled"] = self._recovery_test
+    self.S["recovery_attempts"] = self._recovery_attempts
+    self.S["last_recovery_reason"] = self._last_recovery_reason
+    self.S["last_ppp_exit_code"] = self._last_ppp_exit_code
+    self.S["seconds_without_ip"] = round(time.monotonic() - self._no_ip_since, 1) if self._no_ip_since is not None else 0
     with tempfile.NamedTemporaryFile(mode="w", dir="/dev/shm", delete=False) as f:
       json.dump(self.S, f, indent=2)
     os.chmod(f.name, 0o644)
@@ -323,6 +338,7 @@ class Modem:
     logging.info("port found, initializing")
     self._ppp.kill()
     self._ppp.cleanup_routes()
+    self._no_ip_since = None
 
     if not self._init_at_channel():
       logging.warning("AT echo still on, retrying")
@@ -404,9 +420,12 @@ class Modem:
     self._ppp.reset_fail_counter()
     self._sim_change = False
     self._ppp.start()
+    self._no_ip_since = time.monotonic()
     return State.CONNECTED
 
   def _handle_pppd_exit(self):
+    self._last_ppp_exit_code = self._ppp.returncode
+    logging.warning(f"pppd exited with code {self._last_ppp_exit_code}")
     if self._sim_change or not os.path.exists(AT_PORT):
       return State.DISCONNECTING
     give_up = self._ppp.record_fail()
@@ -447,6 +466,19 @@ class Modem:
       return State.DISCONNECTING
 
     self._poll()
+    if self.S["connected"]:
+      self._no_ip_since = None
+    elif self._no_ip_since is None:
+      self._no_ip_since = time.monotonic()
+    elif self._recovery_test and time.monotonic() - self._no_ip_since >= RECOVERY_TEST_TIMEOUT:
+      self._recovery_attempts += 1
+      self._last_recovery_reason = f"pppd alive without an IP for {int(RECOVERY_TEST_TIMEOUT)} seconds"
+      logging.warning(f"modem recovery test {self._recovery_attempts}: {self._last_recovery_reason}")
+      return State.DISCONNECTING
+    elif self._recovery_test:
+      # Keep the on-device test status current even when the modem has no
+      # signal or interface changes to publish.
+      self._publish_state()
     return State.CONNECTED
 
   def _do_disconnecting(self):
@@ -592,6 +624,11 @@ class Modem:
 
     while self.running:
       try:
+        recovery_test = self._read_param("ModemRecoveryTest") == "1"
+        if recovery_test != self._recovery_test:
+          logging.info(f"modem recovery test {'enabled' if recovery_test else 'disabled'}")
+          self._recovery_test = recovery_test
+          self._publish_state()
         self._check_iccid(state)
         prev = state
         state = handlers[state]()
