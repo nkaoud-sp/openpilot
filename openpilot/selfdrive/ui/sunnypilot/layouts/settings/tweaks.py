@@ -89,7 +89,7 @@ class TweaksLayout(Widget):
       callback=lambda: self._set_current_panel(PanelType.PARK),
     )
     self._speed_assist_button = simple_button_item_sp(
-      button_text=lambda: tr("Experimental Speed Assist"),
+      button_text=lambda: tr("Speed Assist"),
       button_width=800,
       callback=lambda: self._set_current_panel(PanelType.SPEED_ASSIST),
     )

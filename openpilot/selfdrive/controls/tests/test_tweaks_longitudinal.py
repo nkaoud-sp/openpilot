@@ -64,8 +64,9 @@ class TestHaltAssist(OpenpilotTestCase):
     self.assertAlmostEqual(get_park_assist_offset(0.0, 7.0), 0.0)
 
 
-def build_speed_assist_planner(mode=SPEED_ASSIST_ON, lead_mode=0):
+def build_speed_assist_planner(mode=SPEED_ASSIST_ON, lead_mode=0, openpilot_longitudinal=True):
   planner = LongitudinalPlanner.__new__(LongitudinalPlanner)
+  planner.CP = SimpleNamespace(openpilotLongitudinalControl=openpilot_longitudinal)
   planner.speed_assist_mode = mode
   planner.speed_assist_strength = 1
   planner.speed_assist_min_kph = 50
@@ -84,7 +85,7 @@ def build_speed_assist_planner(mode=SPEED_ASSIST_ON, lead_mode=0):
   return planner
 
 
-def build_speed_assist_sm(*, experimental=True, enabled=True, lead=False, brake=False, gas=False):
+def build_speed_assist_sm(*, enabled=True, lead=False, brake=False, gas=False):
   disengage_predictions = SimpleNamespace(brakePressProbs=[0.0], brakeDisengageProbs=[0.0])
   model = SimpleNamespace(
     action=SimpleNamespace(shouldStop=False),
@@ -94,7 +95,7 @@ def build_speed_assist_sm(*, experimental=True, enabled=True, lead=False, brake=
   return {
     'carState': SimpleNamespace(vEgo=20.0, vCruise=100.0, brakePressed=brake, gasPressed=gas),
     'carControl': SimpleNamespace(enabled=enabled),
-    'selfdriveState': SimpleNamespace(experimentalMode=experimental),
+    'selfdriveState': SimpleNamespace(),
     'radarState': SimpleNamespace(leadOne=SimpleNamespace(present=lead)),
     'modelV2': model,
   }
@@ -122,10 +123,16 @@ class TestSpeedAssist(OpenpilotTestCase):
     self.assertEqual(planner._speed_assist_desired_boost(build_speed_assist_sm(brake=True), 0.0, 0.0), 0.0)
     self.assertEqual(planner.speed_assist_reason, "driver")
 
-  def test_requires_experimental_e2e_agreement(self):
-    planner = build_speed_assist_planner()
-    self.assertEqual(planner._speed_assist_desired_boost(build_speed_assist_sm(experimental=False), 0.0, 0.0), 0.0)
-    self.assertEqual(planner.speed_assist_reason, "not experimental")
+  def test_requires_openpilot_longitudinal_and_e2e_agreement(self):
+    planner = build_speed_assist_planner(openpilot_longitudinal=False)
+    self.assertEqual(planner._speed_assist_desired_boost(build_speed_assist_sm(), 0.0, 0.0), 0.0)
+    self.assertEqual(planner.speed_assist_reason, "stock longitudinal")
 
+    planner = build_speed_assist_planner()
+    planner.mpc.source = LongitudinalPlanSource.cruise
+    self.assertEqual(planner._speed_assist_desired_boost(build_speed_assist_sm(), 0.0, 0.0), 0.0)
+    self.assertEqual(planner.speed_assist_reason, "not e2e")
+
+    planner.mpc.source = LongitudinalPlanSource.e2e
     self.assertEqual(planner._speed_assist_desired_boost(build_speed_assist_sm(), 0.0, 0.2), 0.0)
     self.assertEqual(planner.speed_assist_reason, "mpc low")

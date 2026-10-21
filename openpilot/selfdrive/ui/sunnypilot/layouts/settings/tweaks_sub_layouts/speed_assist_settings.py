@@ -1,4 +1,4 @@
-"""Experimental longitudinal speed-assist tuning."""
+"""Longitudinal speed-assist tuning."""
 from collections.abc import Callable
 
 import pyray as rl
@@ -22,7 +22,8 @@ class SpeedAssistSettingsLayout(Widget):
     self._mode = multiple_button_item_sp(
       title=lambda: tr("Mode"),
       description=lambda: tr("Readout shows when speed assist would apply without changing acceleration. On adds " +
-                            "a small, smoothed acceleration nudge only in clean experimental open-road cases."),
+                            "a small, smoothed acceleration nudge only in clean open-road cases using openpilot " +
+                            "longitudinal control."),
       buttons=[lambda: tr("Off"), lambda: tr("Readout"), lambda: tr("On")],
       param="ExperimentalSpeedAssistMode",
       button_width=240,

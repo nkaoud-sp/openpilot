@@ -34,8 +34,8 @@ LAUNCH_VLEAD_BP = [1, 10]
 LAUNCH_VLEAD_V = [1.5, 0.2]
 LAUNCH_READY, LAUNCH_LAUNCHING, LAUNCH_DONE = 0, 1, 2
 
-# Experimental Speed Assist: a small, heavily gated acceleration nudge for
-# clean experimental open-road cases where e2e is far below cruise.
+# Speed Assist: a small, heavily gated acceleration nudge for clean open-road
+# cases where the unified longitudinal planner selects e2e far below cruise.
 SPEED_ASSIST_OFF, SPEED_ASSIST_READOUT, SPEED_ASSIST_ON = 0, 1, 2
 SPEED_ASSIST_MAX_BOOSTS = [0.15, 0.25, 0.35]
 SPEED_ASSIST_FULL_GAP_KPH = 30.0
@@ -142,8 +142,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       return 0.0
 
     CS = sm['carState']
-    if not sm['selfdriveState'].experimentalMode:
-      self.speed_assist_reason = "not experimental"
+    if not self.CP.openpilotLongitudinalControl:
+      self.speed_assist_reason = "stock longitudinal"
       return 0.0
     if not sm['carControl'].enabled:
       self.speed_assist_reason = "not enabled"
