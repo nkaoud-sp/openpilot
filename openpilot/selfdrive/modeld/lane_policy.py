@@ -53,6 +53,7 @@ LANE_LOCK_LEAD_MAX_CORRECTION = 0.00020
 
 LANE_POLICY_INTENSITY_SCALE = (0.6, 1.0, 1.4)
 LANE_POLICY_INTENSITY_NORMAL = 1
+TURN_CENTERING_CURVATURE = LANE_LOCK_TURN_CURVATURE
 
 LANE_POLICY_MODE_INACTIVE = 'inactive'
 LANE_POLICY_MODE_TWO_LINE = 'twoLine'
@@ -250,6 +251,8 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
                     e2e_blend_enabled: bool = False,
                     two_line_enabled: bool = True,
                     intensity: int = LANE_POLICY_INTENSITY_NORMAL,
+                    turn_centering_enabled: bool = False,
+                    turn_centering_strength: int = LANE_POLICY_INTENSITY_NORMAL,
                     constants: type = ModelConstants) -> float:
   """Add a bounded lane-centering correction to the model curvature."""
   global _lane_lock_weight, _lane_lock_lane_curvature
@@ -323,6 +326,11 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
       if lead_center_correction is None:
         return release_lane_lock(e2e_curvature, "stock-e2e fallback: lane geometry or confidence")
 
+    turn_centering_active = (turn_centering_enabled and
+                             abs(e2e_curvature) >= TURN_CENTERING_CURVATURE)
+    if turn_centering_active and not two_line_geometry:
+      return release_lane_lock(e2e_curvature, "stock-e2e fallback: turn lane geometry")
+
     if center_y is not None and not _lane_lock_full_active:
       if two_line_geometry and two_line_confidence >= LANE_LOCK_ARM_LINE_PROB:
         _lane_lock_arm_time = min(_lane_lock_arm_time + DT_MDL, LANE_LOCK_ARM_TIME)
@@ -350,7 +358,7 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
       _lane_lock_full_active = False
       _lane_lock_arm_time = 0.0
     else:
-      if e2e_blend_enabled and not _lane_lock_one_line_hold:
+      if e2e_blend_enabled and not turn_centering_active and not _lane_lock_one_line_hold:
         center_correction = get_e2e_blended_center_correction(model_output, center_y, x, v_ego)
       else:
         _, heading, offset = np.polyfit(x[fit], center_y[fit], 2)
@@ -364,6 +372,8 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
                                           LANE_LOCK_MAX_CENTER_CORRECTION))
 
     intensity_scale = get_intensity_scale(intensity)
+    if turn_centering_active:
+      center_correction *= get_intensity_scale(turn_centering_strength)
     center_correction = float(np.clip(center_correction * intensity_scale,
                                       -correction_limit, correction_limit))
     if abs(center_correction) < LANE_LOCK_CORRECTION_DEADBAND:

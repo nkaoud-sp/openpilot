@@ -95,6 +95,23 @@ class TestLanePolicy(unittest.TestCase):
     self.assertLess(values[1], values[2])
     self.assertLessEqual(values[2], lane_policy.LANE_LOCK_MAX_CENTER_CORRECTION)
 
+  def test_turn_centering_uses_lane_midpoint_over_e2e_blend(self):
+    output = make_model_output(lane_center=0.35)
+    self.apply_for(output, lane_policy.LANE_LOCK_ARM_TIME + lane_policy.DT_MDL)
+    centered = lane_policy.apply_lane_lock(output, 0.001, 20.0,
+                                            lane_policy_enabled=True,
+                                            e2e_blend_enabled=True,
+                                            turn_centering_enabled=True)
+    self.assertGreater(centered, 0.001)
+    self.assertLessEqual(centered, 0.001 + lane_policy.LANE_LOCK_MAX_CENTER_CORRECTION)
+
+  def test_turn_centering_releases_without_two_line_geometry(self):
+    output = make_model_output(left_prob=0.99, right_prob=0.10, lane_center=0.35)
+    result = lane_policy.apply_lane_lock(output, 0.001, 20.0,
+                                         lane_policy_enabled=True,
+                                         turn_centering_enabled=True)
+    self.assertEqual(result, 0.001)
+
   def test_blinker_ramps_correction_out(self):
     output = self.arm(make_model_output(lane_center=0.45))
     self.apply_for(output, 0.5)

@@ -36,6 +36,22 @@ class LanePolicySettingsLayout(Widget):
       inline=False,
     )
     self._intensity.action_item.set_enabled(enabled)
+    self._turn_centering = toggle_item_sp(
+      title=lambda: tr("Turn Centering"),
+      description=lambda: tr("During turns, target the geometric midpoint between reliable lane lines " +
+                            "instead of following a turn-biased model path."),
+      param="TurnCentering",
+      enabled=enabled,
+    )
+    self._turn_centering_strength = multiple_button_item_sp(
+      title=lambda: tr("Strength"),
+      description=lambda: tr("How quickly and firmly the vehicle returns toward the lane midpoint during a turn."),
+      buttons=[lambda: tr("Relaxed"), lambda: tr("Normal"), lambda: tr("Aggressive")],
+      param="TurnCenteringStrength",
+      button_width=280,
+      inline=False,
+    )
+    self._turn_centering_strength.action_item.set_enabled(lambda: enabled() and ui_state.params.get_bool("TurnCentering"))
     self._one_line_fallback = toggle_item_sp(
       title=lambda: tr("One-Line Fallback"),
       description=lambda: tr("If one lane line briefly disappears, hold center using the remaining line and " +
@@ -75,6 +91,8 @@ class LanePolicySettingsLayout(Widget):
     self._scroller = Scroller([
       self._two_line,
       self._intensity,
+      self._turn_centering,
+      self._turn_centering_strength,
       self._one_line_fallback,
       self._e2e_blend,
       self._lead_fallback,

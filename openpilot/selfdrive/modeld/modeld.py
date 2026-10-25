@@ -63,7 +63,9 @@ def get_action_from_model(model_output: dict[str, np.ndarray], prev_action: log.
                           close_lead_enabled: bool = False,
                           e2e_blend_enabled: bool = False,
                           two_line_enabled: bool = True,
-                          intensity: int = lane_policy.LANE_POLICY_INTENSITY_NORMAL) -> log.ModelDataV2.Action:
+                          intensity: int = lane_policy.LANE_POLICY_INTENSITY_NORMAL,
+                          turn_centering_enabled: bool = False,
+                          turn_centering_strength: int = lane_policy.LANE_POLICY_INTENSITY_NORMAL) -> log.ModelDataV2.Action:
   if 'action' not in model_output:
     plan = model_output['plan'][0]
     desired_accel = get_accel_from_plan(plan[:,Plan.VELOCITY][:,0],
@@ -81,7 +83,8 @@ def get_action_from_model(model_output: dict[str, np.ndarray], prev_action: log.
   desired_curvature = lane_policy.apply_lane_lock(model_output, desired_curvature, v_ego, blinkers_active,
                                                   lane_policy_enabled, one_line_fallback_enabled,
                                                   lead_fallback_enabled, close_lead_enabled, e2e_blend_enabled,
-                                                  two_line_enabled, intensity)
+                                                  two_line_enabled, intensity, turn_centering_enabled,
+                                                  turn_centering_strength)
   stop = should_stop(v_ego, desired_accel)
   desired_accel = smooth_value(desired_accel, prev_action.desiredAcceleration, LONG_SMOOTH_SECONDS)
   if v_ego > MIN_LAT_CONTROL_SPEED:
@@ -333,6 +336,8 @@ def main(demo=False):
   e2e_blend_enabled = params.get_bool("LanePolicyE2EBlend")
   two_line_enabled = params.get_bool("LanePolicyTwoLine")
   lane_policy_intensity = int(params.get("LanePolicyIntensity", return_default=True))
+  turn_centering_enabled = params.get_bool("TurnCentering")
+  turn_centering_strength = int(params.get("TurnCenteringStrength", return_default=True))
 
   # setup filter to track dropped frames
   frame_dropped_filter = FirstOrderFilter(0., 10., 1. / ModelConstants.MODEL_RUN_FREQ)
@@ -477,10 +482,13 @@ def main(demo=False):
         e2e_blend_enabled = params.get_bool("LanePolicyE2EBlend")
         two_line_enabled = params.get_bool("LanePolicyTwoLine")
         lane_policy_intensity = int(params.get("LanePolicyIntensity", return_default=True))
+        turn_centering_enabled = params.get_bool("TurnCentering")
+        turn_centering_strength = int(params.get("TurnCenteringStrength", return_default=True))
       action = get_action_from_model(model_output, prev_action, lat_action_t, long_action_t, v_ego,
                                      blinkers_active, lane_policy_enabled, one_line_fallback_enabled,
                                      lead_fallback_enabled, close_lead_enabled, e2e_blend_enabled,
-                                     two_line_enabled, lane_policy_intensity)
+                                     two_line_enabled, lane_policy_intensity,
+                                     turn_centering_enabled, turn_centering_strength)
       prev_action = action
       fill_model_msg(modelv2_send, model_output, action,
                      publish_state, meta_main.frame_id, meta_extra.frame_id, frame_id,
