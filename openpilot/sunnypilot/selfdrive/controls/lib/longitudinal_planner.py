@@ -33,6 +33,10 @@ class LongitudinalPlannerSP:
     self.output_v_target = 0.
     self.output_a_target = 0.
 
+    # Set by the planner while Launch / Halt Assist are actively shaping the plan
+    self.launch_assist_indicator = False
+    self.halt_assist_indicator = False
+
   def update_targets(self, sm: messaging.SubMaster, v_ego: float, a_ego: float, v_cruise: float) -> tuple[float, float]:
     CS = sm['carState']
     v_cruise_cluster_kph = min(CS.vCruiseCluster, V_CRUISE_MAX)
@@ -77,6 +81,8 @@ class LongitudinalPlannerSP:
     longitudinalPlanSP.vTarget = float(self.output_v_target)
     longitudinalPlanSP.aTarget = float(self.output_a_target)
     longitudinalPlanSP.events = self.events_sp.to_msg()
+    longitudinalPlanSP.launchAssistActive = bool(self.launch_assist_indicator)
+    longitudinalPlanSP.haltAssistActive = bool(self.halt_assist_indicator)
 
     # Smart Cruise Control
     smartCruiseControl = longitudinalPlanSP.smartCruiseControl

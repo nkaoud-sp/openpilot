@@ -203,6 +203,8 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
   aTarget @5 :Float32;
   events @6 :List(OnroadEventSP.Event);
   e2eAlerts @7 :E2eAlerts;
+  launchAssistActive @8 :Bool;
+  haltAssistActive @9 :Bool;
 
   deprecated :group {
     dec @0 :DynamicExperimentalControlDEPRECATED;

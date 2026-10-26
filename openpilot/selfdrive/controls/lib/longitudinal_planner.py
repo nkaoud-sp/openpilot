@@ -234,6 +234,11 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     return False
 
+  def update_assist_indicators(self, long_engaged: bool) -> None:
+    # Only surface the assists to the UI while they can actually act on the car
+    self.launch_assist_indicator = bool(long_engaged and self.launch_assist_active)
+    self.halt_assist_indicator = bool(long_engaged and self.mpc.park_assist_active)
+
   def update(self, sm):
     LongitudinalPlannerSP.update(self, sm)
 
@@ -318,6 +323,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     if self.mpc.park_assist_active and sm['carState'].vEgo <= LAUNCH_MAX_EGO_SPEED:
       output_a_target = output_a_target_mpc
       self.output_should_stop = output_should_stop_mpc
+
+    self.update_assist_indicators(self.CP.openpilotLongitudinalControl and not reset_state)
 
     speed_assist_boost = self._speed_assist_desired_boost(sm, output_a_target, output_a_target_e2e)
     self.speed_assist_a_boost = float(self.speed_assist_boost_filter.update(speed_assist_boost))

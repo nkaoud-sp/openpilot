@@ -64,6 +64,31 @@ class TestHaltAssist(OpenpilotTestCase):
     self.assertAlmostEqual(get_park_assist_offset(0.0, 7.0), 0.0)
 
 
+class TestAssistIndicators(OpenpilotTestCase):
+  def build(self, launch=False, halt=False):
+    planner = LongitudinalPlanner.__new__(LongitudinalPlanner)
+    planner.launch_assist_active = launch
+    planner.mpc = SimpleNamespace(park_assist_active=halt)
+    return planner
+
+  def test_indicators_follow_active_assists(self):
+    planner = self.build(launch=True, halt=True)
+    planner.update_assist_indicators(True)
+    self.assertTrue(planner.launch_assist_indicator)
+    self.assertTrue(planner.halt_assist_indicator)
+
+    planner = self.build()
+    planner.update_assist_indicators(True)
+    self.assertFalse(planner.launch_assist_indicator)
+    self.assertFalse(planner.halt_assist_indicator)
+
+  def test_indicators_hidden_when_longitudinal_not_engaged(self):
+    planner = self.build(launch=True, halt=True)
+    planner.update_assist_indicators(False)
+    self.assertFalse(planner.launch_assist_indicator)
+    self.assertFalse(planner.halt_assist_indicator)
+
+
 def build_speed_assist_planner(mode=SPEED_ASSIST_ON, lead_mode=0, openpilot_longitudinal=True):
   planner = LongitudinalPlanner.__new__(LongitudinalPlanner)
   planner.CP = SimpleNamespace(openpilotLongitudinalControl=openpilot_longitudinal)
