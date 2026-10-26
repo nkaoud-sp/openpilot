@@ -117,7 +117,7 @@ class TestLanePolicy(unittest.TestCase):
         result = lane_policy.apply_lane_lock(output, 0.001, 20.0, lane_policy_enabled=True,
                                              turn_centering_enabled=True,
                                              turn_centering_strength=strength)
-      self.assertEqual(lane_policy.get_lane_policy_status()[0], lane_policy.LANE_POLICY_MODE_TWO_LINE)
+      self.assertEqual(lane_policy.get_lane_policy_status()[0], lane_policy.LANE_POLICY_MODE_TURN_CENTERING)
       values.append(result - 0.001)
     self.assertLess(values[0], values[1])
     self.assertLess(values[1], values[2])
@@ -148,6 +148,17 @@ class TestLanePolicy(unittest.TestCase):
       results[turn] = result - curvature
     self.assertGreater(results[True], results[False])
     self.assertLessEqual(results[True], lane_policy.LANE_LOCK_MAX_CENTER_CORRECTION)
+
+  def test_turn_centering_reports_distinct_mode(self):
+    output = make_model_output(lane_center=0.35)
+    self.apply_for(output, lane_policy.LANE_LOCK_ARM_TIME + lane_policy.DT_MDL)
+    # Straight: ordinary two-line centering.
+    self.apply_for(output, lane_policy.DT_MDL, turn_centering_enabled=True)
+    self.assertEqual(lane_policy.get_lane_policy_status()[0], lane_policy.LANE_POLICY_MODE_TWO_LINE)
+    # Mid-turn with turn centering on: distinct mode for the visual indicator.
+    lane_policy.apply_lane_lock(output, 0.001, 20.0, lane_policy_enabled=True,
+                                turn_centering_enabled=True)
+    self.assertEqual(lane_policy.get_lane_policy_status()[0], lane_policy.LANE_POLICY_MODE_TURN_CENTERING)
 
   def test_turn_centering_releases_without_two_line_geometry(self):
     output = make_model_output(left_prob=0.99, right_prob=0.10, lane_center=0.35)

@@ -59,6 +59,7 @@ LANE_POLICY_MODE_INACTIVE = 'inactive'
 LANE_POLICY_MODE_TWO_LINE = 'twoLine'
 LANE_POLICY_MODE_ONE_LINE = 'oneLine'
 LANE_POLICY_MODE_LEAD = 'lead'
+LANE_POLICY_MODE_TURN_CENTERING = 'turnCentering'
 
 _lane_lock_weight = 0.0
 _lane_lock_lane_curvature = 0.0
@@ -430,11 +431,13 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
       _lane_lock_ready = True
     _lane_policy_mode = (LANE_POLICY_MODE_LEAD if lead_center_correction is not None else
                          LANE_POLICY_MODE_ONE_LINE if _lane_lock_one_line_hold else
+                         LANE_POLICY_MODE_TURN_CENTERING if turn_centering_active else
                          LANE_POLICY_MODE_TWO_LINE)
     _lane_policy_correction = float(_lane_lock_center_correction)
     _lane_lock_error_logged = False
     log_lane_lock_mode("lead vehicle fallback" if lead_center_correction is not None else
-                       "lane center hold" if _lane_lock_one_line_hold else "full lane center")
+                       "lane center hold" if _lane_lock_one_line_hold else
+                       "turn centering" if turn_centering_active else "full lane center")
     return _lane_lock_lane_curvature
 
   except (KeyError, IndexError, TypeError, ValueError, FloatingPointError, np.linalg.LinAlgError) as err:

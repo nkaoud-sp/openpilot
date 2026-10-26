@@ -21,6 +21,7 @@ LANE_POLICY_COLORS = {
   lane_policy.LANE_POLICY_MODE_TWO_LINE: rl.Color(0, 255, 90, 230),
   lane_policy.LANE_POLICY_MODE_ONE_LINE: rl.Color(255, 210, 0, 230),
   lane_policy.LANE_POLICY_MODE_LEAD: rl.Color(170, 80, 255, 230),
+  lane_policy.LANE_POLICY_MODE_TURN_CENTERING: rl.Color(0, 200, 255, 230),
 }
 
 STOCK_PATH_GRADIENT = Gradient(
