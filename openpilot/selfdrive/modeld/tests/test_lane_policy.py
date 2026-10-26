@@ -123,6 +123,32 @@ class TestLanePolicy(unittest.TestCase):
     self.assertLess(values[1], values[2])
     self.assertLessEqual(values[2], lane_policy.LANE_LOCK_MAX_CENTER_CORRECTION)
 
+  def sloped_output(self, slope, offset=0.1):
+    x = np.asarray(ModelConstants.X_IDXS, dtype=np.float64)
+    output = make_model_output()
+    center = offset + slope * x
+    output['lane_lines'][0, 1, :, 0] = center - 1.8
+    output['lane_lines'][0, 2, :, 0] = center + 1.8
+    return output
+
+  def test_turn_centering_preserves_heading_authority_mid_turn(self):
+    # A lane whose midpoint carries a heading error during a sharp turn: turn
+    # centering keeps full heading authority while the general faded path does not,
+    # so turn centering produces the larger corrective curvature.
+    curvature = 0.0024  # well past the heading-fade knee
+    results = {}
+    for turn in (True, False):
+      lane_policy.reset_lane_lock()
+      output = self.sloped_output(slope=0.004)
+      self.apply_for(output, lane_policy.LANE_LOCK_ARM_TIME + lane_policy.DT_MDL)
+      result = 0.0
+      for _ in range(200):
+        result = lane_policy.apply_lane_lock(output, curvature, 20.0, lane_policy_enabled=True,
+                                             turn_centering_enabled=turn)
+      results[turn] = result - curvature
+    self.assertGreater(results[True], results[False])
+    self.assertLessEqual(results[True], lane_policy.LANE_LOCK_MAX_CENTER_CORRECTION)
+
   def test_turn_centering_releases_without_two_line_geometry(self):
     output = make_model_output(left_prob=0.99, right_prob=0.10, lane_center=0.35)
     result = lane_policy.apply_lane_lock(output, 0.001, 20.0,

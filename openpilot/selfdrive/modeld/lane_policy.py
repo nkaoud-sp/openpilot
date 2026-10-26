@@ -364,7 +364,13 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
         _, heading, offset = np.polyfit(x[fit], center_y[fit], 2)
         offset += CAMERA_OFFSET
         lookahead = float(np.clip(2.0 * v_ego, LANE_LOCK_MIN_LOOKAHEAD, LANE_LOCK_MAX_LOOKAHEAD))
-        heading_scale = min(1.0, LANE_LOCK_HEADING_CURVATURE_FADE / max(abs(e2e_curvature), 1e-6))
+        # The quadratic fit already absorbs the road's curvature into its discarded
+        # leading term, so the remaining heading is a genuine heading error. The
+        # general path fades it out as curvature grows to stay quiet on sharp bends,
+        # but turn centering needs that term most mid-turn: it projects the lane
+        # midpoint downrange and resists corner hugging, so keep full authority here.
+        heading_scale = (1.0 if turn_centering_active else
+                         min(1.0, LANE_LOCK_HEADING_CURVATURE_FADE / max(abs(e2e_curvature), 1e-6)))
         center_correction = (2.0 * (LANE_LOCK_HEADING_GAIN * heading_scale * heading * lookahead + offset) /
                              (lookahead * lookahead))
         center_correction = float(np.clip(center_correction,
