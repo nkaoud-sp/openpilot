@@ -371,9 +371,10 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
                                           -LANE_LOCK_MAX_CENTER_CORRECTION,
                                           LANE_LOCK_MAX_CENTER_CORRECTION))
 
-    intensity_scale = get_intensity_scale(intensity)
-    if turn_centering_active:
-      center_correction *= get_intensity_scale(turn_centering_strength)
+    # During a turn the strength control is the sole authority over how firmly
+    # (magnitude) and how quickly (engage step, below) we return to the midpoint,
+    # rather than compounding with the global lane-policy intensity.
+    intensity_scale = get_intensity_scale(turn_centering_strength if turn_centering_active else intensity)
     center_correction = float(np.clip(center_correction * intensity_scale,
                                       -correction_limit, correction_limit))
     if abs(center_correction) < LANE_LOCK_CORRECTION_DEADBAND:

@@ -106,6 +106,23 @@ class TestLanePolicy(unittest.TestCase):
     self.assertGreater(centered, 0.001)
     self.assertLessEqual(centered, 0.001 + lane_policy.LANE_LOCK_MAX_CENTER_CORRECTION)
 
+  def test_turn_centering_strength_scales_firmness(self):
+    values = []
+    for strength in range(3):
+      lane_policy.reset_lane_lock()
+      output = make_model_output(lane_center=0.1)
+      self.apply_for(output, lane_policy.LANE_LOCK_ARM_TIME + lane_policy.DT_MDL)
+      result = 0.0
+      for _ in range(100):
+        result = lane_policy.apply_lane_lock(output, 0.001, 20.0, lane_policy_enabled=True,
+                                             turn_centering_enabled=True,
+                                             turn_centering_strength=strength)
+      self.assertEqual(lane_policy.get_lane_policy_status()[0], lane_policy.LANE_POLICY_MODE_TWO_LINE)
+      values.append(result - 0.001)
+    self.assertLess(values[0], values[1])
+    self.assertLess(values[1], values[2])
+    self.assertLessEqual(values[2], lane_policy.LANE_LOCK_MAX_CENTER_CORRECTION)
+
   def test_turn_centering_releases_without_two_line_geometry(self):
     output = make_model_output(left_prob=0.99, right_prob=0.10, lane_center=0.35)
     result = lane_policy.apply_lane_lock(output, 0.001, 20.0,
