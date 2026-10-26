@@ -101,6 +101,7 @@ class TestLanePolicy(unittest.TestCase):
     centered = lane_policy.apply_lane_lock(output, 0.001, 20.0,
                                             lane_policy_enabled=True,
                                             e2e_blend_enabled=True,
+                                            two_line_enabled=False,
                                             turn_centering_enabled=True)
     self.assertGreater(centered, 0.001)
     self.assertLessEqual(centered, 0.001 + lane_policy.LANE_LOCK_MAX_CENTER_CORRECTION)

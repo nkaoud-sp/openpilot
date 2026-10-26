@@ -290,11 +290,13 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
                   np.all(np.isfinite(left_y[fit])))
     valid_right = (np.isfinite(right_prob) and right_prob >= LANE_LOCK_RETAIN_LINE_PROB and
                    np.all(np.isfinite(right_y[fit])))
+    turn_centering_active = (turn_centering_enabled and
+                             abs(e2e_curvature) >= TURN_CENTERING_CURVATURE)
     two_line_geometry = False
     two_line_confidence = min(left_prob, right_prob)
     center_y: np.ndarray | None = None
 
-    if two_line_enabled and valid_left and valid_right:
+    if (two_line_enabled or turn_centering_active) and valid_left and valid_right:
       measured_width, two_line_geometry = get_lane_width_measurement(left_y, right_y, fit)
       if two_line_geometry:
         center_y = 0.5 * (left_y + right_y)
@@ -326,8 +328,6 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
       if lead_center_correction is None:
         return release_lane_lock(e2e_curvature, "stock-e2e fallback: lane geometry or confidence")
 
-    turn_centering_active = (turn_centering_enabled and
-                             abs(e2e_curvature) >= TURN_CENTERING_CURVATURE)
     if turn_centering_active and not two_line_geometry:
       return release_lane_lock(e2e_curvature, "stock-e2e fallback: turn lane geometry")
 
