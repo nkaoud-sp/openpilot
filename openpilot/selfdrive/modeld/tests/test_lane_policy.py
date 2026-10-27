@@ -33,6 +33,22 @@ def make_model_output(left_prob=0.99, right_prob=0.99, lane_center=0.0,
   }
 
 
+def make_curve_output(radius, lane_center, plan_radius=None, v_ego=12.0, right_prob=0.99):
+  """A left turn as the model reports it: lateral y (right-positive) at fixed X_IDXS, with the
+  e2e plan driving an arc from the car (by default parallel to the lane)."""
+  x = np.asarray(ModelConstants.X_IDXS, dtype=np.float64)
+  output = make_model_output(right_prob=right_prob)
+  curve_center_y = lane_center - radius
+  for idx, line_radius in ((1, radius - 1.8), (2, radius + 1.8)):
+    xx = np.minimum(x, 0.999 * line_radius)
+    output['lane_lines'][0, idx, :, 0] = curve_center_y + np.sqrt(line_radius * line_radius - xx * xx)
+  plan_radius = radius if plan_radius is None else plan_radius
+  arc = v_ego * np.asarray(ModelConstants.T_IDXS, dtype=np.float64)
+  output['plan'][0, :, 0] = plan_radius * np.sin(arc / plan_radius)
+  output['plan'][0, :, 1] = -plan_radius * (1.0 - np.cos(arc / plan_radius))
+  return output
+
+
 class TestLanePolicy(unittest.TestCase):
   def setUp(self):
     lane_policy.reset_lane_lock()
@@ -123,31 +139,59 @@ class TestLanePolicy(unittest.TestCase):
     self.assertLess(values[1], values[2])
     self.assertLessEqual(values[2], lane_policy.LANE_LOCK_MAX_CENTER_CORRECTION)
 
-  def sloped_output(self, slope, offset=0.1):
-    x = np.asarray(ModelConstants.X_IDXS, dtype=np.float64)
-    output = make_model_output()
-    center = offset + slope * x
-    output['lane_lines'][0, 1, :, 0] = center - 1.8
-    output['lane_lines'][0, 2, :, 0] = center + 1.8
-    return output
+  def turn_for(self, output, curvature, frames, **kwargs):
+    for _ in range(frames):
+      result = lane_policy.apply_lane_lock(output, curvature, 12.0, lane_policy_enabled=True,
+                                           turn_centering_enabled=True, **kwargs)
+    return result - curvature
 
-  def test_turn_centering_preserves_heading_authority_mid_turn(self):
-    # A lane whose midpoint carries a heading error during a sharp turn: turn
-    # centering keeps full heading authority while the general faded path does not,
-    # so turn centering produces the larger corrective curvature.
-    curvature = 0.0024  # well past the heading-fade knee
-    results = {}
-    for turn in (True, False):
+  def arm_on_straight(self, lane_center):
+    for _ in range(20):
+      lane_policy.apply_lane_lock(make_model_output(lane_center=lane_center), 0.0, 12.0,
+                                  lane_policy_enabled=True, turn_centering_enabled=True)
+
+  def test_turn_centering_stays_engaged_through_tight_curve(self):
+    # A constant-width lane on a 70 m left turn looks ~2 m wider far ahead when sampled
+    # at fixed distances; that used to fail the width check and drop turn centering.
+    self.arm_on_straight(0.4)
+    output = make_curve_output(70.0, 0.4)
+    for _ in range(60):
+      lane_policy.apply_lane_lock(output, -1.0 / 70.0, 12.0, lane_policy_enabled=True, turn_centering_enabled=True)
+      self.assertEqual(lane_policy.get_lane_policy_status()[0], lane_policy.LANE_POLICY_MODE_TURN_CENTERING)
+
+  def test_turn_centering_has_no_curve_bias(self):
+    straight = []
+    for lane_center in (0.0, 0.2, -0.2):
       lane_policy.reset_lane_lock()
-      output = self.sloped_output(slope=0.004)
-      self.apply_for(output, lane_policy.LANE_LOCK_ARM_TIME + lane_policy.DT_MDL)
-      result = 0.0
-      for _ in range(200):
-        result = lane_policy.apply_lane_lock(output, curvature, 20.0, lane_policy_enabled=True,
-                                             turn_centering_enabled=turn)
-      results[turn] = result - curvature
-    self.assertGreater(results[True], results[False])
-    self.assertLessEqual(results[True], lane_policy.LANE_LOCK_MAX_CENTER_CORRECTION)
+      self.arm_on_straight(lane_center)
+      straight.append(self.turn_for(make_model_output(lane_center=lane_center), 0.0, 60))
+    for radius in (250.0, 100.0, 50.0):
+      for lane_center, straight_correction in zip((0.0, 0.2, -0.2), straight, strict=True):
+        lane_policy.reset_lane_lock()
+        self.arm_on_straight(lane_center)
+        correction = self.turn_for(make_curve_output(radius, lane_center), -1.0 / radius, 60)
+        # same answer as the straight road: the turn's own curvature must not leak in
+        self.assertAlmostEqual(correction, straight_correction, delta=0.6e-4, msg=f"R={radius} c0={lane_center}")
+
+  def test_turn_centering_pulls_inside_hugging_plan_back_out(self):
+    self.arm_on_straight(0.0)
+    hugging = make_curve_output(100.0, 0.0, plan_radius=90.0)
+    # positive steers right, toward the outside of this left turn and the lane midpoint
+    self.assertGreater(self.turn_for(hugging, -1.0 / 90.0, 60), 2.0e-4)
+
+  def test_turn_centering_rides_out_brief_geometry_glitch(self):
+    self.arm_on_straight(0.4)
+    output = make_curve_output(100.0, 0.4)
+    self.turn_for(output, -0.01, 40)
+    glitch = make_curve_output(100.0, 0.4, right_prob=0.1)
+    self.turn_for(glitch, -0.01, 2)
+    self.assertTrue(lane_policy._lane_lock_full_active)
+    self.turn_for(output, -0.01, 1)
+    self.assertEqual(lane_policy.get_lane_policy_status()[0], lane_policy.LANE_POLICY_MODE_TURN_CENTERING)
+
+    frames = int(np.ceil(lane_policy.TURN_CENTERING_GEOMETRY_GRACE_TIME / lane_policy.DT_MDL)) + 2
+    self.turn_for(glitch, -0.01, frames)
+    self.assertFalse(lane_policy._lane_lock_full_active)
 
   def test_turn_centering_reports_distinct_mode(self):
     output = make_model_output(lane_center=0.35)

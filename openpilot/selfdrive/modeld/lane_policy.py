@@ -54,6 +54,11 @@ LANE_LOCK_LEAD_MAX_CORRECTION = 0.00020
 LANE_POLICY_INTENSITY_SCALE = (0.6, 1.0, 1.4)
 LANE_POLICY_INTENSITY_NORMAL = 1
 TURN_CENTERING_CURVATURE = LANE_LOCK_TURN_CURVATURE
+# On a tight turn the lane lines sweep sideways quickly, so only fit out to this
+# fraction of the turn radius (never shorter than the minimum).
+TURN_CENTERING_FIT_RADIUS_FRACTION = 0.55
+TURN_CENTERING_FIT_MIN_END = 20.0
+TURN_CENTERING_GEOMETRY_GRACE_TIME = 0.5
 
 LANE_POLICY_MODE_INACTIVE = 'inactive'
 LANE_POLICY_MODE_TWO_LINE = 'twoLine'
@@ -76,6 +81,7 @@ _lane_lock_one_line_hold = False
 _lane_lock_error_logged = False
 _lane_lock_last_turn_sign = 0
 _lane_lock_turn_release_time = 0.0
+_lane_lock_turn_geometry_loss_time = 0.0
 _lane_lock_last_curve_target_sign = 0
 _lane_lock_curve_reversal_hold_time = 0.0
 _lane_lock_last_logged_mode = None
@@ -101,6 +107,7 @@ def reset_lane_lock() -> None:
   global _lane_lock_width, _lane_lock_width_valid, _lane_lock_line_loss_time
   global _lane_lock_center_correction, _lane_lock_has_center_correction
   global _lane_lock_one_line_hold, _lane_lock_last_turn_sign, _lane_lock_turn_release_time
+  global _lane_lock_turn_geometry_loss_time
   global _lane_lock_last_curve_target_sign, _lane_lock_curve_reversal_hold_time
   global _lane_policy_mode, _lane_policy_correction
   _lane_lock_weight = 0.0
@@ -117,6 +124,7 @@ def reset_lane_lock() -> None:
   _lane_lock_one_line_hold = False
   _lane_lock_last_turn_sign = 0
   _lane_lock_turn_release_time = 0.0
+  _lane_lock_turn_geometry_loss_time = 0.0
   _lane_lock_last_curve_target_sign = 0
   _lane_lock_curve_reversal_hold_time = 0.0
   _lane_policy_mode = LANE_POLICY_MODE_INACTIVE
@@ -161,9 +169,14 @@ def get_inner_lane_line_probs(model_output: dict[str, np.ndarray]) -> tuple[floa
   return float(lane_line_probs[0, 3]), float(lane_line_probs[0, 5])
 
 
-def get_lane_width_measurement(left_y: np.ndarray, right_y: np.ndarray,
-                               fit: np.ndarray) -> tuple[float, bool]:
+def get_lane_width_measurement(left_y: np.ndarray, right_y: np.ndarray, fit: np.ndarray,
+                               x: np.ndarray | None = None) -> tuple[float, bool]:
   lane_width = right_y - left_y
+  if x is not None:
+    # The lines are sampled at fixed distances ahead, so on a curve their lateral gap
+    # overstates the width by 1/cos(lane heading). Measure across the lane instead.
+    center_slope = np.gradient(0.5 * (left_y + right_y), x)
+    lane_width = lane_width / np.sqrt(1.0 + center_slope * center_slope)
   width_p10, width_median, width_p90 = np.percentile(lane_width[fit], (10.0, 50.0, 90.0))
   width_change = float(width_p90 - width_p10)
   width_edge_distance = min(width_p10 - LANE_LOCK_MIN_LANE_WIDTH,
@@ -197,14 +210,19 @@ def get_lead_center_correction(model_output: dict[str, np.ndarray], v_ego: float
   return float(np.clip(correction, -LANE_LOCK_LEAD_MAX_CORRECTION, LANE_LOCK_LEAD_MAX_CORRECTION))
 
 
+def get_turn_fit_end(curvature: float) -> float:
+  return float(np.clip(TURN_CENTERING_FIT_RADIUS_FRACTION / max(abs(curvature), 1e-6),
+                       TURN_CENTERING_FIT_MIN_END, LANE_LOCK_FIT_END))
+
+
 def get_e2e_blend_gain(x: np.ndarray | float) -> np.ndarray | float:
   progress = np.clip((np.asarray(x) - LANE_LOCK_E2E_BLEND_START) /
                      (LANE_LOCK_E2E_BLEND_END - LANE_LOCK_E2E_BLEND_START), 0.0, 1.0)
   return progress ** 3 * (10.0 + progress * (-15.0 + 6.0 * progress))
 
 
-def get_e2e_blended_center_correction(model_output: dict[str, np.ndarray], center_y: np.ndarray,
-                                      x: np.ndarray, v_ego: float) -> float:
+def get_e2e_plan_path(model_output: dict[str, np.ndarray],
+                      truncate_turn_back: bool = False) -> tuple[np.ndarray, np.ndarray]:
   position = np.asarray(model_output['plan'][0, :, Plan.POSITION], dtype=np.float64)
   if position.ndim != 2 or position.shape[1] < 2:
     raise ValueError("E2E position path has an invalid shape")
@@ -212,8 +230,48 @@ def get_e2e_blended_center_correction(model_output: dict[str, np.ndarray], cente
   plan_x, plan_y = position[:, 0], position[:, 1]
   valid_plan = np.isfinite(plan_x) & np.isfinite(plan_y)
   plan_x, plan_y = plan_x[valid_plan], plan_y[valid_plan]
+  if truncate_turn_back:
+    # Past ~90 degrees of a tight turn the path doubles back; keep the part before that
+    turn_back = np.flatnonzero(np.diff(plan_x) <= 0.0)
+    if turn_back.size:
+      plan_x, plan_y = plan_x[:turn_back[0] + 1], plan_y[:turn_back[0] + 1]
   if plan_x.shape[0] < 4 or np.any(np.diff(plan_x) <= 0.0):
     raise ValueError("E2E position path is not a finite increasing path")
+  return plan_x, plan_y
+
+
+def get_turn_center_correction(model_output: dict[str, np.ndarray], center_y: np.ndarray,
+                               x: np.ndarray, fit: np.ndarray, v_ego: float) -> float:
+  """Steer the e2e path onto the lane midpoint through a turn.
+
+  The midpoint is compared with the e2e path at the same distances ahead, so the
+  turn's own curvature cancels out and nothing is extrapolated back to the car.
+  A quadratic fit of the midpoint cannot do that on a tight turn: its offset and
+  heading pick up the curve's higher-order shape and bias the car in or out.
+  """
+  plan_x, plan_y = get_e2e_plan_path(model_output, truncate_turn_back=True)
+  fit = fit & (x >= plan_x[0]) & (x <= plan_x[-1])
+  if np.count_nonzero(fit) < 3:
+    raise ValueError("E2E position path does not cover the turn fit window")
+
+  fit_x = x[fit]
+  center_vehicle_y = center_y[fit] + CAMERA_OFFSET
+  slope = np.gradient(center_vehicle_y, fit_x)
+  # measured across the lane, like the width
+  residual = (center_vehicle_y - np.interp(fit_x, plan_x, plan_y)) / np.sqrt(1.0 + slope * slope)
+  if not np.all(np.isfinite(residual)):
+    raise ValueError("lane/E2E turn residual is not finite")
+
+  lookahead = min(float(np.clip(2.0 * v_ego, LANE_LOCK_MIN_LOOKAHEAD, LANE_LOCK_MAX_LOOKAHEAD)), float(fit_x[-1]))
+  weights = np.exp(-0.5 * ((fit_x - lookahead) / (LANE_LOCK_PATH_WEIGHT_SPREAD * lookahead)) ** 2)
+  error = float(np.dot(weights, residual) / np.sum(weights))
+  correction = 2.0 * error / (lookahead * lookahead)
+  return float(np.clip(correction, -LANE_LOCK_MAX_CENTER_CORRECTION, LANE_LOCK_MAX_CENTER_CORRECTION))
+
+
+def get_e2e_blended_center_correction(model_output: dict[str, np.ndarray], center_y: np.ndarray,
+                                      x: np.ndarray, v_ego: float) -> float:
+  plan_x, plan_y = get_e2e_plan_path(model_output)
 
   fit = (x >= LANE_LOCK_FIT_START) & (x <= LANE_LOCK_E2E_FALLBACK_END)
   if np.count_nonzero(fit) < 3:
@@ -262,7 +320,7 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
   global _lane_lock_width, _lane_lock_width_valid, _lane_lock_line_loss_time
   global _lane_lock_center_correction, _lane_lock_has_center_correction
   global _lane_lock_one_line_hold, _lane_lock_error_logged
-  global _lane_lock_last_turn_sign, _lane_lock_turn_release_time
+  global _lane_lock_last_turn_sign, _lane_lock_turn_release_time, _lane_lock_turn_geometry_loss_time
   global _lane_lock_last_curve_target_sign, _lane_lock_curve_reversal_hold_time
   global _lane_policy_mode, _lane_policy_correction
 
@@ -282,8 +340,11 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
     if lane_change_prob > LANE_LOCK_MAX_LANE_CHANGE_PROB:
       return release_lane_lock(e2e_curvature, "stock-e2e fallback: lane-change intent")
 
+    turn_centering_active = (turn_centering_enabled and
+                             abs(e2e_curvature) >= TURN_CENTERING_CURVATURE)
     x = np.asarray(constants.X_IDXS, dtype=np.float64)
-    fit = (x >= LANE_LOCK_FIT_START) & (x <= LANE_LOCK_FIT_END)
+    fit_end = get_turn_fit_end(e2e_curvature) if turn_centering_active else LANE_LOCK_FIT_END
+    fit = (x >= LANE_LOCK_FIT_START) & (x <= fit_end)
     if x.shape != left_y.shape or np.count_nonzero(fit) < 3:
       raise ValueError(f"lane-line horizon {left_y.shape} does not match {constants.__name__}.X_IDXS {x.shape}")
 
@@ -291,17 +352,17 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
                   np.all(np.isfinite(left_y[fit])))
     valid_right = (np.isfinite(right_prob) and right_prob >= LANE_LOCK_RETAIN_LINE_PROB and
                    np.all(np.isfinite(right_y[fit])))
-    turn_centering_active = (turn_centering_enabled and
-                             abs(e2e_curvature) >= TURN_CENTERING_CURVATURE)
     two_line_geometry = False
     two_line_confidence = min(left_prob, right_prob)
     center_y: np.ndarray | None = None
 
     if (two_line_enabled or turn_centering_active) and valid_left and valid_right:
-      measured_width, two_line_geometry = get_lane_width_measurement(left_y, right_y, fit)
+      measured_width, two_line_geometry = get_lane_width_measurement(left_y, right_y, fit,
+                                                                     x if turn_centering_active else None)
       if two_line_geometry:
         center_y = 0.5 * (left_y + right_y)
         _lane_lock_line_loss_time = 0.0
+        _lane_lock_turn_geometry_loss_time = 0.0
         _lane_lock_one_line_hold = False
 
         if two_line_confidence >= LANE_LOCK_ARM_LINE_PROB:
@@ -311,6 +372,16 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
           else:
             alpha = min(DT_MDL / LANE_LOCK_WIDTH_TIME, 1.0)
             _lane_lock_width += alpha * (measured_width - _lane_lock_width)
+
+    if turn_centering_active and not two_line_geometry:
+      reason = "line confidence" if not (valid_left and valid_right) else "lane width"
+      if _lane_lock_full_active and _lane_lock_turn_geometry_loss_time < TURN_CENTERING_GEOMETRY_GRACE_TIME:
+        # Ride out a brief glitch mid-turn: ease the correction out but stay armed,
+        # so centering resumes at once instead of re-arming from scratch.
+        _lane_lock_turn_geometry_loss_time += DT_MDL
+        log_lane_lock_mode(f"turn centering hold: {reason}")
+        return ramp_out_correction(e2e_curvature)
+      return release_lane_lock(e2e_curvature, f"stock-e2e fallback: turn {reason}")
 
     if center_y is None and one_line_fallback_enabled and _lane_lock_full_active and _lane_lock_width_valid:
       selected_left = valid_left and (not valid_right or not two_line_geometry or left_prob >= right_prob)
@@ -328,9 +399,6 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
         lead_center_correction = get_lead_center_correction(model_output, v_ego, close_lead_enabled)
       if lead_center_correction is None:
         return release_lane_lock(e2e_curvature, "stock-e2e fallback: lane geometry or confidence")
-
-    if turn_centering_active and not two_line_geometry:
-      return release_lane_lock(e2e_curvature, "stock-e2e fallback: turn lane geometry")
 
     if center_y is not None and not _lane_lock_full_active:
       if two_line_geometry and two_line_confidence >= LANE_LOCK_ARM_LINE_PROB:
@@ -359,19 +427,15 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
       _lane_lock_full_active = False
       _lane_lock_arm_time = 0.0
     else:
-      if e2e_blend_enabled and not turn_centering_active and not _lane_lock_one_line_hold:
+      if turn_centering_active:
+        center_correction = get_turn_center_correction(model_output, center_y, x, fit, v_ego)
+      elif e2e_blend_enabled and not _lane_lock_one_line_hold:
         center_correction = get_e2e_blended_center_correction(model_output, center_y, x, v_ego)
       else:
         _, heading, offset = np.polyfit(x[fit], center_y[fit], 2)
         offset += CAMERA_OFFSET
         lookahead = float(np.clip(2.0 * v_ego, LANE_LOCK_MIN_LOOKAHEAD, LANE_LOCK_MAX_LOOKAHEAD))
-        # The quadratic fit already absorbs the road's curvature into its discarded
-        # leading term, so the remaining heading is a genuine heading error. The
-        # general path fades it out as curvature grows to stay quiet on sharp bends,
-        # but turn centering needs that term most mid-turn: it projects the lane
-        # midpoint downrange and resists corner hugging, so keep full authority here.
-        heading_scale = (1.0 if turn_centering_active else
-                         min(1.0, LANE_LOCK_HEADING_CURVATURE_FADE / max(abs(e2e_curvature), 1e-6)))
+        heading_scale = min(1.0, LANE_LOCK_HEADING_CURVATURE_FADE / max(abs(e2e_curvature), 1e-6))
         center_correction = (2.0 * (LANE_LOCK_HEADING_GAIN * heading_scale * heading * lookahead + offset) /
                              (lookahead * lookahead))
         center_correction = float(np.clip(center_correction,
