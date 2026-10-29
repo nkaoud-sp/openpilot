@@ -59,6 +59,8 @@ TURN_CENTERING_CURVATURE = LANE_LOCK_TURN_CURVATURE
 TURN_CENTERING_FIT_RADIUS_FRACTION = 0.55
 TURN_CENTERING_FIT_MIN_END = 20.0
 TURN_CENTERING_GEOMETRY_GRACE_TIME = 0.5
+# How long one remaining line plus the learned width may carry the midpoint mid-turn
+TURN_CENTERING_ONE_LINE_HOLD_TIME = 2.0
 
 LANE_POLICY_MODE_INACTIVE = 'inactive'
 LANE_POLICY_MODE_TWO_LINE = 'twoLine'
@@ -373,7 +375,20 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
             alpha = min(DT_MDL / LANE_LOCK_WIDTH_TIME, 1.0)
             _lane_lock_width += alpha * (measured_width - _lane_lock_width)
 
-    if turn_centering_active and not two_line_geometry:
+    if (turn_centering_active and not two_line_geometry and _lane_lock_full_active and _lane_lock_width_valid and
+        (valid_left or valid_right) and _lane_lock_line_loss_time < TURN_CENTERING_ONE_LINE_HOLD_TIME):
+      # One line flickering mid-turn: hold the midpoint from the other line and the
+      # learned width, offset across the lane rather than sideways.
+      use_left = valid_left and (not valid_right or left_prob >= right_prob)
+      line_y = left_y if use_left else right_y
+      line_slope = np.gradient(line_y, x)
+      half_width = 0.5 * _lane_lock_width * np.sqrt(1.0 + line_slope * line_slope)
+      center_y = line_y + half_width if use_left else line_y - half_width
+      _lane_lock_line_loss_time += DT_MDL
+      _lane_lock_turn_geometry_loss_time = 0.0
+      log_lane_lock_mode("turn centering: one line")
+
+    if turn_centering_active and center_y is None:
       reason = "line confidence" if not (valid_left and valid_right) else "lane width"
       if _lane_lock_full_active and _lane_lock_turn_geometry_loss_time < TURN_CENTERING_GEOMETRY_GRACE_TIME:
         # Ride out a brief glitch mid-turn: ease the correction out but stay armed,

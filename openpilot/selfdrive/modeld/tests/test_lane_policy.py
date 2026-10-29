@@ -33,11 +33,11 @@ def make_model_output(left_prob=0.99, right_prob=0.99, lane_center=0.0,
   }
 
 
-def make_curve_output(radius, lane_center, plan_radius=None, v_ego=12.0, right_prob=0.99):
+def make_curve_output(radius, lane_center, plan_radius=None, v_ego=12.0, left_prob=0.99, right_prob=0.99):
   """A left turn as the model reports it: lateral y (right-positive) at fixed X_IDXS, with the
   e2e plan driving an arc from the car (by default parallel to the lane)."""
   x = np.asarray(ModelConstants.X_IDXS, dtype=np.float64)
-  output = make_model_output(right_prob=right_prob)
+  output = make_model_output(left_prob=left_prob, right_prob=right_prob)
   curve_center_y = lane_center - radius
   for idx, line_radius in ((1, radius - 1.8), (2, radius + 1.8)):
     xx = np.minimum(x, 0.999 * line_radius)
@@ -183,7 +183,7 @@ class TestLanePolicy(unittest.TestCase):
     self.arm_on_straight(0.4)
     output = make_curve_output(100.0, 0.4)
     self.turn_for(output, -0.01, 40)
-    glitch = make_curve_output(100.0, 0.4, right_prob=0.1)
+    glitch = make_curve_output(100.0, 0.4, left_prob=0.1, right_prob=0.1)
     self.turn_for(glitch, -0.01, 2)
     self.assertTrue(lane_policy._lane_lock_full_active)
     self.turn_for(output, -0.01, 1)
@@ -191,6 +191,29 @@ class TestLanePolicy(unittest.TestCase):
 
     frames = int(np.ceil(lane_policy.TURN_CENTERING_GEOMETRY_GRACE_TIME / lane_policy.DT_MDL)) + 2
     self.turn_for(glitch, -0.01, frames)
+    self.assertFalse(lane_policy._lane_lock_full_active)
+
+  def test_turn_centering_holds_through_flickering_line(self):
+    self.arm_on_straight(0.4)
+    steady = make_curve_output(100.0, 0.4)
+    reference = self.turn_for(steady, -0.01, 40)
+    flicker = make_curve_output(100.0, 0.4, right_prob=0.3)
+    for frame in range(60):  # right line drops out for 6 of every 10 frames
+      output = flicker if frame % 10 < 6 else steady
+      lane_policy.apply_lane_lock(output, -0.01, 12.0, lane_policy_enabled=True, turn_centering_enabled=True)
+      mode, correction = lane_policy.get_lane_policy_status()
+      self.assertEqual(mode, lane_policy.LANE_POLICY_MODE_TURN_CENTERING)
+      self.assertAlmostEqual(correction, reference, delta=0.3e-4)
+
+  def test_turn_centering_one_line_hold_is_bounded(self):
+    self.arm_on_straight(0.4)
+    self.turn_for(make_curve_output(100.0, 0.4), -0.01, 40)
+    one_line = make_curve_output(100.0, 0.4, right_prob=0.3)
+    frames = int(np.ceil(lane_policy.TURN_CENTERING_ONE_LINE_HOLD_TIME / lane_policy.DT_MDL))
+    self.turn_for(one_line, -0.01, frames - 1)
+    self.assertEqual(lane_policy.get_lane_policy_status()[0], lane_policy.LANE_POLICY_MODE_TURN_CENTERING)
+    grace = int(np.ceil(lane_policy.TURN_CENTERING_GEOMETRY_GRACE_TIME / lane_policy.DT_MDL)) + 3
+    self.turn_for(one_line, -0.01, grace)
     self.assertFalse(lane_policy._lane_lock_full_active)
 
   def test_turn_centering_reports_distinct_mode(self):
