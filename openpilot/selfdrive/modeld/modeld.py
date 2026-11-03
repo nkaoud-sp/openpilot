@@ -67,7 +67,8 @@ def get_action_from_model(model_output: dict[str, np.ndarray], prev_action: log.
                           turn_centering_enabled: bool = False,
                           turn_centering_strength: int = lane_policy.LANE_POLICY_INTENSITY_NORMAL,
                           adaptive_enabled: bool = False,
-                          adaptive_strength: int = lane_policy.LANE_POLICY_INTENSITY_NORMAL) -> log.ModelDataV2.Action:
+                          adaptive_strength: int = lane_policy.LANE_POLICY_INTENSITY_NORMAL,
+                          path_containment_mode: int = lane_policy.LANE_POLICY_CONTAINMENT_OFF) -> log.ModelDataV2.Action:
   if 'action' not in model_output:
     plan = model_output['plan'][0]
     desired_accel = get_accel_from_plan(plan[:,Plan.VELOCITY][:,0],
@@ -86,7 +87,8 @@ def get_action_from_model(model_output: dict[str, np.ndarray], prev_action: log.
                                                   lane_policy_enabled, one_line_fallback_enabled,
                                                   lead_fallback_enabled, close_lead_enabled, e2e_blend_enabled,
                                                   two_line_enabled, intensity, turn_centering_enabled,
-                                                  turn_centering_strength, adaptive_enabled, adaptive_strength)
+                                                  turn_centering_strength, adaptive_enabled, adaptive_strength,
+                                                  path_containment_mode)
   stop = should_stop(v_ego, desired_accel)
   desired_accel = smooth_value(desired_accel, prev_action.desiredAcceleration, LONG_SMOOTH_SECONDS)
   if v_ego > MIN_LAT_CONTROL_SPEED:
@@ -342,6 +344,7 @@ def main(demo=False):
   turn_centering_strength = int(params.get("TurnCenteringStrength", return_default=True))
   adaptive_enabled = params.get_bool("AdaptiveLaneCentering")
   adaptive_strength = int(params.get("AdaptiveLaneCenteringStrength", return_default=True))
+  path_containment_mode = int(params.get("AdaptivePathContainment", return_default=True))
 
   # setup filter to track dropped frames
   frame_dropped_filter = FirstOrderFilter(0., 10., 1. / ModelConstants.MODEL_RUN_FREQ)
@@ -490,12 +493,13 @@ def main(demo=False):
         turn_centering_strength = int(params.get("TurnCenteringStrength", return_default=True))
         adaptive_enabled = params.get_bool("AdaptiveLaneCentering")
         adaptive_strength = int(params.get("AdaptiveLaneCenteringStrength", return_default=True))
+        path_containment_mode = int(params.get("AdaptivePathContainment", return_default=True))
       action = get_action_from_model(model_output, prev_action, lat_action_t, long_action_t, v_ego,
                                      blinkers_active, lane_policy_enabled, one_line_fallback_enabled,
                                      lead_fallback_enabled, close_lead_enabled, e2e_blend_enabled,
                                      two_line_enabled, lane_policy_intensity,
                                      turn_centering_enabled, turn_centering_strength,
-                                     adaptive_enabled, adaptive_strength)
+                                     adaptive_enabled, adaptive_strength, path_containment_mode)
       prev_action = action
       fill_model_msg(modelv2_send, model_output, action,
                      publish_state, meta_main.frame_id, meta_extra.frame_id, frame_id,

@@ -206,6 +206,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"TurnCenteringStrength", {PERSISTENT | BACKUP, INT, "1"}},
     {"AdaptiveLaneCentering", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"AdaptiveLaneCenteringStrength", {PERSISTENT | BACKUP, INT, "1"}},
+    {"AdaptivePathContainment", {PERSISTENT | BACKUP, INT, "0"}},
     {"LeadDepartAlert", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"MaxTimeOffroad", {PERSISTENT | BACKUP, INT, "1800"}},
     {"ModelRunnerTypeCache", {CLEAR_ON_ONROAD_TRANSITION, INT}},

@@ -326,6 +326,60 @@ class TestLanePolicy(unittest.TestCase):
     self.assertFalse(lane_policy._lane_lock_full_active)
     self.assertEqual(lane_policy.get_lane_policy_status()[0], lane_policy.LANE_POLICY_MODE_INACTIVE)
 
+  def make_containment_output(self, plan_y, left=-1.8, right=1.8):
+    x = np.asarray(ModelConstants.X_IDXS, dtype=np.float64)
+    output = make_model_output()
+    output['lane_lines'][0, 1, :, 0] = left
+    output['lane_lines'][0, 2, :, 0] = right
+    output['plan'][0, :, 0] = x
+    output['plan'][0, :, 1] = np.broadcast_to(np.asarray(plan_y, dtype=np.float64), x.shape)
+    fit = (x >= lane_policy.LANE_LOCK_FIT_START) & (x <= lane_policy.LANE_LOCK_FIT_END)
+    return output, x, fit
+
+  def test_path_containment_clamp_keeps_path_inside(self):
+    # Right line close in: the max correction alone would bow the path across it.
+    output, x, fit = self.make_containment_output(0.0, right=0.6)
+    left_y = output['lane_lines'][0, 1, :, 0]
+    right_y = output['lane_lines'][0, 2, :, 0]
+    corr = lane_policy.LANE_LOCK_MAX_CENTER_CORRECTION
+    clamped = lane_policy.apply_path_containment(lane_policy.LANE_POLICY_CONTAINMENT_CLAMP,
+                                                 corr, output, left_y, right_y, x, fit)
+    self.assertLess(clamped, corr)
+    wx = x[fit]
+    pred = 0.5 * clamped * wx * wx
+    right_limit = right_y[fit] + lane_policy.CAMERA_OFFSET - lane_policy.PATH_CONTAINMENT_MARGIN
+    self.assertTrue(np.all(pred <= right_limit + 1e-6))
+
+  def test_path_containment_barrier_eases_in_earlier_than_clamp(self):
+    # Path nears the right line but does not cross the margin: clamp stays inert while the
+    # barrier already eases the path inward (negative = toward center).
+    x = np.asarray(ModelConstants.X_IDXS, dtype=np.float64)
+    output, x, fit = self.make_containment_output(0.6 * np.clip(x / 55.0, 0.0, 1.0), right=1.0)
+    left_y = output['lane_lines'][0, 1, :, 0]
+    right_y = output['lane_lines'][0, 2, :, 0]
+    clamp = lane_policy.apply_path_containment(lane_policy.LANE_POLICY_CONTAINMENT_CLAMP,
+                                               0.0, output, left_y, right_y, x, fit)
+    barrier = lane_policy.apply_path_containment(lane_policy.LANE_POLICY_CONTAINMENT_BARRIER,
+                                                 0.0, output, left_y, right_y, x, fit)
+    self.assertAlmostEqual(clamp, 0.0)
+    self.assertLess(barrier, 0.0)
+    self.assertGreaterEqual(barrier, -lane_policy.LANE_LOCK_MAX_CENTER_CORRECTION)
+
+  def test_path_containment_inactive_when_well_centered(self):
+    output, x, fit = self.make_containment_output(0.0)  # wide lane, centered path
+    left_y = output['lane_lines'][0, 1, :, 0]
+    right_y = output['lane_lines'][0, 2, :, 0]
+    for mode in (lane_policy.LANE_POLICY_CONTAINMENT_CLAMP, lane_policy.LANE_POLICY_CONTAINMENT_BARRIER):
+      self.assertAlmostEqual(
+        lane_policy.apply_path_containment(mode, 0.0, output, left_y, right_y, x, fit), 0.0)
+
+  def test_path_containment_runs_under_adaptive(self):
+    output = make_model_output(lane_center=0.35)
+    correction = self.adaptive_apply_for(output, lane_policy.LANE_LOCK_ARM_TIME + 1.0,
+                                         path_containment_mode=lane_policy.LANE_POLICY_CONTAINMENT_BARRIER)
+    self.assertEqual(lane_policy.get_lane_policy_status()[0], lane_policy.LANE_POLICY_MODE_ADAPTIVE)
+    self.assertLessEqual(abs(correction), lane_policy.LANE_LOCK_MAX_CENTER_CORRECTION)
+
   def test_blinker_ramps_correction_out(self):
     output = self.arm(make_model_output(lane_center=0.45))
     self.apply_for(output, 0.5)

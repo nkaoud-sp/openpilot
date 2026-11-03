@@ -68,6 +68,15 @@ TURN_CENTERING_ONE_LINE_HOLD_TIME = 2.0
 # diverges from the e2e path by more than this (m).
 LANE_LOCK_ONE_LINE_MAX_DIVERGENCE = 0.75
 
+# Experimental path containment (Adaptive only): keep the commanded path from crossing a
+# lane line. Two approaches to compare on the road - a hard clamp at the margin, and a soft
+# barrier that eases the path in over a zone just inside the line. Both stay within the cap.
+LANE_POLICY_CONTAINMENT_OFF = 0
+LANE_POLICY_CONTAINMENT_CLAMP = 1
+LANE_POLICY_CONTAINMENT_BARRIER = 2
+PATH_CONTAINMENT_MARGIN = 0.15
+PATH_CONTAINMENT_BARRIER_ZONE = 0.40
+
 LANE_POLICY_MODE_INACTIVE = 'inactive'
 LANE_POLICY_MODE_TWO_LINE = 'twoLine'
 LANE_POLICY_MODE_ONE_LINE = 'oneLine'
@@ -308,6 +317,50 @@ def turn_one_line_diverges(model_output: dict[str, np.ndarray], center_y: np.nda
   return bool(np.max(np.abs(residual)) > LANE_LOCK_ONE_LINE_MAX_DIVERGENCE)
 
 
+def apply_path_containment(mode: int, correction: float, model_output: dict[str, np.ndarray],
+                           left_y: np.ndarray, right_y: np.ndarray, x: np.ndarray,
+                           fit: np.ndarray) -> float:
+  """Keep the commanded path from crossing a lane line (experimental, two-line only).
+
+  The commanded path is the model path plus the arc the correction produces,
+  path(x) ~= e2e_y(x) + 0.5 * correction * x**2, in the vehicle frame. CLAMP hard-limits the
+  correction to the range that keeps every sampled point inside both lines (minus a margin);
+  BARRIER adds a soft inward push that grows as the path enters a zone just inside each line.
+  Both stay within the global correction cap and only ever pull the path inward.
+  """
+  try:
+    plan_x, plan_y = get_e2e_plan_path(model_output, truncate_turn_back=True)
+  except ValueError:
+    return correction
+  window = fit & (x >= plan_x[0]) & (x <= plan_x[-1])
+  if np.count_nonzero(window) < 3:
+    return correction
+  wx = x[window]
+  e2e_y = np.interp(wx, plan_x, plan_y)
+  right_limit = right_y[window] + CAMERA_OFFSET - PATH_CONTAINMENT_MARGIN
+  left_limit = left_y[window] + CAMERA_OFFSET + PATH_CONTAINMENT_MARGIN
+  if not (np.all(np.isfinite(e2e_y)) and np.all(np.isfinite(right_limit)) and np.all(np.isfinite(left_limit))):
+    return correction
+  inv = 2.0 / (wx * wx)
+  cap = LANE_LOCK_MAX_CENTER_CORRECTION
+
+  if mode == LANE_POLICY_CONTAINMENT_CLAMP:
+    corr_max = min(float(np.min((right_limit - e2e_y) * inv)), cap)
+    corr_min = max(float(np.max((left_limit - e2e_y) * inv)), -cap)
+    if corr_min > corr_max:
+      # Lane too narrow for both margins: best-effort center of the infeasible range.
+      return float(np.clip(0.5 * (corr_min + corr_max), -cap, cap))
+    return float(np.clip(correction, corr_min, corr_max))
+
+  # BARRIER: soft inward push based on how far the path has entered each line's zone.
+  pred = e2e_y + 0.5 * correction * wx * wx
+  right_deficit = np.clip(PATH_CONTAINMENT_BARRIER_ZONE - (right_limit - pred), 0.0, None)
+  left_deficit = np.clip(PATH_CONTAINMENT_BARRIER_ZONE - (pred - left_limit), 0.0, None)
+  push_left = float(np.min(-right_deficit * inv))  # most negative (strongest leftward) point
+  push_right = float(np.max(left_deficit * inv))   # most positive (strongest rightward) point
+  return float(np.clip(correction + push_left + push_right, -cap, cap))
+
+
 def get_e2e_blended_center_correction(model_output: dict[str, np.ndarray], center_y: np.ndarray,
                                       x: np.ndarray, v_ego: float) -> float:
   plan_x, plan_y = get_e2e_plan_path(model_output)
@@ -353,6 +406,7 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
                     turn_centering_strength: int = LANE_POLICY_INTENSITY_NORMAL,
                     adaptive_enabled: bool = False,
                     adaptive_strength: int = LANE_POLICY_INTENSITY_NORMAL,
+                    path_containment_mode: int = LANE_POLICY_CONTAINMENT_OFF,
                     constants: type = ModelConstants) -> float:
   """Add a bounded lane-centering correction to the model curvature."""
   global _lane_lock_weight, _lane_lock_lane_curvature
@@ -533,6 +587,12 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
     intensity_scale = get_intensity_scale(active_strength)
     center_correction = float(np.clip(center_correction * intensity_scale,
                                       -correction_limit, correction_limit))
+    # Experimental: hold the commanded path inside the lane lines. Adaptive, two reliable
+    # lines only; may add authority beyond the strength setting but never beyond the cap.
+    if (path_containment_mode and adaptive_enabled and lead_center_correction is None and
+        two_line_geometry):
+      center_correction = apply_path_containment(path_containment_mode, center_correction,
+                                                 model_output, left_y, right_y, x, fit)
     if abs(center_correction) < LANE_LOCK_CORRECTION_DEADBAND:
       center_correction = 0.0
 

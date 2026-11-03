@@ -45,6 +45,16 @@ class LanePolicySettingsLayout(Widget):
       inline=False,
     )
     self._adaptive_strength.action_item.set_enabled(lambda: enabled() and adaptive_on())
+    self._path_containment = multiple_button_item_sp(
+      title=lambda: tr("Path Containment (Experimental)"),
+      description=lambda: tr("Keep the commanded path from crossing a lane line. Clamp hard-limits the path at " +
+                            "the boundary; Barrier eases it away as it approaches. Needs two reliable lane lines."),
+      buttons=[lambda: tr("Off"), lambda: tr("Clamp"), lambda: tr("Barrier")],
+      param="AdaptivePathContainment",
+      button_width=240,
+      inline=False,
+    )
+    self._path_containment.action_item.set_enabled(lambda: enabled() and adaptive_on())
     self._two_line = toggle_item_sp(
       title=lambda: tr("Two-Line Centering"),
       description=lambda: tr("When both lane lines are clean, steer toward their midpoint. One-line hold builds " +
@@ -121,6 +131,7 @@ class LanePolicySettingsLayout(Widget):
     self._scroller = Scroller([
       self._adaptive,
       self._adaptive_strength,
+      self._path_containment,
       self._two_line,
       self._intensity,
       self._turn_centering,
