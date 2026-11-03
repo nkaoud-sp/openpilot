@@ -303,6 +303,29 @@ class TestLanePolicy(unittest.TestCase):
                             one_line_fallback_enabled=False)
     self.assertFalse(lane_policy._lane_lock_full_active)
 
+  def test_adaptive_falls_through_to_lead_on_total_line_loss(self):
+    # Both lines gone: after the grace window, adaptive hands off to the lead reference.
+    self.adaptive_apply_for(make_model_output(lane_center=0.2),
+                            lane_policy.LANE_LOCK_ARM_TIME + lane_policy.DT_MDL,
+                            lead_fallback_enabled=True)
+    blind = make_model_output(left_prob=0.1, right_prob=0.1, lead_prob=0.9, lead_y=0.6)
+    correction = self.adaptive_apply_for(blind,
+                                         lane_policy.TURN_CENTERING_GEOMETRY_GRACE_TIME + 8 * lane_policy.DT_MDL,
+                                         lead_fallback_enabled=True)
+    self.assertEqual(lane_policy.get_lane_policy_status()[0], lane_policy.LANE_POLICY_MODE_LEAD)
+    self.assertGreater(correction, 0.0)
+    self.assertLessEqual(correction, lane_policy.LANE_LOCK_LEAD_MAX_CORRECTION)
+
+  def test_adaptive_releases_without_lead_on_total_line_loss(self):
+    self.adaptive_apply_for(make_model_output(lane_center=0.2),
+                            lane_policy.LANE_LOCK_ARM_TIME + lane_policy.DT_MDL,
+                            lead_fallback_enabled=True)
+    blind = make_model_output(left_prob=0.1, right_prob=0.1)
+    self.adaptive_apply_for(blind, lane_policy.TURN_CENTERING_GEOMETRY_GRACE_TIME + 8 * lane_policy.DT_MDL,
+                            lead_fallback_enabled=True)
+    self.assertFalse(lane_policy._lane_lock_full_active)
+    self.assertEqual(lane_policy.get_lane_policy_status()[0], lane_policy.LANE_POLICY_MODE_INACTIVE)
+
   def test_blinker_ramps_correction_out(self):
     output = self.arm(make_model_output(lane_center=0.45))
     self.apply_for(output, 0.5)

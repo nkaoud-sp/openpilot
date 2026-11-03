@@ -94,19 +94,21 @@ class LanePolicySettingsLayout(Widget):
       param="LanePolicyE2EBlend",
       enabled=method_enabled,
     )
+    # Lead fallback is a last-resort reference when no lane geometry is available, so it
+    # stays live under Adaptive too (Adaptive falls through to it on total line loss).
     self._lead_fallback = toggle_item_sp(
       title=lambda: tr("Lead Fallback"),
       description=lambda: tr("When lane-line fallback is unavailable, use a detected lead vehicle as a " +
                             "low-authority lateral reference."),
       param="LanePolicyLeadFallback",
-      enabled=method_enabled,
+      enabled=enabled,
     )
     self._lead_close_range = toggle_item_sp(
       title=lambda: tr("Close Lead Centering"),
       description=lambda: tr("Allow nearby leads, including stop-and-go traffic under 5 m, to drive lead " +
                             "centering. Requires Lead Fallback."),
       param="LanePolicyLeadCloseRange",
-      enabled=lambda: method_enabled() and ui_state.params.get_bool("LanePolicyLeadFallback"),
+      enabled=lambda: enabled() and ui_state.params.get_bool("LanePolicyLeadFallback"),
     )
     self._visual_indicator = toggle_item_sp(
       title=lambda: tr("Colored Lane-Line Indicator"),

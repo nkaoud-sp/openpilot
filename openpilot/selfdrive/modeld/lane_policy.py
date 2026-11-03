@@ -451,9 +451,16 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
         _lane_lock_turn_geometry_loss_time += DT_MDL
         log_lane_lock_mode(f"turn centering hold: {reason}")
         return ramp_out_correction(e2e_curvature)
-      return release_lane_lock(e2e_curvature, f"stock-e2e fallback: turn {reason}")
+      # Adaptive: once the grace window is spent on total line loss, fall through to the
+      # lead fallback (if enabled) before handing back to the stock path. Turn centering
+      # releases straight to stock as before.
+      if not (adaptive_enabled and lead_fallback_enabled):
+        return release_lane_lock(e2e_curvature, f"stock-e2e fallback: turn {reason}")
 
-    if center_y is None and one_line_fallback_enabled and _lane_lock_full_active and _lane_lock_width_valid:
+    # The sideways-offset one-line hold is for the non-adaptive stack; adaptive handles one
+    # line above (across the lane, with a divergence guard) and otherwise goes to the lead.
+    if (center_y is None and not adaptive_enabled and one_line_fallback_enabled and
+        _lane_lock_full_active and _lane_lock_width_valid):
       selected_left = valid_left and (not valid_right or not two_line_geometry or left_prob >= right_prob)
       selected_right = valid_right and not selected_left
       if selected_left or selected_right:
