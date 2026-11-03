@@ -204,6 +204,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LanePolicyVisualIndicator", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"TurnCentering", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"TurnCenteringStrength", {PERSISTENT | BACKUP, INT, "1"}},
+    {"AdaptiveLaneCentering", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"AdaptiveLaneCenteringStrength", {PERSISTENT | BACKUP, INT, "1"}},
     {"LeadDepartAlert", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"MaxTimeOffroad", {PERSISTENT | BACKUP, INT, "1800"}},
     {"ModelRunnerTypeCache", {CLEAR_ON_ONROAD_TRANSITION, INT}},

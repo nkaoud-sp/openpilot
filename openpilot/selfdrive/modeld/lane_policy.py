@@ -61,12 +61,19 @@ TURN_CENTERING_FIT_MIN_END = 20.0
 TURN_CENTERING_GEOMETRY_GRACE_TIME = 0.5
 # How long one remaining line plus the learned width may carry the midpoint mid-turn
 TURN_CENTERING_ONE_LINE_HOLD_TIME = 2.0
+# Adaptive lane centering runs the e2e-relative (turn-centering) method on straights and
+# turns alike. One remaining line may carry the midpoint for as long as it stays confident
+# (lane width barely changes on a road), so there is no time cap. A gore/exit/split instead
+# shows up as that line peeling off the model path, so release once the one-line midpoint
+# diverges from the e2e path by more than this (m).
+LANE_LOCK_ONE_LINE_MAX_DIVERGENCE = 0.75
 
 LANE_POLICY_MODE_INACTIVE = 'inactive'
 LANE_POLICY_MODE_TWO_LINE = 'twoLine'
 LANE_POLICY_MODE_ONE_LINE = 'oneLine'
 LANE_POLICY_MODE_LEAD = 'lead'
 LANE_POLICY_MODE_TURN_CENTERING = 'turnCentering'
+LANE_POLICY_MODE_ADAPTIVE = 'adaptiveLaneCentering'
 
 _lane_lock_weight = 0.0
 _lane_lock_lane_curvature = 0.0
@@ -243,7 +250,8 @@ def get_e2e_plan_path(model_output: dict[str, np.ndarray],
 
 
 def get_turn_center_correction(model_output: dict[str, np.ndarray], center_y: np.ndarray,
-                               x: np.ndarray, fit: np.ndarray, v_ego: float) -> float:
+                               x: np.ndarray, fit: np.ndarray, v_ego: float,
+                               with_heading: bool = False, e2e_curvature: float = 0.0) -> float:
   """Steer the e2e path onto the lane midpoint through a turn.
 
   The midpoint is compared with the e2e path at the same distances ahead, so the
@@ -267,8 +275,37 @@ def get_turn_center_correction(model_output: dict[str, np.ndarray], center_y: np
   lookahead = min(float(np.clip(2.0 * v_ego, LANE_LOCK_MIN_LOOKAHEAD, LANE_LOCK_MAX_LOOKAHEAD)), float(fit_x[-1]))
   weights = np.exp(-0.5 * ((fit_x - lookahead) / (LANE_LOCK_PATH_WEIGHT_SPREAD * lookahead)) ** 2)
   error = float(np.dot(weights, residual) / np.sum(weights))
+  if with_heading and fit_x.size >= 2:
+    # Recover the lane's heading relative to the model path (the slope of the residual)
+    # and anticipate it, so a persistent small angle is corrected before it becomes a
+    # position error. Faded out as the turn tightens, where the pure position error above
+    # already suffices and absolute heading is unreliable.
+    heading = float(np.polyfit(fit_x, residual, 1, w=weights)[0])
+    heading_scale = min(1.0, LANE_LOCK_HEADING_CURVATURE_FADE / max(abs(e2e_curvature), 1e-6))
+    error += LANE_LOCK_HEADING_GAIN * heading_scale * heading * lookahead
   correction = 2.0 * error / (lookahead * lookahead)
   return float(np.clip(correction, -LANE_LOCK_MAX_CENTER_CORRECTION, LANE_LOCK_MAX_CENTER_CORRECTION))
+
+
+def turn_one_line_diverges(model_output: dict[str, np.ndarray], center_y: np.ndarray,
+                           x: np.ndarray, fit: np.ndarray) -> bool:
+  """True when a one-line-reconstructed midpoint peels away from the model path.
+
+  On a clean road the surviving line plus the learned width tracks the e2e path, so a long
+  one-line hold is safe. At a gore, exit or split the line diverges from the path - the one
+  place a long hold is unsafe - which shows up as a large lane/E2E separation.
+  """
+  try:
+    plan_x, plan_y = get_e2e_plan_path(model_output, truncate_turn_back=True)
+  except ValueError:
+    return True
+  window = fit & (x >= plan_x[0]) & (x <= plan_x[-1])
+  if np.count_nonzero(window) < 3:
+    return True
+  residual = (center_y[window] + CAMERA_OFFSET) - np.interp(x[window], plan_x, plan_y)
+  if not np.all(np.isfinite(residual)):
+    return True
+  return bool(np.max(np.abs(residual)) > LANE_LOCK_ONE_LINE_MAX_DIVERGENCE)
 
 
 def get_e2e_blended_center_correction(model_output: dict[str, np.ndarray], center_y: np.ndarray,
@@ -314,6 +351,8 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
                     intensity: int = LANE_POLICY_INTENSITY_NORMAL,
                     turn_centering_enabled: bool = False,
                     turn_centering_strength: int = LANE_POLICY_INTENSITY_NORMAL,
+                    adaptive_enabled: bool = False,
+                    adaptive_strength: int = LANE_POLICY_INTENSITY_NORMAL,
                     constants: type = ModelConstants) -> float:
   """Add a bounded lane-centering correction to the model curvature."""
   global _lane_lock_weight, _lane_lock_lane_curvature
@@ -342,8 +381,9 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
     if lane_change_prob > LANE_LOCK_MAX_LANE_CHANGE_PROB:
       return release_lane_lock(e2e_curvature, "stock-e2e fallback: lane-change intent")
 
-    turn_centering_active = (turn_centering_enabled and
-                             abs(e2e_curvature) >= TURN_CENTERING_CURVATURE)
+    # Adaptive runs the e2e-relative method everywhere; turn centering only in curves.
+    turn_centering_active = (adaptive_enabled or
+                             (turn_centering_enabled and abs(e2e_curvature) >= TURN_CENTERING_CURVATURE))
     x = np.asarray(constants.X_IDXS, dtype=np.float64)
     fit_end = get_turn_fit_end(e2e_curvature) if turn_centering_active else LANE_LOCK_FIT_END
     fit = (x >= LANE_LOCK_FIT_START) & (x <= fit_end)
@@ -375,18 +415,33 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
             alpha = min(DT_MDL / LANE_LOCK_WIDTH_TIME, 1.0)
             _lane_lock_width += alpha * (measured_width - _lane_lock_width)
 
-    if (turn_centering_active and not two_line_geometry and _lane_lock_full_active and _lane_lock_width_valid and
-        (valid_left or valid_right) and _lane_lock_line_loss_time < TURN_CENTERING_ONE_LINE_HOLD_TIME):
-      # One line flickering mid-turn: hold the midpoint from the other line and the
-      # learned width, offset across the lane rather than sideways.
+    one_line_hold_ready = (turn_centering_active and not two_line_geometry and _lane_lock_full_active and
+                           _lane_lock_width_valid and (valid_left or valid_right))
+    if one_line_hold_ready and adaptive_enabled:
+      # Adaptive: no time cap, gated only by the one-line toggle - lane width barely
+      # changes on a road, so hold on the remaining line as long as it stays confident.
+      one_line_hold_ready = one_line_fallback_enabled
+    elif one_line_hold_ready:
+      # Turn centering: bounded hold through a flickering line mid-turn.
+      one_line_hold_ready = _lane_lock_line_loss_time < TURN_CENTERING_ONE_LINE_HOLD_TIME
+    if one_line_hold_ready:
+      # Hold the midpoint from the other line and the learned width, offset across the
+      # lane rather than sideways.
       use_left = valid_left and (not valid_right or left_prob >= right_prob)
       line_y = left_y if use_left else right_y
       line_slope = np.gradient(line_y, x)
       half_width = 0.5 * _lane_lock_width * np.sqrt(1.0 + line_slope * line_slope)
-      center_y = line_y + half_width if use_left else line_y - half_width
-      _lane_lock_line_loss_time += DT_MDL
-      _lane_lock_turn_geometry_loss_time = 0.0
-      log_lane_lock_mode("turn centering: one line")
+      candidate_center_y = line_y + half_width if use_left else line_y - half_width
+      if adaptive_enabled and turn_one_line_diverges(model_output, candidate_center_y, x, fit):
+        # The surviving line is peeling away from the model path (gore/exit/split): do not
+        # hold on it. center_y stays unset, so the grace-then-release path below takes over.
+        pass
+      else:
+        center_y = candidate_center_y
+        _lane_lock_line_loss_time += DT_MDL
+        _lane_lock_turn_geometry_loss_time = 0.0
+        log_lane_lock_mode("adaptive lane centering: one line" if adaptive_enabled else
+                           "turn centering: one line")
 
     if turn_centering_active and center_y is None:
       reason = "line confidence" if not (valid_left and valid_right) else "lane width"
@@ -443,7 +498,9 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
       _lane_lock_arm_time = 0.0
     else:
       if turn_centering_active:
-        center_correction = get_turn_center_correction(model_output, center_y, x, fit, v_ego)
+        center_correction = get_turn_center_correction(model_output, center_y, x, fit, v_ego,
+                                                       with_heading=adaptive_enabled,
+                                                       e2e_curvature=e2e_curvature)
       elif e2e_blend_enabled and not _lane_lock_one_line_hold:
         center_correction = get_e2e_blended_center_correction(model_output, center_y, x, v_ego)
       else:
@@ -457,10 +514,16 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
                                           -LANE_LOCK_MAX_CENTER_CORRECTION,
                                           LANE_LOCK_MAX_CENTER_CORRECTION))
 
-    # During a turn the strength control is the sole authority over how firmly
-    # (magnitude) and how quickly (engage step, below) we return to the midpoint,
-    # rather than compounding with the global lane-policy intensity.
-    intensity_scale = get_intensity_scale(turn_centering_strength if turn_centering_active else intensity)
+    # Adaptive and turn centering each own how firmly (magnitude) and how quickly
+    # (engage step, below) we return to the midpoint, rather than compounding with the
+    # global lane-policy intensity.
+    if adaptive_enabled:
+      active_strength = adaptive_strength
+    elif turn_centering_active:
+      active_strength = turn_centering_strength
+    else:
+      active_strength = intensity
+    intensity_scale = get_intensity_scale(active_strength)
     center_correction = float(np.clip(center_correction * intensity_scale,
                                       -correction_limit, correction_limit))
     if abs(center_correction) < LANE_LOCK_CORRECTION_DEADBAND:
@@ -510,12 +573,14 @@ def apply_lane_lock(model_output: dict[str, np.ndarray], e2e_curvature: float, v
       _lane_lock_ready = True
     _lane_policy_mode = (LANE_POLICY_MODE_LEAD if lead_center_correction is not None else
                          LANE_POLICY_MODE_ONE_LINE if _lane_lock_one_line_hold else
+                         LANE_POLICY_MODE_ADAPTIVE if adaptive_enabled else
                          LANE_POLICY_MODE_TURN_CENTERING if turn_centering_active else
                          LANE_POLICY_MODE_TWO_LINE)
     _lane_policy_correction = float(_lane_lock_center_correction)
     _lane_lock_error_logged = False
     log_lane_lock_mode("lead vehicle fallback" if lead_center_correction is not None else
                        "lane center hold" if _lane_lock_one_line_hold else
+                       "adaptive lane centering" if adaptive_enabled else
                        "turn centering" if turn_centering_active else "full lane center")
     return _lane_lock_lane_curvature
 

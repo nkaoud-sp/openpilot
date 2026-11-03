@@ -482,6 +482,7 @@ struct ModelDataV2SP @0xa1680744031fdb2d {
     oneLine @2;
     lead @3;
     turnCentering @4;
+    adaptiveLaneCentering @5;
   }
 }
 

@@ -19,12 +19,38 @@ class LanePolicySettingsLayout(Widget):
 
     def enabled():
       return ui_state.params.get_bool("LanePolicyEnabled")
+
+    def adaptive_on():
+      return ui_state.params.get_bool("AdaptiveLaneCentering")
+
+    # Adaptive supersedes the individual centering methods below, so they grey out when it is on.
+    def method_enabled():
+      return enabled() and not adaptive_on()
+
+    self._adaptive = toggle_item_sp(
+      title=lambda: tr("Adaptive Lane Centering"),
+      description=lambda: tr("Target the geometric midpoint between reliable lane lines on straights and " +
+                            "turns alike, using the turn-centering method everywhere. Supersedes Two-Line, " +
+                            "E2E Blend, and Turn Centering below."),
+      param="AdaptiveLaneCentering",
+      enabled=enabled,
+    )
+    self._adaptive_strength = multiple_button_item_sp(
+      title=lambda: tr("Adaptive Strength"),
+      description=lambda: tr("How quickly and firmly the vehicle returns toward the lane midpoint. The hard " +
+                            "safety limit is unchanged at every setting."),
+      buttons=[lambda: tr("Relaxed"), lambda: tr("Normal"), lambda: tr("Aggressive")],
+      param="AdaptiveLaneCenteringStrength",
+      button_width=280,
+      inline=False,
+    )
+    self._adaptive_strength.action_item.set_enabled(lambda: enabled() and adaptive_on())
     self._two_line = toggle_item_sp(
       title=lambda: tr("Two-Line Centering"),
       description=lambda: tr("When both lane lines are clean, steer toward their midpoint. One-line hold builds " +
                             "on this lock, while lead fallback can work independently."),
       param="LanePolicyTwoLine",
-      enabled=enabled,
+      enabled=method_enabled,
     )
     self._intensity = multiple_button_item_sp(
       title=lambda: tr("Intensity"),
@@ -35,13 +61,13 @@ class LanePolicySettingsLayout(Widget):
       button_width=280,
       inline=False,
     )
-    self._intensity.action_item.set_enabled(enabled)
+    self._intensity.action_item.set_enabled(method_enabled)
     self._turn_centering = toggle_item_sp(
       title=lambda: tr("Turn Centering"),
       description=lambda: tr("During turns, target the geometric midpoint between reliable lane lines " +
                             "instead of following a turn-biased model path."),
       param="TurnCentering",
-      enabled=enabled,
+      enabled=method_enabled,
     )
     self._turn_centering_strength = multiple_button_item_sp(
       title=lambda: tr("Strength"),
@@ -51,11 +77,13 @@ class LanePolicySettingsLayout(Widget):
       button_width=280,
       inline=False,
     )
-    self._turn_centering_strength.action_item.set_enabled(lambda: enabled() and ui_state.params.get_bool("TurnCentering"))
+    self._turn_centering_strength.action_item.set_enabled(
+      lambda: method_enabled() and ui_state.params.get_bool("TurnCentering"))
     self._one_line_fallback = toggle_item_sp(
       title=lambda: tr("One-Line Fallback"),
-      description=lambda: tr("If one lane line briefly disappears, hold center using the remaining line and " +
-                            "the learned lane width."),
+      description=lambda: tr("If one lane line disappears, hold center using the remaining line and the " +
+                            "learned lane width. Under Adaptive Lane Centering the hold continues as long as " +
+                            "the remaining line stays reliable."),
       param="LanePolicyOneLineFallback",
       enabled=enabled,
     )
@@ -64,21 +92,21 @@ class LanePolicySettingsLayout(Widget):
       description=lambda: tr("Blend the two-line lane target with the model path shape instead of using only " +
                             "lane geometry."),
       param="LanePolicyE2EBlend",
-      enabled=enabled,
+      enabled=method_enabled,
     )
     self._lead_fallback = toggle_item_sp(
       title=lambda: tr("Lead Fallback"),
       description=lambda: tr("When lane-line fallback is unavailable, use a detected lead vehicle as a " +
                             "low-authority lateral reference."),
       param="LanePolicyLeadFallback",
-      enabled=enabled,
+      enabled=method_enabled,
     )
     self._lead_close_range = toggle_item_sp(
       title=lambda: tr("Close Lead Centering"),
       description=lambda: tr("Allow nearby leads, including stop-and-go traffic under 5 m, to drive lead " +
                             "centering. Requires Lead Fallback."),
       param="LanePolicyLeadCloseRange",
-      enabled=lambda: enabled() and ui_state.params.get_bool("LanePolicyLeadFallback"),
+      enabled=lambda: method_enabled() and ui_state.params.get_bool("LanePolicyLeadFallback"),
     )
     self._visual_indicator = toggle_item_sp(
       title=lambda: tr("Colored Lane-Line Indicator"),
@@ -89,6 +117,8 @@ class LanePolicySettingsLayout(Widget):
     )
 
     self._scroller = Scroller([
+      self._adaptive,
+      self._adaptive_strength,
       self._two_line,
       self._intensity,
       self._turn_centering,

@@ -234,6 +234,75 @@ class TestLanePolicy(unittest.TestCase):
                                          turn_centering_enabled=True)
     self.assertEqual(result, 0.001)
 
+  def adaptive_apply_for(self, output, seconds, curvature=0.0, v_ego=20.0, **kwargs):
+    result = curvature
+    for _ in range(max(1, int(np.ceil(seconds / lane_policy.DT_MDL)))):
+      result = lane_policy.apply_lane_lock(output, curvature, v_ego, lane_policy_enabled=True,
+                                           adaptive_enabled=True, **kwargs)
+    return result - curvature
+
+  def test_adaptive_centers_on_straight(self):
+    output = make_model_output(lane_center=0.35)
+    self.adaptive_apply_for(output, lane_policy.LANE_LOCK_ARM_TIME + lane_policy.DT_MDL)
+    correction = self.adaptive_apply_for(output, 1.0)
+    self.assertGreater(correction, 0.0)
+    self.assertLessEqual(correction, lane_policy.LANE_LOCK_MAX_CENTER_CORRECTION)
+    self.assertEqual(lane_policy.get_lane_policy_status()[0], lane_policy.LANE_POLICY_MODE_ADAPTIVE)
+
+  def test_adaptive_reports_adaptive_mode_on_straight_and_turn(self):
+    # Unlike turn centering, adaptive owns the straight too, so it reports its own mode there.
+    straight = make_model_output(lane_center=0.35)
+    self.adaptive_apply_for(straight, lane_policy.LANE_LOCK_ARM_TIME + 2 * lane_policy.DT_MDL)
+    self.assertEqual(lane_policy.get_lane_policy_status()[0], lane_policy.LANE_POLICY_MODE_ADAPTIVE)
+    self.adaptive_apply_for(make_curve_output(100.0, 0.4), 5 * lane_policy.DT_MDL,
+                            curvature=-0.01, v_ego=12.0)
+    self.assertEqual(lane_policy.get_lane_policy_status()[0], lane_policy.LANE_POLICY_MODE_ADAPTIVE)
+
+  def test_adaptive_strength_scales_firmness(self):
+    values = []
+    for strength in range(3):
+      lane_policy.reset_lane_lock()
+      output = make_model_output(lane_center=0.1)
+      self.adaptive_apply_for(output, lane_policy.LANE_LOCK_ARM_TIME + lane_policy.DT_MDL,
+                              adaptive_strength=strength)
+      result = 0.0
+      for _ in range(100):
+        result = lane_policy.apply_lane_lock(output, 0.0, 20.0, lane_policy_enabled=True,
+                                             adaptive_enabled=True, adaptive_strength=strength)
+      values.append(result)
+    self.assertLess(values[0], values[1])
+    self.assertLess(values[1], values[2])
+    self.assertLessEqual(values[2], lane_policy.LANE_LOCK_MAX_CENTER_CORRECTION)
+
+  def test_adaptive_one_line_hold_has_no_time_cap(self):
+    # On a road the lane width is stable, so a confident single line carries the midpoint
+    # well past the bounded turn-centering hold.
+    self.adaptive_apply_for(make_model_output(lane_center=0.35),
+                            lane_policy.LANE_LOCK_ARM_TIME + lane_policy.DT_MDL)
+    one_line = make_model_output(left_prob=0.99, right_prob=0.2, lane_center=0.35)
+    correction = self.adaptive_apply_for(one_line, lane_policy.TURN_CENTERING_ONE_LINE_HOLD_TIME + 3.0)
+    self.assertTrue(lane_policy._lane_lock_full_active)
+    self.assertEqual(lane_policy.get_lane_policy_status()[0], lane_policy.LANE_POLICY_MODE_ADAPTIVE)
+    self.assertGreater(correction, 0.0)
+
+  def test_adaptive_one_line_releases_on_divergence(self):
+    # A gore/exit shows up as the surviving line peeling away from the model path.
+    self.adaptive_apply_for(make_model_output(lane_center=0.2),
+                            lane_policy.LANE_LOCK_ARM_TIME + lane_policy.DT_MDL)
+    self.assertTrue(lane_policy._lane_lock_full_active)
+    gore = make_model_output(left_prob=0.99, right_prob=0.2, lane_center=1.3)
+    self.adaptive_apply_for(gore, lane_policy.TURN_CENTERING_GEOMETRY_GRACE_TIME + 3 * lane_policy.DT_MDL)
+    self.assertFalse(lane_policy._lane_lock_full_active)
+
+  def test_adaptive_one_line_respects_fallback_toggle(self):
+    self.adaptive_apply_for(make_model_output(lane_center=0.2),
+                            lane_policy.LANE_LOCK_ARM_TIME + lane_policy.DT_MDL,
+                            one_line_fallback_enabled=True)
+    one_line = make_model_output(left_prob=0.99, right_prob=0.2, lane_center=0.2)
+    self.adaptive_apply_for(one_line, lane_policy.TURN_CENTERING_GEOMETRY_GRACE_TIME + 3 * lane_policy.DT_MDL,
+                            one_line_fallback_enabled=False)
+    self.assertFalse(lane_policy._lane_lock_full_active)
+
   def test_blinker_ramps_correction_out(self):
     output = self.arm(make_model_output(lane_center=0.45))
     self.apply_for(output, 0.5)
