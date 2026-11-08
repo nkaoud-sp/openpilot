@@ -1,0 +1,5 @@
+faster-whisper>=1.1      # speech-to-text (Whisper via CTranslate2)
+sherpa-onnx>=1.10        # speaker diarization (pyannote segmentation + WeSpeaker embeddings, ONNX)
+llama-cpp-python>=0.3    # local LLM runtime (skip if you use --llm ollama)
+huggingface_hub
+numpy

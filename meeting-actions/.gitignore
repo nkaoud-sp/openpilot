@@ -1,4 +1,5 @@
-vendor/
+.venv/
+__pycache__/
 *.actions.md
 *.actions.json
 !examples/*

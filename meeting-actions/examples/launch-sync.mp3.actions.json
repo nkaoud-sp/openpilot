@@ -1,0 +1,211 @@
+{
+  "title": "Launch Status Meeting",
+  "summary": "Discussed the status of the mobile build, payment integration issues, and launch date adjustment. Decided to delay the launch to the 17th and agreed on next steps.",
+  "speakers": [
+    {
+      "label": "A",
+      "inferred_name": "George Nizor",
+      "role": "Project Manager",
+      "name": "George Nizor"
+    },
+    {
+      "label": "B",
+      "inferred_name": "Sarah",
+      "role": "Marketing",
+      "name": "Sarah"
+    },
+    {
+      "label": "C",
+      "inferred_name": "Omar",
+      "role": "Developer",
+      "name": "Omar"
+    }
+  ],
+  "discussion_points": [
+    {
+      "topic": "Mobile Build Status",
+      "summary": "Speaker B reported that the mobile build is ready, but the payment integration fails on Android about 5% of the time. Speaker C suggested it might be a timeout on the Geetwee site and offered to fix it by Wednesday.",
+      "references": [
+        {
+          "utterance": 2,
+          "time": "00:00:04",
+          "start_ms": 4740,
+          "end_ms": 11680,
+          "speaker": "Sarah",
+          "quote": "George Nizor, the mobile build is ready, but the payment integration still fails on Android about 5% of the time."
+        },
+        {
+          "utterance": 3,
+          "time": "00:00:12",
+          "start_ms": 12660,
+          "end_ms": 17880,
+          "speaker": "Omar",
+          "quote": "I think that is a timeout on the Geetwee site. I can dig into the logs and have a fix ready by Wednesday."
+        }
+      ]
+    },
+    {
+      "topic": "Launch Date Adjustment",
+      "summary": "Speaker A proposed pushing the launch from the 10th to the 17th to be safe. Speaker B agreed and committed to updating the marketing team and release calendar today.",
+      "references": [
+        {
+          "utterance": 4,
+          "time": "00:00:18",
+          "start_ms": 18940,
+          "end_ms": 24000,
+          "speaker": "George Nizor",
+          "quote": "Great, thanks Omar. Then let's agree to push the launch from the 10th to the 17th to be safe."
+        },
+        {
+          "utterance": 5,
+          "time": "00:00:24",
+          "start_ms": 24820,
+          "end_ms": 28280,
+          "speaker": "Sarah",
+          "quote": "Agreed, I will update the marketing team and the release calendar today."
+        }
+      ]
+    },
+    {
+      "topic": "iPad Layout Requirement",
+      "summary": "Speaker C asked if the iPad layout was still needed for the launch or if it could wait for the next version. Speaker A indicated they would check with the client and leave the decision open.",
+      "references": [
+        {
+          "utterance": 6,
+          "time": "00:00:29",
+          "start_ms": 29120,
+          "end_ms": 34460,
+          "speaker": "Omar",
+          "quote": "One question, do we still need the iPad layout for launch, or can that wait for the next version?"
+        },
+        {
+          "utterance": 7,
+          "time": "00:00:35",
+          "start_ms": 35340,
+          "end_ms": 42240,
+          "speaker": "George Nizor",
+          "quote": "Good question. I need to check with the client first, so let's leave that open for now. Sarah, please also send the meeting notes to the client by tomorrow."
+        }
+      ]
+    },
+    {
+      "topic": "Next Steps and Meeting Notes",
+      "summary": "Speaker A asked Speaker B to send the meeting notes to the client by tomorrow. Speaker B confirmed they would do so.",
+      "references": [
+        {
+          "utterance": 7,
+          "time": "00:00:35",
+          "start_ms": 35340,
+          "end_ms": 42240,
+          "speaker": "George Nizor",
+          "quote": "Good question. I need to check with the client first, so let's leave that open for now. Sarah, please also send the meeting notes to the client by tomorrow."
+        }
+      ]
+    }
+  ],
+  "decisions": [
+    {
+      "decision": "Delay the launch from the 10th to the 17th to address the payment integration issues.",
+      "references": [
+        {
+          "utterance": 4,
+          "time": "00:00:18",
+          "start_ms": 18940,
+          "end_ms": 24000,
+          "speaker": "George Nizor",
+          "quote": "Great, thanks Omar. Then let's agree to push the launch from the 10th to the 17th to be safe."
+        }
+      ]
+    }
+  ],
+  "action_items": [
+    {
+      "task": "Fix payment integration issue on Android",
+      "owner": "Omar",
+      "due": "Wednesday",
+      "priority": "high",
+      "references": [
+        {
+          "utterance": 3,
+          "time": "00:00:12",
+          "start_ms": 12660,
+          "end_ms": 17880,
+          "speaker": "Omar",
+          "quote": "I think that is a timeout on the Geetwee site. I can dig into the logs and have a fix ready by Wednesday."
+        }
+      ]
+    },
+    {
+      "task": "Update marketing team and release calendar",
+      "owner": "Sarah",
+      "due": "today",
+      "priority": "high",
+      "references": [
+        {
+          "utterance": 5,
+          "time": "00:00:24",
+          "start_ms": 24820,
+          "end_ms": 28280,
+          "speaker": "Sarah",
+          "quote": "Agreed, I will update the marketing team and the release calendar today."
+        }
+      ]
+    },
+    {
+      "task": "Check with client on iPad layout requirement",
+      "owner": "George Nizor",
+      "due": "immediate",
+      "priority": "medium",
+      "references": [
+        {
+          "utterance": 7,
+          "time": "00:00:35",
+          "start_ms": 35340,
+          "end_ms": 42240,
+          "speaker": "George Nizor",
+          "quote": "Good question. I need to check with the client first, so let's leave that open for now. Sarah, please also send the meeting notes to the client by tomorrow."
+        }
+      ]
+    },
+    {
+      "task": "Send meeting notes to client",
+      "owner": "Sarah",
+      "due": "tomorrow",
+      "priority": "high",
+      "references": [
+        {
+          "utterance": 7,
+          "time": "00:00:35",
+          "start_ms": 35340,
+          "end_ms": 42240,
+          "speaker": "George Nizor",
+          "quote": "Good question. I need to check with the client first, so let's leave that open for now. Sarah, please also send the meeting notes to the client by tomorrow."
+        }
+      ]
+    }
+  ],
+  "open_questions": [
+    {
+      "question": "Whether the iPad layout is needed for the launch or can be postponed to the next version.",
+      "references": [
+        {
+          "utterance": 6,
+          "time": "00:00:29",
+          "start_ms": 29120,
+          "end_ms": 34460,
+          "speaker": "Omar",
+          "quote": "One question, do we still need the iPad layout for launch, or can that wait for the next version?"
+        },
+        {
+          "utterance": 7,
+          "time": "00:00:35",
+          "start_ms": 35340,
+          "end_ms": 42240,
+          "speaker": "George Nizor",
+          "quote": "Good question. I need to check with the client first, so let's leave that open for now. Sarah, please also send the meeting notes to the client by tomorrow."
+        }
+      ]
+    }
+  ],
+  "duration": "00:00:47"
+}

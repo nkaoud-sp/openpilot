@@ -1,0 +1,8 @@
+#1 [00:00:00] Speaker A: Okay, everyone, thanks for joining. Sarah, can you start with the launch status?
+#2 [00:00:04] Speaker B: George Nizor, the mobile build is ready, but the payment integration still fails on Android about 5% of the time.
+#3 [00:00:12] Speaker C: I think that is a timeout on the Geetwee site. I can dig into the logs and have a fix ready by Wednesday.
+#4 [00:00:18] Speaker A: Great, thanks Omar. Then let's agree to push the launch from the 10th to the 17th to be safe.
+#5 [00:00:24] Speaker B: Agreed, I will update the marketing team and the release calendar today.
+#6 [00:00:29] Speaker C: One question, do we still need the iPad layout for launch, or can that wait for the next version?
+#7 [00:00:35] Speaker A: Good question. I need to check with the client first, so let's leave that open for now. Sarah, please also send the meeting notes to the client by tomorrow.
+#8 [00:00:42] Speaker B: We'll do. Anything else? No? Then we are done. Thanks everyone.

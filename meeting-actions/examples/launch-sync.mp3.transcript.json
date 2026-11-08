@@ -1,0 +1,58 @@
+[
+  {
+    "id": 1,
+    "speaker": "A",
+    "start_ms": 0,
+    "end_ms": 3960,
+    "text": "Okay, everyone, thanks for joining. Sarah, can you start with the launch status?"
+  },
+  {
+    "id": 2,
+    "speaker": "B",
+    "start_ms": 4740,
+    "end_ms": 11680,
+    "text": "George Nizor, the mobile build is ready, but the payment integration still fails on Android about 5% of the time."
+  },
+  {
+    "id": 3,
+    "speaker": "C",
+    "start_ms": 12660,
+    "end_ms": 17880,
+    "text": "I think that is a timeout on the Geetwee site. I can dig into the logs and have a fix ready by Wednesday."
+  },
+  {
+    "id": 4,
+    "speaker": "A",
+    "start_ms": 18940,
+    "end_ms": 24000,
+    "text": "Great, thanks Omar. Then let's agree to push the launch from the 10th to the 17th to be safe."
+  },
+  {
+    "id": 5,
+    "speaker": "B",
+    "start_ms": 24820,
+    "end_ms": 28280,
+    "text": "Agreed, I will update the marketing team and the release calendar today."
+  },
+  {
+    "id": 6,
+    "speaker": "C",
+    "start_ms": 29120,
+    "end_ms": 34460,
+    "text": "One question, do we still need the iPad layout for launch, or can that wait for the next version?"
+  },
+  {
+    "id": 7,
+    "speaker": "A",
+    "start_ms": 35340,
+    "end_ms": 42240,
+    "text": "Good question. I need to check with the client first, so let's leave that open for now. Sarah, please also send the meeting notes to the client by tomorrow."
+  },
+  {
+    "id": 8,
+    "speaker": "B",
+    "start_ms": 42920,
+    "end_ms": 47240,
+    "text": "We'll do. Anything else? No? Then we are done. Thanks everyone."
+  }
+]
