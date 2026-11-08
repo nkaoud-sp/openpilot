@@ -3,3 +3,4 @@ sherpa-onnx>=1.10        # speaker diarization (pyannote segmentation + WeSpeake
 llama-cpp-python>=0.3    # local LLM runtime (skip if you use --llm ollama)
 huggingface_hub
 numpy
+scipy                    # speaker re-clustering
