@@ -1,0 +1,4 @@
+vendor/
+*.actions.md
+*.actions.json
+!examples/*

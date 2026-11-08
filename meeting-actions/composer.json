@@ -1,0 +1,6 @@
+{
+    "require": {
+        "anthropic-ai/sdk": "^1.6",
+        "guzzlehttp/guzzle": "^8.3"
+    }
+}
